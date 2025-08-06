@@ -1,3 +1,4 @@
+import Foundation
 import MobiFFI
 
 print("Testing MobiFFI Swift binding...")
@@ -100,6 +101,76 @@ if storeLen == 3 && copied == 3 &&
     print("SUCCESS: Vec bulk copy works!")
 } else {
     print("FAILED: Vec bulk copy test failed")
+    exit(1)
+}
+
+print("\n--- Testing FfiString returns ---")
+
+func testGreeting() -> Bool {
+    let name = "Ali"
+    var result = FfiString(ptr: nil, len: 0, cap: 0)
+    
+    let greetStatus = name.withCString { namePtr in
+        mffi_greeting(namePtr, UInt(name.utf8.count), &result)
+    }
+    
+    guard greetStatus.code == 0 else {
+        print("FAILED: greeting returned status \(greetStatus.code)")
+        return false
+    }
+    
+    let data = Data(bytes: result.ptr, count: Int(result.len))
+    let greeting = String(data: data, encoding: .utf8)
+    
+    print("Greeting: \(greeting ?? "nil")")
+    
+    mffi_free_string(result)
+    print("String freed")
+    
+    return greeting == "Hello, Ali!"
+}
+
+func testConcat() -> Bool {
+    let first = "Mobi"
+    let second = "FFI"
+    var result = FfiString(ptr: nil, len: 0, cap: 0)
+    
+    let concatStatus = first.withCString { firstPtr in
+        second.withCString { secondPtr in
+            mffi_concat(
+                firstPtr, UInt(first.utf8.count),
+                secondPtr, UInt(second.utf8.count),
+                &result
+            )
+        }
+    }
+    
+    guard concatStatus.code == 0 else {
+        print("FAILED: concat returned status \(concatStatus.code)")
+        return false
+    }
+    
+    let data = Data(bytes: result.ptr, count: Int(result.len))
+    let concatenated = String(data: data, encoding: .utf8)
+    
+    print("Concatenated: \(concatenated ?? "nil")")
+    
+    mffi_free_string(result)
+    
+    return concatenated == "MobiFFI"
+}
+
+if testGreeting() {
+    print("SUCCESS: Greeting works!")
+} else {
+    print("FAILED: Greeting test failed")
+    exit(1)
+}
+
+if testConcat() {
+    print("SUCCESS: Concat works!")
+} else {
+    print("FAILED: Concat test failed")
     exit(1)
 }
 

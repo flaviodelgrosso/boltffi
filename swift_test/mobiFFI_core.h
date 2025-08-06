@@ -54,6 +54,14 @@ void mffi_free_buf_u8(struct FfiBuf_u8 buf);
 
 void mffi_free_string(struct FfiString string);
 
+struct FfiStatus mffi_greeting(const uint8_t *name_ptr, uintptr_t name_len, struct FfiString *out);
+
+struct FfiStatus mffi_concat(const uint8_t *first_ptr,
+                             uintptr_t first_len,
+                             const uint8_t *second_ptr,
+                             uintptr_t second_len,
+                             struct FfiString *out);
+
 struct FfiStatus mffi_copy_bytes(const uint8_t *src,
                                  uintptr_t src_len,
                                  uint8_t *dst,

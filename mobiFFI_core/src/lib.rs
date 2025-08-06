@@ -10,6 +10,14 @@ pub use safety::catch_ffi_panic;
 pub use status::FfiStatus;
 pub use types::{FfiBuf, FfiOption, FfiSlice, FfiString};
 
+unsafe fn read_input_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
+    if ptr.is_null() {
+        return None;
+    }
+    let bytes = core::slice::from_raw_parts(ptr, len);
+    core::str::from_utf8(bytes).ok()
+}
+
 pub const VERSION_MAJOR: u32 = 0;
 pub const VERSION_MINOR: u32 = 1;
 pub const VERSION_PATCH: u32 = 0;
@@ -37,6 +45,55 @@ pub extern "C" fn mffi_free_buf_u8(buf: FfiBuf<u8>) {
 #[unsafe(no_mangle)]
 pub extern "C" fn mffi_free_string(string: FfiString) {
     drop(string);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mffi_greeting(
+    name_ptr: *const u8,
+    name_len: usize,
+    out: *mut FfiString,
+) -> FfiStatus {
+    if out.is_null() {
+        return FfiStatus::NULL_POINTER;
+    }
+
+    let name = match read_input_str(name_ptr, name_len) {
+        Some(name) => name,
+        None => return FfiStatus::INVALID_ARG,
+    };
+
+    let greeting = format!("Hello, {}!", name);
+    *out = FfiString::from(greeting);
+
+    FfiStatus::OK
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mffi_concat(
+    first_ptr: *const u8,
+    first_len: usize,
+    second_ptr: *const u8,
+    second_len: usize,
+    out: *mut FfiString,
+) -> FfiStatus {
+    if out.is_null() {
+        return FfiStatus::NULL_POINTER;
+    }
+
+    let first = match read_input_str(first_ptr, first_len) {
+        Some(string) => string,
+        None => return FfiStatus::INVALID_ARG,
+    };
+
+    let second = match read_input_str(second_ptr, second_len) {
+        Some(string) => string,
+        None => return FfiStatus::INVALID_ARG,
+    };
+
+    let result = format!("{}{}", first, second);
+    *out = FfiString::from(result);
+
+    FfiStatus::OK
 }
 
 #[unsafe(no_mangle)]
