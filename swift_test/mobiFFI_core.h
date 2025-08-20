@@ -107,4 +107,9 @@ struct FfiStatus mffi_datastore_sum_async(struct DataStore *handle,
                                           SumCallback callback,
                                           void *user_data);
 
+
+/* Macro-generated exports */
+int32_t mffi_add_numbers(int32_t first, int32_t second);
+double mffi_multiply_floats(double first, double second);
+
 #endif  /* MOBIFFI_CORE_H */

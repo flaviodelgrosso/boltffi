@@ -309,3 +309,13 @@ pub unsafe extern "C" fn mffi_datastore_sum_async(
         None => fail_with_error(FfiStatus::NULL_POINTER, "datastore handle is null"),
     }
 }
+
+#[ffi_export]
+pub fn add_numbers(first: i32, second: i32) -> i32 {
+    first + second
+}
+
+#[ffi_export]
+pub fn multiply_floats(first: f64, second: f64) -> f64 {
+    first * second
+}

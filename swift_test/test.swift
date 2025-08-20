@@ -299,4 +299,19 @@ if testSumCallback() {
     exit(1)
 }
 
+print("\n--- Testing macro-generated exports ---")
+
+let addResult = mffi_add_numbers(7, 8)
+print("mffi_add_numbers(7, 8) = \(addResult)")
+
+let mulResult = mffi_multiply_floats(3.5, 2.0)
+print("mffi_multiply_floats(3.5, 2.0) = \(mulResult)")
+
+if addResult == 15 && mulResult == 7.0 {
+    print("SUCCESS: Macro-generated exports work!")
+} else {
+    print("FAILED: Macro test failed")
+    exit(1)
+}
+
 print("\n=== ALL TESTS PASSED ===")
