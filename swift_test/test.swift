@@ -96,8 +96,7 @@ for (i, p) in points.enumerated() {
 
 mffi_datastore_free(store)
 
-if storeLen == 3 && copied == 3 && 
-   points[0].x == 1.0 && points[1].x == 3.0 && points[2].x == 5.0 {
+if storeLen == 3 && copied == 3 && points[0].x == 1.0 && points[1].x == 3.0 && points[2].x == 5.0 {
     print("SUCCESS: Vec bulk copy works!")
 } else {
     print("FAILED: Vec bulk copy test failed")
@@ -109,24 +108,24 @@ print("\n--- Testing FfiString returns ---")
 func testGreeting() -> Bool {
     let name = "Ali"
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    
+
     let greetStatus = name.withCString { namePtr in
         mffi_greeting(namePtr, UInt(name.utf8.count), &result)
     }
-    
+
     guard greetStatus.code == 0 else {
         print("FAILED: greeting returned status \(greetStatus.code)")
         return false
     }
-    
+
     let data = Data(bytes: result.ptr, count: Int(result.len))
     let greeting = String(data: data, encoding: .utf8)
-    
+
     print("Greeting: \(greeting ?? "nil")")
-    
+
     mffi_free_string(result)
     print("String freed")
-    
+
     return greeting == "Hello, Ali!"
 }
 
@@ -134,7 +133,7 @@ func testConcat() -> Bool {
     let first = "Mobi"
     let second = "FFI"
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    
+
     let concatStatus = first.withCString { firstPtr in
         second.withCString { secondPtr in
             mffi_concat(
@@ -144,19 +143,19 @@ func testConcat() -> Bool {
             )
         }
     }
-    
+
     guard concatStatus.code == 0 else {
         print("FAILED: concat returned status \(concatStatus.code)")
         return false
     }
-    
+
     let data = Data(bytes: result.ptr, count: Int(result.len))
     let concatenated = String(data: data, encoding: .utf8)
-    
+
     print("Concatenated: \(concatenated ?? "nil")")
-    
+
     mffi_free_string(result)
-    
+
     return concatenated == "MobiFFI"
 }
 
@@ -174,38 +173,68 @@ if testConcat() {
     exit(1)
 }
 
+func testReverseString() -> Bool {
+    let input = "Hello"
+    var result = FfiString(ptr: nil, len: 0, cap: 0)
+
+    let status = input.withCString { inputPtr in
+        mffi_reverse_string(inputPtr, UInt(input.utf8.count), &result)
+    }
+
+    guard status.code == 0 else {
+        print("FAILED: reverse_string returned status \(status.code)")
+        return false
+    }
+
+    let data = Data(bytes: result.ptr, count: Int(result.len))
+    let reversed = String(data: data, encoding: .utf8)
+
+    print("Reversed: \(reversed ?? "nil")")
+
+    mffi_free_string(result)
+
+    return reversed == "olleH"
+}
+
+if testReverseString() {
+    print("SUCCESS: String param works!")
+} else {
+    print("FAILED: reverse_string test failed")
+    exit(1)
+}
+
 print("\n--- Testing error messages ---")
 
 func testErrorMessage() -> Bool {
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    
+
     let invalidUtf8: [UInt8] = [0xFF, 0xFE, 0x00]
     let status = invalidUtf8.withUnsafeBufferPointer { ptr in
         mffi_greeting(ptr.baseAddress, UInt(invalidUtf8.count), &result)
     }
-    
+
     guard status.code != 0 else {
         print("FAILED: Expected error for invalid UTF-8")
         return false
     }
-    
+
     print("Got expected error, status code: \(status.code)")
-    
+
     var errorMsg = FfiString(ptr: nil, len: 0, cap: 0)
     let msgStatus = mffi_last_error_message(&errorMsg)
-    
+
     guard msgStatus.code == 0 else {
         print("FAILED: Could not get error message")
         return false
     }
-    
+
     let data = Data(bytes: errorMsg.ptr, count: Int(errorMsg.len))
     let message = String(data: data, encoding: .utf8) ?? ""
-    
+
     print("Error message: \(message)")
-    
+
     mffi_free_string(errorMsg)
-    
+
     return message.contains("UTF-8")
 }
 
@@ -225,63 +254,62 @@ class CallbackContext {
 
 func testForEachCallback() -> Bool {
     let store = mffi_datastore_new()
-    
+
     _ = mffi_datastore_add(store, DataPoint(x: 1.0, y: 2.0, timestamp: 100))
     _ = mffi_datastore_add(store, DataPoint(x: 3.0, y: 4.0, timestamp: 200))
     _ = mffi_datastore_add(store, DataPoint(x: 5.0, y: 6.0, timestamp: 300))
-    
+
     let context = CallbackContext()
     let contextPtr = Unmanaged.passUnretained(context).toOpaque()
-    
-    let callback: @convention(c) (UnsafeMutableRawPointer?, DataPoint) -> Void = { userData, point in
+
+    let callback: @convention(c) (UnsafeMutableRawPointer?, DataPoint) -> Void = {
+        userData, point in
         guard let ptr = userData else { return }
         let ctx = Unmanaged<CallbackContext>.fromOpaque(ptr).takeUnretainedValue()
         ctx.points.append(point)
     }
-    
+
     let status = mffi_datastore_foreach(store, callback, contextPtr)
     mffi_datastore_free(store)
-    
+
     guard status.code == 0 else {
         print("FAILED: foreach returned status \(status.code)")
         return false
     }
-    
+
     print("forEach collected \(context.points.count) points:")
     for (i, p) in context.points.enumerated() {
         print("  [\(i)] x=\(p.x), y=\(p.y)")
     }
-    
-    return context.points.count == 3 && 
-           context.points[0].x == 1.0 && 
-           context.points[2].x == 5.0
+
+    return context.points.count == 3 && context.points[0].x == 1.0 && context.points[2].x == 5.0
 }
 
 func testSumCallback() -> Bool {
     let store = mffi_datastore_new()
-    
+
     _ = mffi_datastore_add(store, DataPoint(x: 1.0, y: 2.0, timestamp: 100))
     _ = mffi_datastore_add(store, DataPoint(x: 3.0, y: 4.0, timestamp: 200))
-    
+
     let context = CallbackContext()
     let contextPtr = Unmanaged.passUnretained(context).toOpaque()
-    
+
     let callback: @convention(c) (UnsafeMutableRawPointer?, Double) -> Void = { userData, sum in
         guard let ptr = userData else { return }
         let ctx = Unmanaged<CallbackContext>.fromOpaque(ptr).takeUnretainedValue()
         ctx.sumResult = sum
     }
-    
+
     let status = mffi_datastore_sum_async(store, callback, contextPtr)
     mffi_datastore_free(store)
-    
+
     guard status.code == 0 else {
         print("FAILED: sum_async returned status \(status.code)")
         return false
     }
-    
+
     print("Sum result: \(context.sumResult)")
-    
+
     return context.sumResult == 10.0
 }
 
@@ -326,7 +354,7 @@ if greetingStatus.code == 0 {
     let greetingStr = String(cString: greetingOut.ptr)
     print("Greeting: \(greetingStr)")
     mffi_free_string(greetingOut)
-    
+
     if greetingStr == "Hello, Rust!" {
         print("SUCCESS: Macro String return works!")
     } else {
@@ -387,9 +415,9 @@ if seqLen == 5 {
     let seqStatus = seqBuffer.withUnsafeMutableBufferPointer { ptr in
         mffi_generate_sequence_copy_into(5, ptr.baseAddress!, seqLen, &written)
     }
-    
+
     print("Sequence: \(seqBuffer), written: \(written)")
-    
+
     if seqStatus.code == 0 && written == 5 && seqBuffer == [0, 1, 2, 3, 4] {
         print("SUCCESS: Vec<i32> return works!")
     } else {

@@ -93,6 +93,7 @@ struct FfiStatus mffi_datastore_sum_async(struct DataStore *handle,
 /* Macro-generated exports */
 struct FfiStatus mffi_greeting(const uint8_t* name_ptr, uintptr_t name_len, struct FfiString *out);
 struct FfiStatus mffi_concat(const uint8_t* first_ptr, uintptr_t first_len, const uint8_t* second_ptr, uintptr_t second_len, struct FfiString *out);
+struct FfiStatus mffi_reverse_string(const uint8_t* input_ptr, uintptr_t input_len, struct FfiString *out);
 struct Counter * mffi_counter_new(void);
 struct FfiStatus mffi_counter_free(struct Counter * handle);
 struct FfiStatus mffi_counter_set(struct Counter * handle, uint64_t value);

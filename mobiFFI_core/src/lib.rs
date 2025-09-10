@@ -86,6 +86,11 @@ pub fn concat(first: &str, second: &str) -> String {
     format!("{}{}", first, second)
 }
 
+#[ffi_export]
+pub fn reverse_string(input: String) -> String {
+    input.chars().rev().collect()
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mffi_copy_bytes(
     src: *const u8,
