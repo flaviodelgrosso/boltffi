@@ -47,6 +47,8 @@ enum ParamTransform {
     StrRef,
     OwnedString,
     Callback(Vec<syn::Type>),
+    SliceRef(syn::Type),
+    SliceMut(syn::Type),
 }
 
 fn extract_fn_arg_types(ty: &Type) -> Option<Vec<syn::Type>> {
@@ -79,11 +81,29 @@ fn extract_fn_arg_types(ty: &Type) -> Option<Vec<syn::Type>> {
     None
 }
 
+fn extract_slice_inner(ty: &Type) -> Option<(syn::Type, bool)> {
+    if let Type::Reference(ref_ty) = ty {
+        if let Type::Slice(slice_ty) = ref_ty.elem.as_ref() {
+            let is_mut = ref_ty.mutability.is_some();
+            return Some((*slice_ty.elem.clone(), is_mut));
+        }
+    }
+    None
+}
+
 fn classify_param_transform(ty: &Type) -> ParamTransform {
     let type_str = quote::quote!(#ty).to_string().replace(" ", "");
     
     if let Some(arg_types) = extract_fn_arg_types(ty) {
         return ParamTransform::Callback(arg_types);
+    }
+    
+    if let Some((inner_ty, is_mut)) = extract_slice_inner(ty) {
+        return if is_mut {
+            ParamTransform::SliceMut(inner_ty)
+        } else {
+            ParamTransform::SliceRef(inner_ty)
+        };
     }
     
     if type_str.starts_with("*const") || type_str.starts_with("*mut") {
@@ -187,6 +207,40 @@ fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>)
                         };
                     });
                     
+                    call_args.push(quote! { #name });
+                }
+                ParamTransform::SliceRef(inner_ty) => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    conversions.push(quote! {
+                        let #name: &[#inner_ty] = if #ptr_name.is_null() {
+                            &[]
+                        } else {
+                            core::slice::from_raw_parts(#ptr_name, #len_name)
+                        };
+                    });
+
+                    call_args.push(quote! { #name });
+                }
+                ParamTransform::SliceMut(inner_ty) => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *mut #inner_ty });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    conversions.push(quote! {
+                        let #name: &mut [#inner_ty] = if #ptr_name.is_null() {
+                            &mut []
+                        } else {
+                            core::slice::from_raw_parts_mut(#ptr_name, #len_name)
+                        };
+                    });
+
                     call_args.push(quote! { #name });
                 }
                 ParamTransform::PassThrough => {
@@ -752,6 +806,40 @@ fn transform_method_params(
                         };
                     });
                     
+                    call_args.push(quote! { #name });
+                }
+                ParamTransform::SliceRef(inner_ty) => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    conversions.push(quote! {
+                        let #name: &[#inner_ty] = if #ptr_name.is_null() {
+                            &[]
+                        } else {
+                            core::slice::from_raw_parts(#ptr_name, #len_name)
+                        };
+                    });
+
+                    call_args.push(quote! { #name });
+                }
+                ParamTransform::SliceMut(inner_ty) => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *mut #inner_ty });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    conversions.push(quote! {
+                        let #name: &mut [#inner_ty] = if #ptr_name.is_null() {
+                            &mut []
+                        } else {
+                            core::slice::from_raw_parts_mut(#ptr_name, #len_name)
+                        };
+                    });
+
                     call_args.push(quote! { #name });
                 }
                 ParamTransform::PassThrough => {

@@ -12,8 +12,6 @@
 
 #define VERSION_PATCH 0
 
-typedef struct DataStore DataStore;
-
 typedef struct FfiBuf_u8 {
   uint8_t *ptr;
   uintptr_t len;
@@ -36,12 +34,6 @@ typedef struct FfiStatus {
 #define FfiStatus_CANCELLED (FfiStatus){ .code = 4 }
 #define FfiStatus_INTERNAL_ERROR (FfiStatus){ .code = 100 }
 
-typedef struct DataPoint {
-  double x;
-  double y;
-  int64_t timestamp;
-} DataPoint;
-
 #define PANIC_STATUS (FfiStatus){ .code = 10 }
 
 uint32_t mffi_version_major(void);
@@ -58,22 +50,18 @@ struct FfiStatus mffi_last_error_message(struct FfiString *out);
 
 void mffi_clear_last_error(void);
 
-struct FfiStatus mffi_copy_bytes(const uint8_t *src,
-                                 uintptr_t src_len,
-                                 uint8_t *dst,
-                                 uintptr_t dst_cap,
-                                 uintptr_t *written);
 
-struct FfiStatus mffi_datastore_copy_into(struct DataStore *handle,
-                                          struct DataPoint *dst,
-                                          uintptr_t dst_cap,
-                                          uintptr_t *written);
+/* Macro-generated types and exports */
+typedef struct DataPoint {
+  double x;
+  double y;
+  int64_t timestamp;
+} DataPoint;
 
-
-/* Macro-generated exports */
 struct FfiStatus mffi_greeting(const uint8_t* name_ptr, uintptr_t name_len, struct FfiString *out);
 struct FfiStatus mffi_concat(const uint8_t* first_ptr, uintptr_t first_len, const uint8_t* second_ptr, uintptr_t second_len, struct FfiString *out);
 struct FfiStatus mffi_reverse_string(const uint8_t* input_ptr, uintptr_t input_len, struct FfiString *out);
+uintptr_t mffi_copy_bytes(const uint8_t* src_ptr, uintptr_t src_len, uint8_t* dst_ptr, uintptr_t dst_len);
 struct Counter * mffi_counter_new(void);
 struct FfiStatus mffi_counter_free(struct Counter * handle);
 struct FfiStatus mffi_counter_set(struct Counter * handle, uint64_t value);
@@ -83,6 +71,7 @@ struct DataStore * mffi_datastore_new(void);
 struct FfiStatus mffi_datastore_free(struct DataStore * handle);
 struct FfiStatus mffi_datastore_add(struct DataStore * handle, struct DataPoint point);
 uintptr_t mffi_datastore_len(struct DataStore * handle);
+uintptr_t mffi_datastore_copy_into(struct DataStore * handle, struct DataPoint* dst_ptr, uintptr_t dst_len);
 struct FfiStatus mffi_datastore_foreach(struct DataStore * handle, void (*callback_cb)(void*, struct DataPoint), void* callback_ud);
 double mffi_datastore_sum(struct DataStore * handle);
 int32_t mffi_add_numbers(int32_t first, int32_t second);

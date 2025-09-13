@@ -91,26 +91,11 @@ pub fn reverse_string(input: String) -> String {
     input.chars().rev().collect()
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mffi_copy_bytes(
-    src: *const u8,
-    src_len: usize,
-    dst: *mut u8,
-    dst_cap: usize,
-    written: *mut usize,
-) -> FfiStatus {
-    if src.is_null() || dst.is_null() || written.is_null() {
-        return FfiStatus::NULL_POINTER;
-    }
-
-    if src_len > dst_cap {
-        return FfiStatus::BUFFER_TOO_SMALL;
-    }
-
-    core::ptr::copy_nonoverlapping(src, dst, src_len);
-    *written = src_len;
-
-    FfiStatus::OK
+#[ffi_export]
+pub fn copy_bytes(src: &[u8], dst: &mut [u8]) -> usize {
+    let len = src.len().min(dst.len());
+    dst[..len].copy_from_slice(&src[..len]);
+    len
 }
 
 pub struct Counter {
@@ -162,37 +147,18 @@ impl DataStore {
         self.items.len()
     }
 
+    pub fn copy_into(&self, dst: &mut [DataPoint]) -> usize {
+        let len = self.items.len().min(dst.len());
+        dst[..len].copy_from_slice(&self.items[..len]);
+        len
+    }
+
     pub fn foreach(&self, mut callback: impl FnMut(DataPoint)) {
         self.items.iter().for_each(|p| callback(*p));
     }
 
     pub fn sum(&self) -> f64 {
         self.items.iter().map(|p| p.x + p.y).sum()
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mffi_datastore_copy_into(
-    handle: *mut DataStore,
-    dst: *mut DataPoint,
-    dst_cap: usize,
-    written: *mut usize,
-) -> FfiStatus {
-    if handle.is_null() || dst.is_null() || written.is_null() {
-        return FfiStatus::NULL_POINTER;
-    }
-
-    let store = &*handle;
-    let items = &store.items;
-    let copy_count = items.len().min(dst_cap);
-
-    core::ptr::copy_nonoverlapping(items.as_ptr(), dst, copy_count);
-    *written = copy_count;
-
-    if items.len() > dst_cap {
-        FfiStatus::BUFFER_TOO_SMALL
-    } else {
-        FfiStatus::OK
     }
 }
 

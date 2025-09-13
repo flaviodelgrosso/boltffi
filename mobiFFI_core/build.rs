@@ -24,8 +24,9 @@ fn main() {
         .write_to_file(&header_path);
 
     let macro_exports = collect_ffi_exports(&crate_dir.join("src"));
-    if !macro_exports.is_empty() {
-        append_macro_exports(&header_path, &macro_exports);
+    let repr_c_structs = collect_repr_c_structs(&crate_dir.join("src"));
+    if !macro_exports.is_empty() || !repr_c_structs.is_empty() {
+        append_macro_exports(&header_path, &macro_exports, &repr_c_structs);
     }
 
     println!("cargo:rerun-if-changed=src/");
@@ -45,6 +46,68 @@ struct FfiExport {
     name: String,
     params: Vec<(String, String)>,
     return_kind: FfiReturnKind,
+}
+
+struct FfiStruct {
+    name: String,
+    fields: Vec<(String, String)>,
+}
+
+fn collect_repr_c_structs(src_dir: &PathBuf) -> Vec<FfiStruct> {
+    let mut structs = Vec::new();
+
+    for entry in WalkDir::new(src_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+    {
+        let content = match fs::read_to_string(entry.path()) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let syntax = match syn::parse_file(&content) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        for item in &syntax.items {
+            if let syn::Item::Struct(s) = item {
+                let has_repr_c = s.attrs.iter().any(|attr| {
+                    if attr.path().is_ident("repr") {
+                        if let Ok(arg) = attr.parse_args::<syn::Ident>() {
+                            return arg == "C";
+                        }
+                    }
+                    false
+                });
+
+                let has_generics = !s.generics.params.is_empty();
+                if has_repr_c && !has_generics {
+                    if let syn::Fields::Named(fields) = &s.fields {
+                        let field_list: Vec<(String, String)> = fields
+                            .named
+                            .iter()
+                            .filter_map(|f| {
+                                let name = f.ident.as_ref()?.to_string();
+                                let ty = rust_type_to_c(&f.ty)?;
+                                Some((name, ty))
+                            })
+                            .collect();
+
+                        if !field_list.is_empty() {
+                            structs.push(FfiStruct {
+                                name: s.ident.to_string(),
+                                fields: field_list,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    structs
 }
 
 fn collect_ffi_exports(src_dir: &PathBuf) -> Vec<FfiExport> {
@@ -156,6 +219,14 @@ fn parse_ffi_class(impl_block: &syn::ItemImpl) -> Vec<FfiExport> {
                         let cb_sig = format!("void (*)(void*, {})", arg_types.join(", "));
                         params.push((format!("{}_cb", param_name), cb_sig));
                         params.push((format!("{}_ud", param_name), "void*".to_string()));
+                    } else if let Some((c_type, is_mut)) = extract_slice_type(&pat_type.ty) {
+                        let ptr_type = if is_mut {
+                            format!("{}*", c_type)
+                        } else {
+                            format!("const {}*", c_type)
+                        };
+                        params.push((format!("{}_ptr", param_name), ptr_type));
+                        params.push((format!("{}_len", param_name), "uintptr_t".to_string()));
                     } else if let Some(c_type) = rust_type_to_c(&pat_type.ty) {
                         params.push((param_name, c_type));
                     }
@@ -260,6 +331,18 @@ fn extract_callback_arg_types(ty: &Type) -> Option<Vec<String>> {
     None
 }
 
+fn extract_slice_type(ty: &Type) -> Option<(String, bool)> {
+    if let Type::Reference(ref_ty) = ty {
+        if let Type::Slice(slice_ty) = ref_ty.elem.as_ref() {
+            let is_mut = ref_ty.mutability.is_some();
+            if let Some(c_type) = rust_type_to_c(&slice_ty.elem) {
+                return Some((c_type, is_mut));
+            }
+        }
+    }
+    None
+}
+
 fn parse_ffi_function(func: &ItemFn) -> Option<FfiExport> {
     let name = func.sig.ident.to_string();
 
@@ -279,6 +362,14 @@ fn parse_ffi_function(func: &ItemFn) -> Option<FfiExport> {
                 let cb_sig = format!("void (*)(void*, {})", arg_types.join(", "));
                 params.push((format!("{}_cb", param_name), cb_sig));
                 params.push((format!("{}_ud", param_name), "void*".to_string()));
+            } else if let Some((c_type, is_mut)) = extract_slice_type(&pat_type.ty) {
+                let ptr_type = if is_mut {
+                    format!("{}*", c_type)
+                } else {
+                    format!("const {}*", c_type)
+                };
+                params.push((format!("{}_ptr", param_name), ptr_type));
+                params.push((format!("{}_len", param_name), "uintptr_t".to_string()));
             } else if let Some(c_type) = rust_type_to_c(&pat_type.ty) {
                 params.push((param_name, c_type));
             }
@@ -412,17 +503,32 @@ fn generate_export_declaration(export: &FfiExport) -> String {
     }
 }
 
-fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport]) {
+fn generate_struct_typedef(s: &FfiStruct) -> String {
+    let fields: String = s
+        .fields
+        .iter()
+        .map(|(name, ty)| format!("  {} {};\n", ty, name))
+        .collect();
+    format!("typedef struct {} {{\n{}}} {};\n\n", s.name, fields, s.name)
+}
+
+fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &[FfiStruct]) {
     let mut header = fs::read_to_string(header_path).unwrap_or_default();
 
     if let Some(pos) = header.rfind("#endif") {
+        let struct_defs: String = structs
+            .iter()
+            .filter(|s| !header.contains(&format!("typedef struct {} {{", s.name)))
+            .map(generate_struct_typedef)
+            .collect();
+
         let declarations: String = exports
             .iter()
             .map(generate_export_declaration)
             .collect();
 
-        let marker = "\n/* Macro-generated exports */\n";
-        header.insert_str(pos, &format!("{}{}\n", marker, declarations));
+        let marker = "\n/* Macro-generated types and exports */\n";
+        header.insert_str(pos, &format!("{}{}{}\n", marker, struct_defs, declarations));
         fs::write(header_path, header).expect("Failed to write header");
     }
 }

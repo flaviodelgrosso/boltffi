@@ -11,7 +11,6 @@ print("Version: \(major).\(minor).\(patch)")
 
 let src: [UInt8] = [1, 2, 3, 4, 5]
 var dst = [UInt8](repeating: 0, count: 10)
-var written: UInt = 0
 
 let srcCount = src.count
 let dstCount = dst.count
@@ -19,17 +18,16 @@ let dstCount = dst.count
 let srcPtr = UnsafeMutablePointer<UInt8>.allocate(capacity: srcCount)
 srcPtr.initialize(from: src, count: srcCount)
 
-let status = dst.withUnsafeMutableBufferPointer { dstPtr in
-    mffi_copy_bytes(srcPtr, UInt(srcCount), dstPtr.baseAddress, UInt(dstCount), &written)
+let written = dst.withUnsafeMutableBufferPointer { dstPtr in
+    mffi_copy_bytes(srcPtr, UInt(srcCount), dstPtr.baseAddress, UInt(dstCount))
 }
 
 srcPtr.deallocate()
 
-print("copy_bytes status: \(status.code)")
 print("written: \(written)")
 print("dst: \(Array(dst.prefix(Int(written))))")
 
-if status.code == 0 && written == 5 && Array(dst.prefix(5)) == src {
+if written == 5 && Array(dst.prefix(5)) == src {
     print("SUCCESS: copy_bytes works!")
 } else {
     print("FAILED: copy_bytes test failed")
@@ -82,13 +80,12 @@ let storeLen = mffi_datastore_len(store)
 print("DataStore has \(storeLen) items")
 
 var points = [DataPoint](repeating: DataPoint(x: 0, y: 0, timestamp: 0), count: Int(storeLen))
-var copied: UInt = 0
 
-let copyStatus = points.withUnsafeMutableBufferPointer { ptr in
-    mffi_datastore_copy_into(store, ptr.baseAddress, storeLen, &copied)
+let copied = points.withUnsafeMutableBufferPointer { ptr in
+    mffi_datastore_copy_into(store, ptr.baseAddress, storeLen)
 }
 
-print("Copied \(copied) items, status: \(copyStatus.code)")
+print("Copied \(copied) items")
 
 for (i, p) in points.enumerated() {
     print("  [\(i)] x=\(p.x), y=\(p.y), ts=\(p.timestamp)")
