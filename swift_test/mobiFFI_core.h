@@ -52,6 +52,12 @@ void mffi_clear_last_error(void);
 
 
 /* Macro-generated types and exports */
+typedef int32_t Direction;
+#define Direction_North 0
+#define Direction_East 1
+#define Direction_South 2
+#define Direction_West 3
+
 typedef struct DataPoint {
   double x;
   double y;
@@ -69,10 +75,10 @@ struct FfiStatus mffi_counter_increment(struct Counter * handle);
 uint64_t mffi_counter_get(struct Counter * handle);
 struct DataStore * mffi_datastore_new(void);
 struct FfiStatus mffi_datastore_free(struct DataStore * handle);
-struct FfiStatus mffi_datastore_add(struct DataStore * handle, struct DataPoint point);
+struct FfiStatus mffi_datastore_add(struct DataStore * handle, DataPoint point);
 uintptr_t mffi_datastore_len(struct DataStore * handle);
-uintptr_t mffi_datastore_copy_into(struct DataStore * handle, struct DataPoint* dst_ptr, uintptr_t dst_len);
-struct FfiStatus mffi_datastore_foreach(struct DataStore * handle, void (*callback_cb)(void*, struct DataPoint), void* callback_ud);
+uintptr_t mffi_datastore_copy_into(struct DataStore * handle, DataPoint* dst_ptr, uintptr_t dst_len);
+struct FfiStatus mffi_datastore_foreach(struct DataStore * handle, void (*callback_cb)(void*, DataPoint), void* callback_ud);
 double mffi_datastore_sum(struct DataStore * handle);
 int32_t mffi_add_numbers(int32_t first, int32_t second);
 double mffi_multiply_floats(double first, double second);
@@ -86,5 +92,7 @@ struct FfiStatus mffi_accumulator_free(struct Accumulator * handle);
 struct FfiStatus mffi_accumulator_add(struct Accumulator * handle, int64_t amount);
 int64_t mffi_accumulator_get(struct Accumulator * handle);
 struct FfiStatus mffi_accumulator_reset(struct Accumulator * handle);
+Direction mffi_opposite_direction(Direction dir);
+int32_t mffi_direction_to_degrees(Direction dir);
 
 #endif  /* MOBIFFI_CORE_H */

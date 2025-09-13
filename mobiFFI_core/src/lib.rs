@@ -218,3 +218,32 @@ impl Accumulator {
         self.value = 0;
     }
 }
+
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Direction {
+    North = 0,
+    East = 1,
+    South = 2,
+    West = 3,
+}
+
+#[ffi_export]
+pub fn opposite_direction(dir: Direction) -> Direction {
+    match dir {
+        Direction::North => Direction::South,
+        Direction::East => Direction::West,
+        Direction::South => Direction::North,
+        Direction::West => Direction::East,
+    }
+}
+
+#[ffi_export]
+pub fn direction_to_degrees(dir: Direction) -> i32 {
+    match dir {
+        Direction::North => 0,
+        Direction::East => 90,
+        Direction::South => 180,
+        Direction::West => 270,
+    }
+}

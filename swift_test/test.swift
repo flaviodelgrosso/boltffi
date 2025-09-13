@@ -471,4 +471,27 @@ if resetValue == 0 {
 mffi_accumulator_free(acc)
 print("Freed Accumulator")
 
+print("\n--- Testing C-style enums ---")
+
+let north = Direction_North
+let opposite = mffi_opposite_direction(north)
+print("opposite_direction(North) = \(opposite)")
+
+if opposite == Direction_South {
+    print("SUCCESS: opposite_direction works!")
+} else {
+    print("FAILED: Expected South(\(Direction_South)), got \(opposite)")
+    exit(1)
+}
+
+let degrees = mffi_direction_to_degrees(Direction_East)
+print("direction_to_degrees(East) = \(degrees)")
+
+if degrees == 90 {
+    print("SUCCESS: direction_to_degrees works!")
+} else {
+    print("FAILED: Expected 90, got \(degrees)")
+    exit(1)
+}
+
 print("\n=== ALL TESTS PASSED ===")

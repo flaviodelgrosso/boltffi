@@ -25,8 +25,9 @@ fn main() {
 
     let macro_exports = collect_ffi_exports(&crate_dir.join("src"));
     let repr_c_structs = collect_repr_c_structs(&crate_dir.join("src"));
-    if !macro_exports.is_empty() || !repr_c_structs.is_empty() {
-        append_macro_exports(&header_path, &macro_exports, &repr_c_structs);
+    let ffi_enums = collect_ffi_enums(&crate_dir.join("src"));
+    if !macro_exports.is_empty() || !repr_c_structs.is_empty() || !ffi_enums.is_empty() {
+        append_macro_exports(&header_path, &macro_exports, &repr_c_structs, &ffi_enums);
     }
 
     println!("cargo:rerun-if-changed=src/");
@@ -51,6 +52,12 @@ struct FfiExport {
 struct FfiStruct {
     name: String,
     fields: Vec<(String, String)>,
+}
+
+struct FfiEnum {
+    name: String,
+    repr: String,
+    variants: Vec<(String, i64)>,
 }
 
 fn collect_repr_c_structs(src_dir: &PathBuf) -> Vec<FfiStruct> {
@@ -108,6 +115,67 @@ fn collect_repr_c_structs(src_dir: &PathBuf) -> Vec<FfiStruct> {
     }
 
     structs
+}
+
+fn collect_ffi_enums(src_dir: &PathBuf) -> Vec<FfiEnum> {
+    let mut enums = Vec::new();
+
+    for entry in WalkDir::new(src_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+    {
+        let content = match fs::read_to_string(entry.path()) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let syntax = match syn::parse_file(&content) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        for item in &syntax.items {
+            if let syn::Item::Enum(e) = item {
+                let repr = e.attrs.iter().find_map(|attr| {
+                    if attr.path().is_ident("repr") {
+                        if let Ok(arg) = attr.parse_args::<syn::Ident>() {
+                            let r = arg.to_string();
+                            if matches!(r.as_str(), "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64") {
+                                return Some(r);
+                            }
+                        }
+                    }
+                    None
+                });
+
+                if let Some(repr) = repr {
+                    let mut variants = Vec::new();
+                    let mut next_value: i64 = 0;
+
+                    for variant in &e.variants {
+                        if let Some((_, expr)) = &variant.discriminant {
+                            if let syn::Expr::Lit(lit) = expr {
+                                if let syn::Lit::Int(int_lit) = &lit.lit {
+                                    next_value = int_lit.base10_parse().unwrap_or(next_value);
+                                }
+                            }
+                        }
+                        variants.push((variant.ident.to_string(), next_value));
+                        next_value += 1;
+                    }
+
+                    enums.push(FfiEnum {
+                        name: e.ident.to_string(),
+                        repr,
+                        variants,
+                    });
+                }
+            }
+        }
+    }
+
+    enums
 }
 
 fn collect_ffi_exports(src_dir: &PathBuf) -> Vec<FfiExport> {
@@ -420,7 +488,7 @@ fn rust_type_to_c(ty: &Type) -> Option<String> {
                 let inner = type_str.trim_start_matches("*mut");
                 rust_type_to_c_ptr(inner, "")
             } else {
-                Some(format!("struct {}", type_str))
+                Some(type_str)
             }
         }
     }
@@ -512,10 +580,40 @@ fn generate_struct_typedef(s: &FfiStruct) -> String {
     format!("typedef struct {} {{\n{}}} {};\n\n", s.name, fields, s.name)
 }
 
-fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &[FfiStruct]) {
+fn repr_to_c_type(repr: &str) -> &'static str {
+    match repr {
+        "i8" => "int8_t",
+        "i16" => "int16_t",
+        "i32" => "int32_t",
+        "i64" => "int64_t",
+        "u8" => "uint8_t",
+        "u16" => "uint16_t",
+        "u32" => "uint32_t",
+        "u64" => "uint64_t",
+        _ => "int32_t",
+    }
+}
+
+fn generate_enum_typedef(e: &FfiEnum) -> String {
+    let c_type = repr_to_c_type(&e.repr);
+    let mut out = format!("typedef {} {};\n", c_type, e.name);
+    for (variant, value) in &e.variants {
+        out.push_str(&format!("#define {}_{} {}\n", e.name, variant, value));
+    }
+    out.push('\n');
+    out
+}
+
+fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &[FfiStruct], enums: &[FfiEnum]) {
     let mut header = fs::read_to_string(header_path).unwrap_or_default();
 
     if let Some(pos) = header.rfind("#endif") {
+        let enum_defs: String = enums
+            .iter()
+            .filter(|e| !header.contains(&format!("typedef {} {};", repr_to_c_type(&e.repr), e.name)))
+            .map(generate_enum_typedef)
+            .collect();
+
         let struct_defs: String = structs
             .iter()
             .filter(|s| !header.contains(&format!("typedef struct {} {{", s.name)))
@@ -528,7 +626,7 @@ fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &
             .collect();
 
         let marker = "\n/* Macro-generated types and exports */\n";
-        header.insert_str(pos, &format!("{}{}{}\n", marker, struct_defs, declarations));
+        header.insert_str(pos, &format!("{}{}{}{}\n", marker, enum_defs, struct_defs, declarations));
         fs::write(header_path, header).expect("Failed to write header");
     }
 }
