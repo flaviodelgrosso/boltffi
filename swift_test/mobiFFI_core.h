@@ -58,6 +58,17 @@ typedef int32_t Direction;
 #define Direction_South 2
 #define Direction_West 3
 
+typedef struct ApiResult {
+  int32_t tag;
+  union {
+    int32_t ErrorCode;
+    struct { int32_t code; int32_t detail; } ErrorWithData;
+  } payload;
+} ApiResult;
+#define ApiResult_TAG_Success 0
+#define ApiResult_TAG_ErrorCode 1
+#define ApiResult_TAG_ErrorWithData 2
+
 typedef struct DataPoint {
   double x;
   double y;
@@ -95,5 +106,7 @@ struct FfiStatus mffi_accumulator_reset(struct Accumulator * handle);
 Direction mffi_opposite_direction(Direction dir);
 int32_t mffi_direction_to_degrees(Direction dir);
 int32_t mffi_find_even(int32_t value, int32_t *out);
+ApiResult mffi_process_value(int32_t value);
+bool mffi_api_result_is_success(ApiResult result);
 
 #endif  /* MOBIFFI_CORE_H */

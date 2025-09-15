@@ -55,10 +55,23 @@ struct FfiStruct {
     fields: Vec<(String, String)>,
 }
 
+enum EnumVariantData {
+    Unit,
+    Tuple(Vec<String>),
+    Struct(Vec<(String, String)>),
+}
+
+struct EnumVariant {
+    name: String,
+    discriminant: i64,
+    data: EnumVariantData,
+}
+
 struct FfiEnum {
     name: String,
     repr: String,
-    variants: Vec<(String, i64)>,
+    is_data_enum: bool,
+    variants: Vec<EnumVariant>,
 }
 
 fn collect_repr_c_structs(src_dir: &PathBuf) -> Vec<FfiStruct> {
@@ -118,6 +131,30 @@ fn collect_repr_c_structs(src_dir: &PathBuf) -> Vec<FfiStruct> {
     structs
 }
 
+fn parse_repr_attr(attrs: &[syn::Attribute]) -> Option<(String, bool)> {
+    for attr in attrs {
+        if attr.path().is_ident("repr") {
+            let mut repr_type = None;
+            let mut has_c = false;
+
+            let _ = attr.parse_nested_meta(|meta| {
+                let ident = meta.path.get_ident().map(|i| i.to_string()).unwrap_or_default();
+                if ident == "C" {
+                    has_c = true;
+                } else if matches!(ident.as_str(), "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64") {
+                    repr_type = Some(ident);
+                }
+                Ok(())
+            });
+
+            if let Some(repr) = repr_type {
+                return Some((repr, has_c));
+            }
+        }
+    }
+    None
+}
+
 fn collect_ffi_enums(src_dir: &PathBuf) -> Vec<FfiEnum> {
     let mut enums = Vec::new();
 
@@ -138,40 +175,67 @@ fn collect_ffi_enums(src_dir: &PathBuf) -> Vec<FfiEnum> {
 
         for item in &syntax.items {
             if let syn::Item::Enum(e) = item {
-                let repr = e.attrs.iter().find_map(|attr| {
-                    if attr.path().is_ident("repr") {
-                        if let Ok(arg) = attr.parse_args::<syn::Ident>() {
-                            let r = arg.to_string();
-                            if matches!(r.as_str(), "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64") {
-                                return Some(r);
+                let Some((repr, has_c)) = parse_repr_attr(&e.attrs) else {
+                    continue;
+                };
+
+                let mut variants = Vec::new();
+                let mut next_value: i64 = 0;
+                let mut is_data_enum = false;
+
+                for variant in &e.variants {
+                    if let Some((_, expr)) = &variant.discriminant {
+                        if let syn::Expr::Lit(lit) = expr {
+                            if let syn::Lit::Int(int_lit) = &lit.lit {
+                                next_value = int_lit.base10_parse().unwrap_or(next_value);
                             }
                         }
                     }
-                    None
-                });
 
-                if let Some(repr) = repr {
-                    let mut variants = Vec::new();
-                    let mut next_value: i64 = 0;
-
-                    for variant in &e.variants {
-                        if let Some((_, expr)) = &variant.discriminant {
-                            if let syn::Expr::Lit(lit) = expr {
-                                if let syn::Lit::Int(int_lit) = &lit.lit {
-                                    next_value = int_lit.base10_parse().unwrap_or(next_value);
-                                }
-                            }
+                    let data = match &variant.fields {
+                        syn::Fields::Unit => EnumVariantData::Unit,
+                        syn::Fields::Unnamed(fields) => {
+                            is_data_enum = true;
+                            let types: Vec<String> = fields
+                                .unnamed
+                                .iter()
+                                .filter_map(|f| rust_type_to_c(&f.ty))
+                                .collect();
+                            EnumVariantData::Tuple(types)
                         }
-                        variants.push((variant.ident.to_string(), next_value));
-                        next_value += 1;
-                    }
+                        syn::Fields::Named(fields) => {
+                            is_data_enum = true;
+                            let named: Vec<(String, String)> = fields
+                                .named
+                                .iter()
+                                .filter_map(|f| {
+                                    let name = f.ident.as_ref()?.to_string();
+                                    let ty = rust_type_to_c(&f.ty)?;
+                                    Some((name, ty))
+                                })
+                                .collect();
+                            EnumVariantData::Struct(named)
+                        }
+                    };
 
-                    enums.push(FfiEnum {
-                        name: e.ident.to_string(),
-                        repr,
-                        variants,
+                    variants.push(EnumVariant {
+                        name: variant.ident.to_string(),
+                        discriminant: next_value,
+                        data,
                     });
+                    next_value += 1;
                 }
+
+                if is_data_enum && !has_c {
+                    continue;
+                }
+
+                enums.push(FfiEnum {
+                    name: e.ident.to_string(),
+                    repr,
+                    is_data_enum,
+                    variants,
+                });
             }
         }
     }
@@ -610,9 +674,47 @@ fn repr_to_c_type(repr: &str) -> &'static str {
 
 fn generate_enum_typedef(e: &FfiEnum) -> String {
     let c_type = repr_to_c_type(&e.repr);
-    let mut out = format!("typedef {} {};\n", c_type, e.name);
-    for (variant, value) in &e.variants {
-        out.push_str(&format!("#define {}_{} {}\n", e.name, variant, value));
+
+    if !e.is_data_enum {
+        let mut out = format!("typedef {} {};\n", c_type, e.name);
+        for variant in &e.variants {
+            out.push_str(&format!("#define {}_{} {}\n", e.name, variant.name, variant.discriminant));
+        }
+        out.push('\n');
+        return out;
+    }
+
+    let mut out = format!("typedef struct {} {{\n  {} tag;\n  union {{\n", e.name, c_type);
+
+    for variant in &e.variants {
+        match &variant.data {
+            EnumVariantData::Unit => {}
+            EnumVariantData::Tuple(types) => {
+                if types.len() == 1 {
+                    out.push_str(&format!("    {} {};\n", types[0], variant.name));
+                } else {
+                    out.push_str(&format!("    struct {{ "));
+                    for (i, ty) in types.iter().enumerate() {
+                        out.push_str(&format!("{} _{}; ", ty, i));
+                    }
+                    out.push_str(&format!("}} {};\n", variant.name));
+                }
+            }
+            EnumVariantData::Struct(fields) => {
+                out.push_str(&format!("    struct {{ "));
+                for (name, ty) in fields {
+                    out.push_str(&format!("{} {}; ", ty, name));
+                }
+                out.push_str(&format!("}} {};\n", variant.name));
+            }
+        }
+    }
+
+    out.push_str("  } payload;\n");
+    out.push_str(&format!("}} {};\n", e.name));
+
+    for variant in &e.variants {
+        out.push_str(&format!("#define {}_TAG_{} {}\n", e.name, variant.name, variant.discriminant));
     }
     out.push('\n');
     out

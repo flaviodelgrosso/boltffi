@@ -256,3 +256,27 @@ pub fn find_even(value: i32) -> Option<i32> {
         None
     }
 }
+
+#[repr(C, i32)]
+#[derive(Clone, Copy, Debug)]
+pub enum ApiResult {
+    Success = 0,
+    ErrorCode(i32) = 1,
+    ErrorWithData { code: i32, detail: i32 } = 2,
+}
+
+#[ffi_export]
+pub fn process_value(value: i32) -> ApiResult {
+    if value > 0 {
+        ApiResult::Success
+    } else if value == 0 {
+        ApiResult::ErrorCode(-1)
+    } else {
+        ApiResult::ErrorWithData { code: value, detail: value * 2 }
+    }
+}
+
+#[ffi_export]
+pub fn api_result_is_success(result: ApiResult) -> bool {
+    matches!(result, ApiResult::Success)
+}

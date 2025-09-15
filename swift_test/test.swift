@@ -518,4 +518,44 @@ if hasNone == 0 {
     exit(1)
 }
 
+print("\n--- Testing data enums (tagged unions) ---")
+
+let successResult = mffi_process_value(5)
+print("process_value(5): tag=\(successResult.tag)")
+if successResult.tag == ApiResult_TAG_Success {
+    print("SUCCESS: ApiResult::Success works!")
+} else {
+    print("FAILED: Expected Success tag (0), got \(successResult.tag)")
+    exit(1)
+}
+
+let errorCodeResult = mffi_process_value(0)
+print("process_value(0): tag=\(errorCodeResult.tag), ErrorCode=\(errorCodeResult.payload.ErrorCode)")
+if errorCodeResult.tag == ApiResult_TAG_ErrorCode && errorCodeResult.payload.ErrorCode == -1 {
+    print("SUCCESS: ApiResult::ErrorCode works!")
+} else {
+    print("FAILED: Expected ErrorCode tag with -1")
+    exit(1)
+}
+
+let errorWithDataResult = mffi_process_value(-3)
+print("process_value(-3): tag=\(errorWithDataResult.tag), code=\(errorWithDataResult.payload.ErrorWithData.code), detail=\(errorWithDataResult.payload.ErrorWithData.detail)")
+if errorWithDataResult.tag == ApiResult_TAG_ErrorWithData && 
+   errorWithDataResult.payload.ErrorWithData.code == -3 && 
+   errorWithDataResult.payload.ErrorWithData.detail == -6 {
+    print("SUCCESS: ApiResult::ErrorWithData works!")
+} else {
+    print("FAILED: Expected ErrorWithData with code=-3, detail=-6")
+    exit(1)
+}
+
+let isSuccess = mffi_api_result_is_success(successResult)
+print("api_result_is_success(Success) = \(isSuccess)")
+if isSuccess {
+    print("SUCCESS: api_result_is_success works!")
+} else {
+    print("FAILED: Expected true for Success variant")
+    exit(1)
+}
+
 print("\n=== ALL TESTS PASSED ===")
