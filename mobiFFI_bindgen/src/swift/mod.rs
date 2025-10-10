@@ -1,3 +1,4 @@
+mod body;
 mod names;
 mod templates;
 mod types;
@@ -6,6 +7,7 @@ use askama::Template;
 
 use crate::model::{Class, Enumeration, Module, Record};
 
+pub use body::BodyRenderer;
 pub use names::NamingConvention;
 pub use templates::{ClassTemplate, CStyleEnumTemplate, DataEnumTemplate, RecordTemplate};
 pub use types::TypeMapper;

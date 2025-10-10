@@ -2,6 +2,7 @@ use askama::Template;
 
 use crate::model::{Class, Enumeration, Method, Module, Record, StreamMethod};
 
+use super::body::BodyRenderer;
 use super::names::NamingConvention;
 use super::types::TypeMapper;
 
@@ -146,7 +147,7 @@ impl ClassTemplate {
                             swift_type: TypeMapper::map_type(&param.param_type),
                         })
                         .collect(),
-                    body: render_method_body(method, class, module),
+                    body: BodyRenderer::method(method, class, module),
                 })
                 .collect(),
             streams: class
@@ -156,9 +157,7 @@ impl ClassTemplate {
                     doc: stream.doc.clone(),
                     swift_name: NamingConvention::method_name(&stream.name),
                     item_type: TypeMapper::map_type(&stream.item_type),
-                    body: StreamBodyTemplate::from_stream(stream, class, module)
-                        .render()
-                        .expect("stream body template failed"),
+                    body: BodyRenderer::stream(stream, class, module),
                 })
                 .collect(),
         }
@@ -355,19 +354,4 @@ impl AsyncThrowingMethodBodyTemplate {
     }
 }
 
-fn render_method_body(method: &Method, class: &Class, module: &Module) -> String {
-    match (method.is_async, method.throws()) {
-        (true, true) => AsyncThrowingMethodBodyTemplate::from_method(method, class, module)
-            .render()
-            .expect("async throwing method template failed"),
-        (true, false) => AsyncMethodBodyTemplate::from_method(method, class, module)
-            .render()
-            .expect("async method template failed"),
-        (false, true) => ThrowingMethodBodyTemplate::from_method(method, class, module)
-            .render()
-            .expect("throwing method template failed"),
-        (false, false) => SyncMethodBodyTemplate::from_method(method, class, module)
-            .render()
-            .expect("sync method template failed"),
-    }
-}
+
