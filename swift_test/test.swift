@@ -932,7 +932,7 @@ mffi_sensormonitor_emit_reading(sensorMonitor, 1, 2000, 26.0)
 mffi_sensormonitor_emit_reading(sensorMonitor, 2, 1500, 100.0)
 print("Emitted 3 sensor readings")
 
-var readingBuffer = [SensorReading](repeating: SensorReading(sensor_id: 0, timestamp_ms: 0, value: 0), count: 10)
+var readingBuffer = [SensorReading](repeating: SensorReading(sensorId: 0, timestampMs: 0, value: 0), count: 10)
 let readingsPopped = readingBuffer.withUnsafeMutableBufferPointer { buffer in
     mffi_sensormonitor_readings_pop_batch(readingsSubscription, buffer.baseAddress, UInt(buffer.count))
 }
@@ -945,7 +945,7 @@ if readingsPopped != 3 {
     exit(1)
 }
 
-if readingBuffer[0].sensor_id == 1 && readingBuffer[0].timestamp_ms == 1000 && readingBuffer[0].value == 25.5 {
+if readingBuffer[0].sensorId == 1 && readingBuffer[0].timestampMs == 1000 && readingBuffer[0].value == 25.5 {
     print("SUCCESS: First reading correct (sensor=1, ts=1000, val=25.5)")
 } else {
     print("FAILED: First reading incorrect")

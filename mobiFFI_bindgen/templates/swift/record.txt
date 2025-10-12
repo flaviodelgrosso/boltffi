@@ -1,11 +1,15 @@
-public struct {{ class_name }}: Equatable {
-{%- for field in fields %}
-    public var {{ field.swift_name }}: {{ field.swift_type }}
-{%- endfor %}
-
+{%- if has_aliases %}
+extension {{ class_name }} {
     public init({% for field in fields %}{{ field.swift_name }}: {{ field.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}) {
-{%- for field in fields %}
-        self.{{ field.swift_name }} = {{ field.swift_name }}
-{%- endfor %}
+        self.init({% for field in fields %}{{ field.c_name }}: {{ field.swift_name }}{% if !loop.last %}, {% endif %}{% endfor %})
     }
+{%- for field in fields %}
+{%- if field.needs_alias %}
+    public var {{ field.swift_name }}: {{ field.swift_type }} {
+        get { {{ field.c_name }} }
+        set { {{ field.c_name }} = newValue }
+    }
+{%- endif %}
+{%- endfor %}
 }
+{%- endif %}

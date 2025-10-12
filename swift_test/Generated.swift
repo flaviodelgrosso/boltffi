@@ -1,5 +1,6 @@
 import Foundation
 
+
 public final class Counter {
     let handle: OpaquePointer
 
@@ -28,6 +29,7 @@ public final class Counter {
         return mffi_counter_get(handle)
     }
 }
+
 
 public final class Accumulator {
     let handle: OpaquePointer
@@ -58,6 +60,7 @@ public final class Accumulator {
     }
 }
 
+
 public final class SensorMonitor {
     let handle: OpaquePointer
 
@@ -84,29 +87,28 @@ public final class SensorMonitor {
 
     public func readings() -> AsyncStream<SensorReading> {
         AsyncStream<SensorReading> { continuation in
-            let subscription = mffi_sensormonitor_readings(self.handle)
-
-            Task {
-                let bufferCapacity: UInt = 64
-                let buffer = UnsafeMutablePointer<SensorReading>.allocate(
-                    capacity: Int(bufferCapacity))
-                defer { buffer.deallocate() }
-
-                while true {
-                    let waitResult = mffi_sensormonitor_readings_wait(subscription, 100)
-                    if waitResult < 0 { break }
-
-                    let count = mffi_sensormonitor_readings_pop_batch(
-                        subscription, buffer, bufferCapacity)
-
-                    for index in 0..<Int(count) {
-                        continuation.yield(buffer[index])
-                    }
-                }
-
-                mffi_sensormonitor_readings_free(subscription)
-                continuation.finish()
+    let subscription = mffi_sensormonitor_readings(self.handle)
+    
+    Task {
+        let bufferCapacity: UInt = 64
+        let buffer = UnsafeMutablePointer<SensorReading>.allocate(capacity: Int(bufferCapacity))
+        defer { buffer.deallocate() }
+        
+        while true {
+            let waitResult = mffi_sensormonitor_readings_wait(subscription, 100)
+            if waitResult < 0 { break }
+            
+            let count = mffi_sensormonitor_readings_pop_batch(subscription, buffer, bufferCapacity)
+            
+            for index in 0..<Int(count) {
+                continuation.yield(buffer[index])
             }
         }
+        
+        mffi_sensormonitor_readings_free(subscription)
+        continuation.finish()
     }
 }
+    }
+}
+

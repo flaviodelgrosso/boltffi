@@ -11,20 +11,30 @@ use super::types::TypeMapper;
 pub struct RecordTemplate {
     pub class_name: String,
     pub fields: Vec<FieldView>,
+    pub has_aliases: bool,
 }
 
 impl RecordTemplate {
     pub fn from_record(record: &Record) -> Self {
+        let fields: Vec<FieldView> = record
+            .fields
+            .iter()
+            .map(|field| {
+                let swift_name = NamingConvention::property_name(&field.name);
+                let c_name = field.name.clone();
+                FieldView {
+                    needs_alias: swift_name != c_name,
+                    swift_name,
+                    c_name,
+                    swift_type: TypeMapper::map_type(&field.field_type),
+                }
+            })
+            .collect();
+        let has_aliases = fields.iter().any(|f| f.needs_alias);
         Self {
             class_name: NamingConvention::class_name(&record.name),
-            fields: record
-                .fields
-                .iter()
-                .map(|field| FieldView {
-                    swift_name: NamingConvention::property_name(&field.name),
-                    swift_type: TypeMapper::map_type(&field.field_type),
-                })
-                .collect(),
+            fields,
+            has_aliases,
         }
     }
 }
@@ -72,9 +82,15 @@ impl DataEnumTemplate {
                     fields: variant
                         .fields
                         .iter()
-                        .map(|field| FieldView {
-                            swift_name: NamingConvention::param_name(&field.name),
-                            swift_type: TypeMapper::map_type(&field.field_type),
+                        .map(|field| {
+                            let swift_name = NamingConvention::param_name(&field.name);
+                            let c_name = field.name.clone();
+                            FieldView {
+                                needs_alias: swift_name != c_name,
+                                swift_name,
+                                c_name,
+                                swift_type: TypeMapper::map_type(&field.field_type),
+                            }
                         })
                         .collect(),
                 })
@@ -166,7 +182,9 @@ impl ClassTemplate {
 
 pub struct FieldView {
     pub swift_name: String,
+    pub c_name: String,
     pub swift_type: String,
+    pub needs_alias: bool,
 }
 
 pub struct CStyleVariantView {

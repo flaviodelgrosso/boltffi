@@ -98,14 +98,21 @@ mod tests {
 
     #[test]
     fn test_swift_record_generation() {
-        let module = create_test_module();
-        let record = module.find_record("SensorReading").unwrap();
-        let output = Swift::render_record(record);
+        let no_alias_record = Record::new("Point")
+            .with_field(RecordField::new("x", Type::Primitive(Primitive::F64)))
+            .with_field(RecordField::new("y", Type::Primitive(Primitive::F64)));
+        let output = Swift::render_record(&no_alias_record);
+        assert!(output.trim().is_empty(), "No extension needed when field names match");
 
-        assert!(output.contains("public struct SensorReading"));
-        assert!(output.contains("public var timestamp: UInt64"));
-        assert!(output.contains("public var value: Double"));
-        assert!(output.contains("public var unit: String"));
+        let aliased_record = Record::new("SensorData")
+            .with_field(RecordField::new("sensor_id", Type::Primitive(Primitive::I32)))
+            .with_field(RecordField::new("timestamp_ms", Type::Primitive(Primitive::U64)));
+        let output = Swift::render_record(&aliased_record);
+        assert!(output.contains("extension SensorData"));
+        assert!(output.contains("public var sensorId: Int32"));
+        assert!(output.contains("get { sensor_id }"));
+        assert!(output.contains("public var timestampMs: UInt64"));
+        assert!(output.contains("self.init(sensor_id: sensorId, timestamp_ms: timestampMs)"));
     }
 
     #[test]

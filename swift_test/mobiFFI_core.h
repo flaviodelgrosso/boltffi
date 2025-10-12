@@ -136,8 +136,8 @@ typedef struct DataPoint {
 } DataPoint;
 
 typedef struct SensorReading {
-  int32_t sensor_id;
-  int64_t timestamp_ms;
+  int32_t sensorId;
+  int64_t timestampMs;
   double value;
 } SensorReading;
 

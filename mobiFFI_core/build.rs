@@ -830,11 +830,27 @@ fn generate_export_declaration(export: &FfiExport) -> String {
     }
 }
 
+fn to_camel_case(snake: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    for ch in snake.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 fn generate_struct_typedef(s: &FfiStruct) -> String {
     let fields: String = s
         .fields
         .iter()
-        .map(|(name, ty)| format!("  {} {};\n", ty, name))
+        .map(|(name, ty)| format!("  {} {};\n", ty, to_camel_case(name)))
         .collect();
     format!("typedef struct {} {{\n{}}} {};\n\n", s.name, fields, s.name)
 }
