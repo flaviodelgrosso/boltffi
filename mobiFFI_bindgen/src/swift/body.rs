@@ -3,7 +3,7 @@ use askama::Template;
 use crate::model::{Class, Method, Module, StreamMethod, StreamMode};
 
 use super::templates::{
-    AsyncMethodBodyTemplate, AsyncThrowingMethodBodyTemplate,
+    AsyncMethodBodyTemplate, AsyncThrowingMethodBodyTemplate, CallbackMethodBodyTemplate,
     StreamAsyncBodyTemplate, StreamBatchBodyTemplate, StreamCallbackBodyTemplate,
     SyncMethodBodyTemplate, ThrowingMethodBodyTemplate,
 };
@@ -12,6 +12,12 @@ pub struct BodyRenderer;
 
 impl BodyRenderer {
     pub fn method(method: &Method, class: &Class, module: &Module) -> String {
+        if method.has_callbacks() {
+            return CallbackMethodBodyTemplate::from_method(method, class, module)
+                .render()
+                .expect("callback method template failed");
+        }
+
         match (method.is_async, method.throws()) {
             (true, true) => AsyncThrowingMethodBodyTemplate::from_method(method, class, module)
                 .render()

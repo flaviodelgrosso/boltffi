@@ -1,0 +1,16 @@
+{%- for cb in callbacks %}
+        typealias {{ cb.context_type }} = ({{ cb.swift_type }}) -> Void
+        class {{ cb.box_type }} { let fn_: {{ cb.context_type }}; init(_ fn_: @escaping {{ cb.context_type }}) { self.fn_ = fn_ } }
+        let {{ cb.box_name }} = {{ cb.box_type }}({{ cb.param_name }})
+        let {{ cb.ptr_name }} = Unmanaged.passRetained({{ cb.box_name }}).toOpaque()
+        let {{ cb.trampoline_name }}: @convention(c) (UnsafeMutableRawPointer?, {{ cb.ffi_arg_type }}) -> Void = { ud, val in
+            Unmanaged<{{ cb.box_type }}>.fromOpaque(ud!).takeUnretainedValue().fn_(val)
+        }
+{%- endfor %}
+        {% if has_return %}let result = {% else %}let _ = {% endif %}{{ ffi_name }}(handle{% for arg in args %}, {{ arg }}{% endfor %}{% for cb in callbacks %}, {{ cb.trampoline_name }}, {{ cb.ptr_name }}{% endfor %})
+{%- for cb in callbacks %}
+        Unmanaged<{{ cb.box_type }}>.fromOpaque({{ cb.ptr_name }}).release()
+{%- endfor %}
+{%- if has_return %}
+        return result
+{%- endif %}

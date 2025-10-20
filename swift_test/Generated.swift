@@ -59,8 +59,17 @@ public final class DataStore {
         return mffi_datastore_copy_into(handle)
     }
 
-    public func foreach(callback: (DataPoint) -> Void) {
-        mffi_datastore_foreach(handle, callback)
+    public func foreach(callback: @escaping (DataPoint) -> Void) {
+        
+        typealias ForeachCallbackFn = (DataPoint) -> Void
+        class ForeachCallbackBox { let fn_: ForeachCallbackFn; init(_ fn_: @escaping ForeachCallbackFn) { self.fn_ = fn_ } }
+        let callbackBox = ForeachCallbackBox(callback)
+        let callbackPtr = Unmanaged.passRetained(callbackBox).toOpaque()
+        let callbackTrampoline: @convention(c) (UnsafeMutableRawPointer?, DataPoint) -> Void = { ud, val in
+            Unmanaged<ForeachCallbackBox>.fromOpaque(ud!).takeUnretainedValue().fn_(val)
+        }
+        let _ = mffi_datastore_foreach(handle, callbackTrampoline, callbackPtr)
+        Unmanaged<ForeachCallbackBox>.fromOpaque(callbackPtr).release()
     }
 
     public func sum() -> Double {

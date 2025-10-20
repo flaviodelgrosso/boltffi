@@ -135,6 +135,7 @@ impl ClassTemplate {
                         .map(|param| ParamView {
                             swift_name: NamingConvention::param_name(&param.name),
                             swift_type: TypeMapper::map_type(&param.param_type),
+                            is_escaping: matches!(param.param_type, crate::model::Type::Callback(_)),
                         })
                         .collect(),
                 })
@@ -161,6 +162,7 @@ impl ClassTemplate {
                         .map(|param| ParamView {
                             swift_name: NamingConvention::param_name(&param.name),
                             swift_type: TypeMapper::map_type(&param.param_type),
+                            is_escaping: matches!(param.param_type, crate::model::Type::Callback(_)),
                         })
                         .collect(),
                     body: BodyRenderer::method(method, class, module),
@@ -206,6 +208,7 @@ pub struct DataVariantView {
 pub struct ParamView {
     pub swift_name: String,
     pub swift_type: String,
+    pub is_escaping: bool,
 }
 
 pub struct ConstructorView {
@@ -331,11 +334,73 @@ impl SyncMethodBodyTemplate {
         Self {
             ffi_name: method.ffi_name(&class_prefix),
             args: method
-                .inputs
-                .iter()
+                .non_callback_params()
                 .map(|p| NamingConvention::param_name(&p.name))
                 .collect(),
             has_return: method.output.as_ref().map_or(false, |t| !t.is_void()),
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "swift/method_callback.txt", escape = "none")]
+pub struct CallbackMethodBodyTemplate {
+    pub ffi_name: String,
+    pub args: Vec<String>,
+    pub has_return: bool,
+    pub callbacks: Vec<CallbackView>,
+}
+
+pub struct CallbackView {
+    pub param_name: String,
+    pub swift_type: String,
+    pub ffi_arg_type: String,
+    pub context_type: String,
+    pub box_type: String,
+    pub box_name: String,
+    pub ptr_name: String,
+    pub trampoline_name: String,
+}
+
+impl CallbackMethodBodyTemplate {
+    pub fn from_method(method: &Method, class: &Class, module: &Module) -> Self {
+        let class_prefix = class.ffi_prefix(&module.ffi_prefix());
+        let method_name_pascal = NamingConvention::class_name(&method.name);
+
+        Self {
+            ffi_name: method.ffi_name(&class_prefix),
+            args: method
+                .non_callback_params()
+                .map(|p| NamingConvention::param_name(&p.name))
+                .collect(),
+            has_return: method.output.as_ref().map_or(false, |t| !t.is_void()),
+            callbacks: method
+                .callback_params()
+                .enumerate()
+                .map(|(idx, param)| {
+                    let param_name = NamingConvention::param_name(&param.name);
+                    let inner_type = match &param.param_type {
+                        crate::model::Type::Callback(inner) => TypeMapper::map_type(inner),
+                        _ => "Void".into(),
+                    };
+                    let ffi_inner = match &param.param_type {
+                        crate::model::Type::Callback(inner) => TypeMapper::ffi_type(inner),
+                        _ => "Void".into(),
+                    };
+                    let suffix = if idx > 0 { format!("{}", idx + 1) } else { String::new() };
+
+                    CallbackView {
+                        param_name: param_name.clone(),
+                        swift_type: inner_type.clone(),
+                        ffi_arg_type: ffi_inner,
+                        context_type: format!("{}{}CallbackFn{}", method_name_pascal, suffix, ""),
+                        box_type: format!("{}{}CallbackBox{}", method_name_pascal, suffix, ""),
+                        box_name: format!("{}Box{}", param_name, suffix),
+                        ptr_name: format!("{}Ptr{}", param_name, suffix),
+                        trampoline_name: format!("{}Trampoline{}", param_name, suffix),
+                    }
+                })
+                .collect(),
         }
     }
 }

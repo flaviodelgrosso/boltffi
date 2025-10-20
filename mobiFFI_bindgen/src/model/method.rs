@@ -97,6 +97,18 @@ impl Method {
     pub fn has_return_value(&self) -> bool {
         self.output.as_ref().map_or(false, |output| !output.is_void())
     }
+
+    pub fn has_callbacks(&self) -> bool {
+        self.inputs.iter().any(|p| matches!(p.param_type, Type::Callback(_)))
+    }
+
+    pub fn callback_params(&self) -> impl Iterator<Item = &Parameter> {
+        self.inputs.iter().filter(|p| matches!(p.param_type, Type::Callback(_)))
+    }
+
+    pub fn non_callback_params(&self) -> impl Iterator<Item = &Parameter> {
+        self.inputs.iter().filter(|p| !matches!(p.param_type, Type::Callback(_)))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
