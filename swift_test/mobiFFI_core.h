@@ -153,6 +153,37 @@ typedef struct SensorReading {
   double value;
 } SensorReading;
 
+typedef struct DataProviderVTable {
+  void (*free)(uint64_t handle);
+  uint64_t (*clone)(uint64_t handle);
+  void (*get_count)(uint64_t handle, uint32_t *out, struct FfiStatus *status);
+  void (*get_item)(uint64_t handle, uint32_t index, DataPoint *out, struct FfiStatus *status);
+} DataProviderVTable;
+
+typedef struct ForeignDataProvider {
+  const struct DataProviderVTable *vtable;
+  uint64_t handle;
+} ForeignDataProvider;
+
+void mffi_register_data_provider_vtable(const struct DataProviderVTable *vtable);
+struct ForeignDataProvider *mffi_create_data_provider(uint64_t handle);
+
+typedef struct NavigationObserverVTable {
+  void (*free)(uint64_t handle);
+  uint64_t (*clone)(uint64_t handle);
+  void (*on_location_updated)(uint64_t handle, double lat, double lon, struct FfiStatus *status);
+  void (*on_route_changed)(uint64_t handle, uint32_t route_id, struct FfiStatus *status);
+  void (*on_error)(uint64_t handle, int32_t code, const char * message, struct FfiStatus *status);
+} NavigationObserverVTable;
+
+typedef struct ForeignNavigationObserver {
+  const struct NavigationObserverVTable *vtable;
+  uint64_t handle;
+} ForeignNavigationObserver;
+
+void mffi_register_navigation_observer_vtable(const struct NavigationObserverVTable *vtable);
+struct ForeignNavigationObserver *mffi_create_navigation_observer(uint64_t handle);
+
 struct FfiStatus mffi_greeting(const uint8_t* name_ptr, uintptr_t name_len, struct FfiString *out);
 struct FfiStatus mffi_concat(const uint8_t* first_ptr, uintptr_t first_len, const uint8_t* second_ptr, uintptr_t second_len, struct FfiString *out);
 struct FfiStatus mffi_reverse_string(const uint8_t* input_ptr, uintptr_t input_len, struct FfiString *out);

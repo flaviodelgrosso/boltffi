@@ -26,8 +26,9 @@ fn main() {
     let (macro_exports, stream_exports) = collect_ffi_exports(&crate_dir.join("src"));
     let repr_c_structs = collect_repr_c_structs(&crate_dir.join("src"));
     let ffi_enums = collect_ffi_enums(&crate_dir.join("src"));
-    if !macro_exports.is_empty() || !repr_c_structs.is_empty() || !ffi_enums.is_empty() || !stream_exports.is_empty() {
-        append_macro_exports(&header_path, &macro_exports, &repr_c_structs, &ffi_enums, &stream_exports);
+    let ffi_traits = collect_ffi_traits(&crate_dir.join("src"));
+    if !macro_exports.is_empty() || !repr_c_structs.is_empty() || !ffi_enums.is_empty() || !stream_exports.is_empty() || !ffi_traits.is_empty() {
+        append_macro_exports(&header_path, &macro_exports, &repr_c_structs, &ffi_enums, &stream_exports, &ffi_traits);
     }
 
     println!("cargo:rerun-if-changed=src/");
@@ -74,6 +75,18 @@ struct FfiStreamExport {
 struct FfiStruct {
     name: String,
     fields: Vec<(String, String)>,
+}
+
+struct FfiTrait {
+    name: String,
+    methods: Vec<FfiTraitMethod>,
+}
+
+struct FfiTraitMethod {
+    name: String,
+    params: Vec<(String, String)>,
+    return_type: Option<String>,
+    is_async: bool,
 }
 
 enum EnumVariantData {
@@ -278,6 +291,74 @@ fn collect_ffi_enums(src_dir: &PathBuf) -> Vec<FfiEnum> {
     }
 
     enums
+}
+
+fn collect_ffi_traits(src_dir: &PathBuf) -> Vec<FfiTrait> {
+    let mut traits = Vec::new();
+
+    for entry in WalkDir::new(src_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "rs"))
+    {
+        let content = match fs::read_to_string(entry.path()) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let syntax = match syn::parse_file(&content) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        for item in &syntax.items {
+            if let syn::Item::Trait(t) = item {
+                let has_ffi_trait = t.attrs.iter().any(|attr| attr.path().is_ident("ffi_trait"));
+                if !has_ffi_trait {
+                    continue;
+                }
+
+                let mut methods = Vec::new();
+                for trait_item in &t.items {
+                    if let syn::TraitItem::Fn(method) = trait_item {
+                        let method_name = method.sig.ident.to_string();
+                        let is_async = method.sig.asyncness.is_some();
+
+                        let mut params = Vec::new();
+                        for input in &method.sig.inputs {
+                            if let FnArg::Typed(pat_type) = input {
+                                if let Pat::Ident(pat_ident) = &*pat_type.pat {
+                                    let param_name = pat_ident.ident.to_string();
+                                    let param_type = rust_type_to_c(&pat_type.ty)
+                                        .unwrap_or_else(|| "void*".to_string());
+                                    params.push((param_name, param_type));
+                                }
+                            }
+                        }
+
+                        let return_type = match &method.sig.output {
+                            ReturnType::Default => None,
+                            ReturnType::Type(_, ty) => rust_type_to_c(ty),
+                        };
+
+                        methods.push(FfiTraitMethod {
+                            name: method_name,
+                            params,
+                            return_type,
+                            is_async,
+                        });
+                    }
+                }
+
+                traits.push(FfiTrait {
+                    name: t.ident.to_string(),
+                    methods,
+                });
+            }
+        }
+    }
+
+    traits
 }
 
 fn collect_ffi_exports(src_dir: &PathBuf) -> (Vec<FfiExport>, Vec<FfiStreamExport>) {
@@ -727,7 +808,12 @@ fn rust_type_to_c(ty: &Type) -> Option<String> {
         "f64" => Some("double".to_string()),
         "bool" => Some("bool".to_string()),
         "()" => None,
+        "&str" => Some("const char *".to_string()),
+        "String" => Some("const char *".to_string()),
         _ => {
+            if type_str.starts_with("&'") && type_str.contains("str") {
+                return Some("const char *".to_string());
+            }
             if is_callback_typedef(&type_str) {
                 Some(type_str)
             } else if type_str.starts_with("*const") {
@@ -1027,7 +1113,7 @@ fn generate_stream_declarations(stream: &FfiStreamExport) -> String {
     )
 }
 
-fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &[FfiStruct], enums: &[FfiEnum], stream_exports: &[FfiStreamExport]) {
+fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &[FfiStruct], enums: &[FfiEnum], stream_exports: &[FfiStreamExport], traits: &[FfiTrait]) {
     let mut header = fs::read_to_string(header_path).unwrap_or_default();
 
     if let Some(pos) = header.rfind("#endif") {
@@ -1092,8 +1178,82 @@ fn append_macro_exports(header_path: &PathBuf, exports: &[FfiExport], structs: &
             .map(generate_stream_declarations)
             .collect();
 
+        let trait_defs: String = traits
+            .iter()
+            .filter(|t| !header.contains(&format!("typedef struct {}VTable", t.name)))
+            .map(generate_trait_typedef)
+            .collect();
+
         let marker = "\n/* Macro-generated types and exports */\n";
-        header.insert_str(pos, &format!("{}{}{}{}{}{}{}{}\n", marker, generic_defs, enum_defs, rust_future_defs, stream_continuation_defs, struct_defs, declarations, stream_declarations));
+        header.insert_str(pos, &format!("{}{}{}{}{}{}{}{}{}\n", marker, generic_defs, enum_defs, rust_future_defs, stream_continuation_defs, struct_defs, trait_defs, declarations, stream_declarations));
         fs::write(header_path, header).expect("Failed to write header");
     }
+}
+
+fn generate_trait_typedef(t: &FfiTrait) -> String {
+    let trait_name = &t.name;
+    let vtable_name = format!("{}VTable", trait_name);
+    let foreign_name = format!("Foreign{}", trait_name);
+    let snake_name = trait_name_to_snake(&trait_name);
+
+    let mut vtable_fields = vec![
+        "  void (*free)(uint64_t handle);".to_string(),
+        "  uint64_t (*clone)(uint64_t handle);".to_string(),
+    ];
+
+    for method in &t.methods {
+        let method_snake = trait_name_to_snake(&method.name);
+        let mut params = vec!["uint64_t handle".to_string()];
+        
+        for (param_name, param_type) in &method.params {
+            params.push(format!("{} {}", param_type, param_name));
+        }
+
+        if method.is_async {
+            let callback_return = method.return_type.as_ref()
+                .map(|t| format!(", {}", t))
+                .unwrap_or_default();
+            params.push(format!("void (*callback)(uint64_t{}, struct FfiStatus)", callback_return));
+            params.push("uint64_t callback_data".to_string());
+            vtable_fields.push(format!("  void (*{})({});", method_snake, params.join(", ")));
+        } else {
+            if let Some(ref ret_ty) = method.return_type {
+                params.push(format!("{} *out", ret_ty));
+            }
+            params.push("struct FfiStatus *status".to_string());
+            vtable_fields.push(format!("  void (*{})({});", method_snake, params.join(", ")));
+        }
+    }
+
+    format!(
+        "typedef struct {} {{\n{}\n}} {};\n\n\
+         typedef struct {} {{\n  const struct {} *vtable;\n  uint64_t handle;\n}} {};\n\n\
+         void mffi_register_{}_vtable(const struct {} *vtable);\n\
+         struct {} *mffi_create_{}(uint64_t handle);\n\n",
+        vtable_name,
+        vtable_fields.join("\n"),
+        vtable_name,
+        foreign_name,
+        vtable_name,
+        foreign_name,
+        snake_name,
+        vtable_name,
+        foreign_name,
+        snake_name,
+    )
+}
+
+fn trait_name_to_snake(name: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(ch.to_ascii_lowercase());
+        } else {
+            result.push(ch);
+        }
+    }
+    result
 }
