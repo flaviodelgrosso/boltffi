@@ -83,6 +83,13 @@ func testFreeFunctions() {
     print("findEven(3) = \(String(describing: oddResult))")
     assert(oddResult == nil, "Expected nil")
     
+    let srcData: [UInt8] = [1, 2, 3, 4, 5]
+    var dstData: [UInt8] = [0, 0, 0, 0, 0, 0, 0, 0]
+    let copied = copyBytes(src: srcData, dst: &dstData)
+    print("copyBytes(\(srcData), dst) copied \(copied) bytes, dst = \(Array(dstData.prefix(Int(copied))))")
+    assert(copied == 5, "Expected 5 bytes copied")
+    assert(Array(dstData.prefix(5)) == [1, 2, 3, 4, 5], "Expected first 5 bytes to match")
+    
     print("SUCCESS: Free functions work!\n")
 }
 

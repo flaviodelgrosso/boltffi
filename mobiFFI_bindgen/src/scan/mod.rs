@@ -189,13 +189,6 @@ impl SourceScanner {
             }
         };
 
-        let has_unsupported_params = params
-            .iter()
-            .any(|(_, ty)| matches!(ty, MType::Slice(_) | MType::MutSlice(_)));
-        if has_unsupported_params {
-            return;
-        }
-
         self.functions.push(ScannedFunction {
             name,
             params,
@@ -340,13 +333,6 @@ impl SourceScanner {
             .collect();
 
         if params.len() != typed_params.len() {
-            return None;
-        }
-
-        let has_slice_params = params
-            .iter()
-            .any(|(_, ty)| matches!(ty, MType::Slice(_) | MType::MutSlice(_)));
-        if has_slice_params {
             return None;
         }
 

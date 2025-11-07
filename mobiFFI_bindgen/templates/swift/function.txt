@@ -1,4 +1,4 @@
-public func {{ func_name }}({% for param in params %}{{ param.swift_name }}: {{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.param_name }}: @escaping ({{ cb.swift_type }}) -> Void{% if !loop.last %}, {% endif %}{% endfor %}){% if is_async %} async throws{% else if throws %} throws{% endif %}{% if let Some(ret) = return_type %} -> {{ ret }}{% endif %} {
+public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}{{ param.swift_name }}: inout {{ param.swift_type }}{% else %}{{ param.swift_name }}: {{ param.swift_type }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.param_name }}: @escaping ({{ cb.swift_type }}) -> Void{% if !loop.last %}, {% endif %}{% endfor %}){% if is_async %} async throws{% else if throws %} throws{% endif %}{% if let Some(ret) = return_type %} -> {{ ret }}{% endif %} {
 {%- if is_async %}
 {#- ASYNC FUNCTION #}
     let futureHandle = {{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}, UInt({{ param.swift_name }}.utf8.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %})
@@ -92,22 +92,22 @@ public func {{ func_name }}({% for param in params %}{{ param.swift_name }}: {{ 
     }
 {%- endfor %}
 {%- endif %}
-{%- if has_string_params && return_type.is_some() %}
-    return {% for param in params %}{% if param.is_string %}{{ param.swift_name }}.withCString { {{ param.swift_name }}Ptr in {% endif %}{% endfor %}
-{%- else %}
 {%- for param in params %}
 {%- if param.is_string %}
-    {{ param.swift_name }}.withCString { {{ param.swift_name }}Ptr in
+    {% if return_type.is_some() && loop.first %}return {% endif %}{{ param.swift_name }}.withCString { {{ param.swift_name }}Ptr in
+{%- else if param.is_slice %}
+    {% if return_type.is_some() && loop.first %}return {% endif %}{{ param.swift_name }}.withUnsafeBufferPointer { {{ param.swift_name }}Ptr in
+{%- else if param.is_mut_slice %}
+    {% if return_type.is_some() && loop.first %}return {% endif %}{{ param.swift_name }}.withUnsafeMutableBufferPointer { {{ param.swift_name }}Ptr in
 {%- endif %}
 {%- endfor %}
-{%- endif %}
 {%- if returns_result %}
     var outValue: {% match return_type %}{% when Some with (ret) %}{{ ret }}{% when None %}Void{% endmatch %} = {% match return_type %}{% when Some with (ret) %}0{% when None %}(){% endmatch %}
-    let status = {{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 %}, {% endif %}&outValue)
+    let status = {{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else if param.is_slice || param.is_mut_slice %}{{ param.swift_name }}Ptr.baseAddress, UInt({{ param.swift_name }}Ptr.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 %}, {% endif %}&outValue)
     if status.code != 0 { throw FfiError(status: status) }
     return outValue
 {%- else if returns_string %}
-    let status = {{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.trampoline_name }}, {{ cb.ptr_name }}{% if !loop.last %}, {% endif %}{% endfor %}, &result)
+    let status = {{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else if param.is_slice || param.is_mut_slice %}{{ param.swift_name }}Ptr.baseAddress, UInt({{ param.swift_name }}Ptr.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.trampoline_name }}, {{ cb.ptr_name }}{% if !loop.last %}, {% endif %}{% endfor %}, &result)
     defer { mffi_free_string(result) }
 {%- if has_callbacks %}
 {%- for cb in callbacks %}
@@ -116,17 +116,17 @@ public func {{ func_name }}({% for param in params %}{{ param.swift_name }}: {{ 
 {%- endif %}
     return String(data: Data(bytes: result.ptr!, count: Int(result.len)), encoding: .utf8)!
 {%- else if returns_vec %}
-    let len = {{ ffi_vec_len }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %})
+    let len = {{ ffi_vec_len }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else if param.is_slice || param.is_mut_slice %}{{ param.swift_name }}Ptr.baseAddress, UInt({{ param.swift_name }}Ptr.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %})
     var arr = [{% match vec_inner_type %}{% when Some with (inner) %}{{ inner }}{% when None %}Int32{% endmatch %}](repeating: 0, count: Int(len))
     var written: UInt = 0
-    _ = {{ ffi_vec_copy_into }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 %}, {% endif %}&arr, UInt(len), &written)
+    _ = {{ ffi_vec_copy_into }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else if param.is_slice || param.is_mut_slice %}{{ param.swift_name }}Ptr.baseAddress, UInt({{ param.swift_name }}Ptr.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 %}, {% endif %}&arr, UInt(len), &written)
     return arr
 {%- else if returns_option %}
     var outValue: {% match option_inner_type %}{% when Some with (inner) %}{{ inner }}{% when None %}Int32{% endmatch %} = 0
-    let isSome = {{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 %}, {% endif %}&outValue)
+    let isSome = {{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else if param.is_slice || param.is_mut_slice %}{{ param.swift_name }}Ptr.baseAddress, UInt({{ param.swift_name }}Ptr.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 %}, {% endif %}&outValue)
     return isSome != 0 ? outValue : nil
 {%- else if return_type.is_some() %}
-    {% if has_callbacks %}let result = {% else %}return {% endif %}{{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.trampoline_name }}, {{ cb.ptr_name }}{% if !loop.last %}, {% endif %}{% endfor %})
+    {% if has_callbacks %}let result = {% else %}return {% endif %}{{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else if param.is_slice || param.is_mut_slice %}{{ param.swift_name }}Ptr.baseAddress, UInt({{ param.swift_name }}Ptr.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.trampoline_name }}, {{ cb.ptr_name }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- if has_callbacks %}
 {%- for cb in callbacks %}
     Unmanaged<{{ cb.box_type }}>.fromOpaque({{ cb.ptr_name }}).release()
@@ -134,7 +134,7 @@ public func {{ func_name }}({% for param in params %}{{ param.swift_name }}: {{ 
     return result
 {%- endif %}
 {%- else %}
-    _ = {{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.trampoline_name }}, {{ cb.ptr_name }}{% if !loop.last %}, {% endif %}{% endfor %})
+    _ = {{ ffi_name }}({% for param in params %}{% if param.is_string %}{{ param.swift_name }}Ptr, UInt({{ param.swift_name }}.utf8.count){% else if param.is_slice || param.is_mut_slice %}{{ param.swift_name }}Ptr.baseAddress, UInt({{ param.swift_name }}Ptr.count){% else %}{{ param.ffi_conversion }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.trampoline_name }}, {{ cb.ptr_name }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- if has_callbacks %}
 {%- for cb in callbacks %}
     Unmanaged<{{ cb.box_type }}>.fromOpaque({{ cb.ptr_name }}).release()
@@ -142,7 +142,7 @@ public func {{ func_name }}({% for param in params %}{{ param.swift_name }}: {{ 
 {%- endif %}
 {%- endif %}
 {%- for param in params %}
-{%- if param.is_string %}
+{%- if param.is_string || param.is_slice || param.is_mut_slice %}
     }
 {%- endif %}
 {%- endfor %}

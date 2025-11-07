@@ -197,14 +197,23 @@ impl FunctionTemplate {
                 .inputs
                 .iter()
                 .filter(|p| !matches!(p.param_type, Type::Callback(_)))
-                .map(|p| FunctionParamView {
-                    swift_name: NamingConvention::param_name(&p.name),
-                    swift_type: TypeMapper::map_type(&p.param_type),
-                    ffi_conversion: NamingConvention::param_name(&p.name),
-                    is_string: matches!(p.param_type, Type::String),
-                    is_slice: matches!(p.param_type, Type::Slice(_)),
-                    is_mut_slice: matches!(p.param_type, Type::MutSlice(_)),
-                    is_callback: false,
+                .map(|p| {
+                    let slice_inner_type = match &p.param_type {
+                        Type::Slice(inner) | Type::MutSlice(inner) => {
+                            Some(TypeMapper::map_type(inner))
+                        }
+                        _ => None,
+                    };
+                    FunctionParamView {
+                        swift_name: NamingConvention::param_name(&p.name),
+                        swift_type: TypeMapper::map_type(&p.param_type),
+                        ffi_conversion: NamingConvention::param_name(&p.name),
+                        is_string: matches!(p.param_type, Type::String),
+                        is_slice: matches!(p.param_type, Type::Slice(_)),
+                        is_mut_slice: matches!(p.param_type, Type::MutSlice(_)),
+                        is_callback: false,
+                        slice_inner_type,
+                    }
                 })
                 .collect(),
             return_type: function.output.as_ref().and_then(|ty| {
@@ -260,6 +269,7 @@ pub struct FunctionParamView {
     pub is_slice: bool,
     pub is_mut_slice: bool,
     pub is_callback: bool,
+    pub slice_inner_type: Option<String>,
 }
 
 pub struct FunctionCallbackView {
@@ -373,6 +383,10 @@ impl ClassTemplate {
                                 param.param_type,
                                 crate::model::Type::Callback(_)
                             ),
+                            is_mut_slice: matches!(
+                                param.param_type,
+                                crate::model::Type::MutSlice(_)
+                            ),
                         })
                         .collect(),
                 })
@@ -402,6 +416,10 @@ impl ClassTemplate {
                             is_escaping: matches!(
                                 param.param_type,
                                 crate::model::Type::Callback(_)
+                            ),
+                            is_mut_slice: matches!(
+                                param.param_type,
+                                crate::model::Type::MutSlice(_)
                             ),
                         })
                         .collect(),
@@ -449,6 +467,7 @@ pub struct ParamView {
     pub swift_name: String,
     pub swift_type: String,
     pub is_escaping: bool,
+    pub is_mut_slice: bool,
 }
 
 pub struct ConstructorView {
@@ -564,8 +583,16 @@ impl StreamCallbackBodyTemplate {
 #[template(path = "swift/method_sync.txt", escape = "none")]
 pub struct SyncMethodBodyTemplate {
     pub ffi_name: String,
-    pub args: Vec<String>,
+    pub params: Vec<MethodParamView>,
     pub has_return: bool,
+    pub has_slice_params: bool,
+}
+
+pub struct MethodParamView {
+    pub swift_name: String,
+    pub ffi_arg: String,
+    pub is_slice: bool,
+    pub is_mut_slice: bool,
 }
 
 fn param_to_ffi_arg(param: &crate::model::Parameter) -> String {
@@ -578,6 +605,9 @@ fn param_to_ffi_arg(param: &crate::model::Parameter) -> String {
                 class_name, class_name, name
             )
         }
+        crate::model::Type::Slice(_) | crate::model::Type::MutSlice(_) => {
+            format!("{}Ptr.baseAddress, UInt({}Ptr.count)", name, name)
+        }
         _ => name,
     }
 }
@@ -585,10 +615,21 @@ fn param_to_ffi_arg(param: &crate::model::Parameter) -> String {
 impl SyncMethodBodyTemplate {
     pub fn from_method(method: &Method, class: &Class, module: &Module) -> Self {
         let class_prefix = class.ffi_prefix(&module.ffi_prefix());
+        let params: Vec<_> = method
+            .non_callback_params()
+            .map(|p| MethodParamView {
+                swift_name: NamingConvention::param_name(&p.name),
+                ffi_arg: param_to_ffi_arg(p),
+                is_slice: matches!(p.param_type, crate::model::Type::Slice(_)),
+                is_mut_slice: matches!(p.param_type, crate::model::Type::MutSlice(_)),
+            })
+            .collect();
+        let has_slice_params = params.iter().any(|p| p.is_slice || p.is_mut_slice);
         Self {
             ffi_name: method.ffi_name(&class_prefix),
-            args: method.non_callback_params().map(param_to_ffi_arg).collect(),
+            params,
             has_return: method.output.as_ref().map_or(false, |t| !t.is_void()),
+            has_slice_params,
         }
     }
 }

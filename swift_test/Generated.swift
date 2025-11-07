@@ -7,7 +7,7 @@ public struct FfiError: Error {
 
 public func greeting(name: String) -> String {
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    return name.withCString { namePtr in 
+    return name.withCString { namePtr in
     let status = mffi_greeting(namePtr, UInt(name.utf8.count), &result)
     defer { mffi_free_string(result) }
     return String(data: Data(bytes: result.ptr!, count: Int(result.len)), encoding: .utf8)!
@@ -16,7 +16,8 @@ public func greeting(name: String) -> String {
 
 public func concat(first: String, second: String) -> String {
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    return first.withCString { firstPtr in second.withCString { secondPtr in 
+    return first.withCString { firstPtr in
+    second.withCString { secondPtr in
     let status = mffi_concat(firstPtr, UInt(first.utf8.count), secondPtr, UInt(second.utf8.count), &result)
     defer { mffi_free_string(result) }
     return String(data: Data(bytes: result.ptr!, count: Int(result.len)), encoding: .utf8)!
@@ -26,10 +27,18 @@ public func concat(first: String, second: String) -> String {
 
 public func reverseString(input: String) -> String {
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    return input.withCString { inputPtr in 
+    return input.withCString { inputPtr in
     let status = mffi_reverse_string(inputPtr, UInt(input.utf8.count), &result)
     defer { mffi_free_string(result) }
     return String(data: Data(bytes: result.ptr!, count: Int(result.len)), encoding: .utf8)!
+    }
+}
+
+public func copyBytes(src: [UInt8], dst: inout [UInt8]) -> UInt {
+    return src.withUnsafeBufferPointer { srcPtr in
+    dst.withUnsafeMutableBufferPointer { dstPtr in
+    return mffi_copy_bytes(srcPtr.baseAddress, UInt(srcPtr.count), dstPtr.baseAddress, UInt(dstPtr.count))
+    }
     }
 }
 
@@ -43,7 +52,7 @@ public func multiplyFloats(first: Double, second: Double) -> Double {
 
 public func makeGreeting(name: String) -> String {
     var result = FfiString(ptr: nil, len: 0, cap: 0)
-    return name.withCString { namePtr in 
+    return name.withCString { namePtr in
     let status = mffi_make_greeting(namePtr, UInt(name.utf8.count), &result)
     defer { mffi_free_string(result) }
     return String(data: Data(bytes: result.ptr!, count: Int(result.len)), encoding: .utf8)!
@@ -472,6 +481,12 @@ public final class DataStore {
 
     public func len() -> UInt {
         return mffi_datastore_len(handle)
+    }
+
+    public func copyInto(dst: inout [DataPoint]) -> UInt {
+        return dst.withUnsafeMutableBufferPointer { dstPtr in
+mffi_datastore_copy_into(handle, dstPtr.baseAddress, UInt(dstPtr.count))
+}
     }
 
     public func foreach(callback: @escaping (DataPoint) -> Void) {

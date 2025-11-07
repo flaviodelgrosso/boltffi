@@ -32,7 +32,7 @@ public final class {{ class_name }} {
     @available(*, deprecated{% if let Some(msg) = method.deprecated_message %}, message: "{{ msg }}"{% endif %})
 {%- endif %}
 
-    public{% if method.is_static %} static{% endif %} func {{ method.swift_name }}({% for param in method.params %}{{ param.swift_name }}: {% if param.is_escaping %}@escaping {% endif %}{{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.is_async %} async{% endif %}{% if method.throws %} throws{% endif %}{% if let Some(ret) = method.return_type %} -> {{ ret }}{% endif %} {
+    public{% if method.is_static %} static{% endif %} func {{ method.swift_name }}({% for param in method.params %}{{ param.swift_name }}: {% if param.is_mut_slice %}inout {% else if param.is_escaping %}@escaping {% endif %}{{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.is_async %} async{% endif %}{% if method.throws %} throws{% endif %}{% if let Some(ret) = method.return_type %} -> {{ ret }}{% endif %} {
         {{ method.body }}
     }
 {%- endfor %}
