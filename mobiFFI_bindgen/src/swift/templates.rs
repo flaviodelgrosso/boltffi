@@ -55,11 +55,13 @@ pub struct FunctionTemplate {
     pub result_ok_type: Option<String>,
     pub result_ok_is_vec: bool,
     pub vec_inner_type: Option<String>,
+    pub vec_inner_is_struct: bool,
     pub option_inner_type: Option<String>,
     pub is_async: bool,
     pub throws: bool,
     pub has_string_params: bool,
     pub has_slice_params: bool,
+    pub has_vec_params: bool,
     pub has_callbacks: bool,
     pub callbacks: Vec<FunctionCallbackView>,
     pub ffi_poll: String,
@@ -107,27 +109,45 @@ impl FunctionTemplate {
             }
         });
 
-        let result_ok_is_vec = function.output.as_ref().map(|ty| {
-            if let Type::Result { ok, .. } = ty {
-                matches!(ok.as_ref(), Type::Vec(_))
-            } else {
-                false
-            }
-        }).unwrap_or(false);
+        let result_ok_is_vec = function
+            .output
+            .as_ref()
+            .map(|ty| {
+                if let Type::Result { ok, .. } = ty {
+                    matches!(ok.as_ref(), Type::Vec(_))
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
 
-        let vec_inner_type = function.output.as_ref().and_then(|ty| {
-            match ty {
-                Type::Vec(inner) => Some(TypeMapper::map_type(inner)),
+        let vec_inner_type = function.output.as_ref().and_then(|ty| match ty {
+            Type::Vec(inner) => Some(TypeMapper::map_type(inner)),
+            Type::Result { ok, .. } => {
+                if let Type::Vec(inner) = ok.as_ref() {
+                    Some(TypeMapper::map_type(inner))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        });
+
+        let vec_inner_is_struct = function
+            .output
+            .as_ref()
+            .map(|ty| match ty {
+                Type::Vec(inner) => matches!(inner.as_ref(), Type::Record(_) | Type::Object(_)),
                 Type::Result { ok, .. } => {
                     if let Type::Vec(inner) = ok.as_ref() {
-                        Some(TypeMapper::map_type(inner))
+                        matches!(inner.as_ref(), Type::Record(_) | Type::Object(_))
                     } else {
-                        None
+                        false
                     }
                 }
-                _ => None,
-            }
-        });
+                _ => false,
+            })
+            .unwrap_or(false);
 
         let option_inner_type = function.output.as_ref().and_then(|ty| {
             if let Type::Option(inner) = ty {
@@ -146,6 +166,11 @@ impl FunctionTemplate {
             .inputs
             .iter()
             .any(|p| matches!(p.param_type, Type::Slice(_) | Type::MutSlice(_)));
+
+        let has_vec_params = function
+            .inputs
+            .iter()
+            .any(|p| matches!(p.param_type, Type::Vec(_)));
 
         let has_callbacks = function
             .inputs
@@ -204,6 +229,10 @@ impl FunctionTemplate {
                         }
                         _ => None,
                     };
+                    let vec_inner_type = match &p.param_type {
+                        Type::Vec(inner) => Some(TypeMapper::map_type(inner)),
+                        _ => None,
+                    };
                     FunctionParamView {
                         swift_name: NamingConvention::param_name(&p.name),
                         swift_type: TypeMapper::map_type(&p.param_type),
@@ -212,7 +241,9 @@ impl FunctionTemplate {
                         is_slice: matches!(p.param_type, Type::Slice(_)),
                         is_mut_slice: matches!(p.param_type, Type::MutSlice(_)),
                         is_callback: false,
+                        is_vec: matches!(p.param_type, Type::Vec(_)),
                         slice_inner_type,
+                        vec_inner_type,
                     }
                 })
                 .collect(),
@@ -232,11 +263,13 @@ impl FunctionTemplate {
             result_ok_type,
             result_ok_is_vec,
             vec_inner_type,
+            vec_inner_is_struct,
             option_inner_type,
             is_async: function.is_async,
             throws: function.throws() || returns_result,
             has_string_params,
             has_slice_params,
+            has_vec_params,
             has_callbacks,
             callbacks,
             ffi_poll: format!("{}_{}_poll", ffi_prefix, func_snake),
@@ -269,7 +302,9 @@ pub struct FunctionParamView {
     pub is_slice: bool,
     pub is_mut_slice: bool,
     pub is_callback: bool,
+    pub is_vec: bool,
     pub slice_inner_type: Option<String>,
+    pub vec_inner_type: Option<String>,
 }
 
 pub struct FunctionCallbackView {

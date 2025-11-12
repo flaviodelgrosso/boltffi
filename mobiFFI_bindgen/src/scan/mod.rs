@@ -101,6 +101,7 @@ impl SourceScanner {
         match item {
             Item::Struct(item_struct) => {
                 if has_attribute(&item_struct.attrs, "ffi_record")
+                    || has_attribute(&item_struct.attrs, "data")
                     || has_repr_c(&item_struct.attrs)
                     || (has_attribute(&item_struct.attrs, "derive")
                         && has_ffi_type_derive(&item_struct.attrs))
@@ -109,7 +110,9 @@ impl SourceScanner {
                 }
             }
             Item::Impl(item_impl) => {
-                if has_attribute(&item_impl.attrs, "ffi_class") {
+                if has_attribute(&item_impl.attrs, "ffi_class")
+                    || has_attribute(&item_impl.attrs, "export")
+                {
                     self.process_class(item_impl);
                 }
             }
@@ -119,7 +122,9 @@ impl SourceScanner {
                 }
             }
             Item::Fn(item_fn) => {
-                if has_attribute(&item_fn.attrs, "ffi_export") {
+                if has_attribute(&item_fn.attrs, "ffi_export")
+                    || has_attribute(&item_fn.attrs, "export")
+                {
                     self.process_function(item_fn);
                 }
             }
@@ -679,7 +684,10 @@ fn string_to_ffi_type(s: &str) -> Option<MType> {
             let inner = &s[7..s.len() - 1];
             let parts: Vec<&str> = inner.splitn(2, ',').map(|p| p.trim()).collect();
             let ok = string_to_ffi_type(parts.first()?)?;
-            let err = parts.get(1).and_then(|e| string_to_ffi_type(e)).unwrap_or(MType::String);
+            let err = parts
+                .get(1)
+                .and_then(|e| string_to_ffi_type(e))
+                .unwrap_or(MType::String);
             Some(MType::Result {
                 ok: Box::new(ok),
                 err: Box::new(err),
