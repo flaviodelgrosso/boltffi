@@ -10,7 +10,9 @@ pub mod subscription;
 pub mod types;
 
 pub use handle::HandleBox;
-pub use mobiFFI_macros::{Data, FfiType, export, ffi_class, ffi_export, ffi_stream, ffi_trait, name, skip};
+pub use mobiFFI_macros::{
+    Data, FfiType, data, export, ffi_class, ffi_export, ffi_stream, ffi_trait, name, skip,
+};
 pub use pending::{CancellationToken, PendingHandle};
 pub use ringbuffer::SpscRingBuffer;
 pub use rustfuture::{
@@ -94,7 +96,7 @@ pub extern "C" fn mffi_clear_last_error() {
     clear_last_error();
 }
 
-fn fail_with_error(status: FfiStatus, message: impl Into<String>) -> FfiStatus {
+pub fn fail_with_error(status: FfiStatus, message: impl Into<String>) -> FfiStatus {
     set_last_error(message);
     status
 }
@@ -145,7 +147,7 @@ impl Counter {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Data)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct DataPoint {
     pub x: f64,
     pub y: f64,

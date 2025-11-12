@@ -50,6 +50,7 @@ enum ParamTransform {
     SliceRef(syn::Type),
     SliceMut(syn::Type),
     BoxedTrait(syn::Ident),
+    VecParam(syn::Type),
 }
 
 fn extract_fn_arg_types(ty: &Type) -> Option<Vec<syn::Type>> {
@@ -111,6 +112,21 @@ fn extract_boxed_dyn_trait(ty: &Type) -> Option<syn::Ident> {
     None
 }
 
+fn extract_vec_param_inner(ty: &Type) -> Option<syn::Type> {
+    if let Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            if segment.ident == "Vec" {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return Some(inner_ty.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn classify_param_transform(ty: &Type) -> ParamTransform {
     let type_str = quote::quote!(#ty).to_string().replace(" ", "");
 
@@ -136,6 +152,10 @@ fn classify_param_transform(ty: &Type) -> ParamTransform {
 
     if type_str.contains("extern") && type_str.contains("fn(") {
         return ParamTransform::PassThrough;
+    }
+
+    if let Some(inner_ty) = extract_vec_param_inner(ty) {
+        return ParamTransform::VecParam(inner_ty);
     }
 
     if type_str == "&str" || (type_str.starts_with("&'") && type_str.ends_with("str")) {
@@ -288,6 +308,23 @@ fn transform_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>)
 
                     call_args.push(quote! { #name });
                 }
+                ParamTransform::VecParam(inner_ty) => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    conversions.push(quote! {
+                        let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
+                            Vec::new()
+                        } else {
+                            core::slice::from_raw_parts(#ptr_name, #len_name).to_vec()
+                        };
+                    });
+
+                    call_args.push(quote! { #name });
+                }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
                     ffi_params.push(quote! { #name: #ty });
@@ -411,6 +448,24 @@ fn transform_params_async(
                 }
                 ParamTransform::BoxedTrait(_trait_name) => {
                     panic!("Box<dyn Trait> parameters are not yet supported in async functions");
+                }
+                ParamTransform::VecParam(inner_ty) => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    pre_spawn.push(quote! {
+                        let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
+                            Vec::new()
+                        } else {
+                            unsafe { core::slice::from_raw_parts(#ptr_name, #len_name) }.to_vec()
+                        };
+                    });
+
+                    move_vars.push(name.clone());
+                    call_args.push(quote! { #name });
                 }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
@@ -1477,6 +1532,23 @@ fn transform_method_params(inputs: impl Iterator<Item = syn::FnArg>) -> FfiParam
 
                     call_args.push(quote! { #name });
                 }
+                ParamTransform::VecParam(inner_ty) => {
+                    let ptr_name = syn::Ident::new(&format!("{}_ptr", name), name.span());
+                    let len_name = syn::Ident::new(&format!("{}_len", name), name.span());
+
+                    ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+                    ffi_params.push(quote! { #len_name: usize });
+
+                    conversions.push(quote! {
+                        let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
+                            Vec::new()
+                        } else {
+                            core::slice::from_raw_parts(#ptr_name, #len_name).to_vec()
+                        };
+                    });
+
+                    call_args.push(quote! { #name });
+                }
                 ParamTransform::PassThrough => {
                     let ty = &pat_type.ty;
                     ffi_params.push(quote! { #name: #ty });
@@ -2030,46 +2102,45 @@ fn rust_type_to_ffi_param_type(ty: &syn::Type) -> proc_macro2::TokenStream {
     }
 }
 
+#[proc_macro_attribute]
+pub fn data(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item_clone = item.clone();
+
+    if let Ok(mut item_struct) = syn::parse::<syn::ItemStruct>(item_clone.clone()) {
+        let has_repr = item_struct.attrs.iter().any(|a| a.path().is_ident("repr"));
+        if !has_repr {
+            item_struct.attrs.insert(0, syn::parse_quote!(#[repr(C)]));
+        }
+        return TokenStream::from(quote!(#item_struct));
+    }
+
+    if let Ok(mut item_enum) = syn::parse::<syn::ItemEnum>(item_clone) {
+        let has_repr = item_enum.attrs.iter().any(|a| a.path().is_ident("repr"));
+        if !has_repr {
+            let has_data = item_enum.variants.iter().any(|v| !v.fields.is_empty());
+            if has_data {
+                item_enum
+                    .attrs
+                    .insert(0, syn::parse_quote!(#[repr(C, i32)]));
+            } else {
+                item_enum.attrs.insert(0, syn::parse_quote!(#[repr(i32)]));
+            }
+        }
+        return TokenStream::from(quote!(#item_enum));
+    }
+
+    syn::Error::new_spanned(
+        proc_macro2::TokenStream::from(item),
+        "data can only be applied to struct or enum",
+    )
+    .to_compile_error()
+    .into()
+}
+
 #[proc_macro_derive(Data)]
 pub fn derive_data(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-
-    let existing_has_repr = input.attrs.iter().any(|attr| attr.path().is_ident("repr"));
-
-    if existing_has_repr {
-        return TokenStream::new();
-    }
-
-    match &input.data {
-        syn::Data::Struct(_) => {
-            let expanded = quote! {
-                const _: () = {
-                    #[allow(dead_code)]
-                    const fn _assert_repr_c_for_data() {
-                        struct _AssertReprC where #name: Copy {}
-                    }
-                };
-            };
-            TokenStream::from(expanded)
-        }
-        syn::Data::Enum(data_enum) => {
-            let has_data = data_enum.variants.iter().any(|v| !v.fields.is_empty());
-            let repr_msg = if has_data {
-                "Data enums with variants need #[repr(C, i32)]"
-            } else {
-                "Data enums need #[repr(i32)]"
-            };
-            syn::Error::new_spanned(&input, repr_msg)
-                .to_compile_error()
-                .into()
-        }
-        syn::Data::Union(_) => {
-            syn::Error::new_spanned(&input, "Data cannot be derived for unions")
-                .to_compile_error()
-                .into()
-        }
-    }
+    let _ = input;
+    TokenStream::new()
 }
 
 #[proc_macro_attribute]
