@@ -4,7 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-cbindgen = "0.26"
-syn = { version = "2.0", features = ["full", "parsing"] }
-walkdir = "2.4"
+mobiFFI_bindgen = { path = "../mobiFFI_bindgen" }
 toml = "0.8"
