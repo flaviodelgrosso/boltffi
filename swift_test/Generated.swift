@@ -1066,7 +1066,7 @@ public enum DataProviderBridge {
         register()
         let wrapper = DataProviderWrapper(impl)
         let handle = UInt64(UInt(bitPattern: Unmanaged.passRetained(wrapper).toOpaque()))
-        return UnsafeMutablePointer(mffi_create_data_provider(handle)!)
+        return mffi_create_data_provider(handle)!
     }
 }
 
@@ -1118,7 +1118,7 @@ public enum AsyncDataFetcherBridge {
         register()
         let wrapper = AsyncDataFetcherWrapper(impl)
         let handle = UInt64(UInt(bitPattern: Unmanaged.passRetained(wrapper).toOpaque()))
-        return UnsafeMutablePointer(mffi_create_async_data_fetcher(handle)!)
+        return mffi_create_async_data_fetcher(handle)!
     }
 }
 

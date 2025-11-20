@@ -58,6 +58,6 @@ public enum {{ bridge_name }} {
         register()
         let wrapper = {{ wrapper_class }}(impl)
         let handle = UInt64(UInt(bitPattern: Unmanaged.passRetained(wrapper).toOpaque()))
-        return UnsafeMutablePointer({{ create_fn }}(handle)!)
+        return {{ create_fn }}(handle)!
     }
 }
