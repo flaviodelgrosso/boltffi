@@ -90,22 +90,9 @@ pub struct FunctionTemplate {
     pub ffi_name: String,
     pub params: Vec<super::conversion::ParamInfo>,
     pub return_type: Option<String>,
-    pub returns_string: bool,
-    pub returns_vec: bool,
-    pub returns_option: bool,
-    pub returns_result: bool,
-    pub returns_enum: bool,
-    pub enum_type_name: Option<String>,
-    pub result_ok_type: Option<String>,
-    pub result_ok_is_vec: bool,
-    pub vec_inner_type: Option<String>,
-    pub vec_inner_is_struct: bool,
-    pub option_inner_type: Option<String>,
+    pub return_kind: super::marshal::ReturnKind,
     pub is_async: bool,
     pub throws: bool,
-    pub has_string_params: bool,
-    pub has_slice_params: bool,
-    pub has_vec_params: bool,
     pub has_callbacks: bool,
     pub callbacks: Vec<super::conversion::CallbackInfo>,
     pub ffi_poll: String,
@@ -113,8 +100,6 @@ pub struct FunctionTemplate {
     pub ffi_free: String,
     pub ffi_cancel: String,
     pub ffi_free_vec: String,
-    pub ffi_vec_len: String,
-    pub ffi_vec_copy_into: String,
     pub has_wrappers: bool,
     pub wrappers_open: String,
     pub wrappers_close: String,
@@ -172,28 +157,20 @@ impl FunctionTemplate {
             })
             .unwrap_or_default();
 
+        let return_kind = super::marshal::ReturnKind::from_function(
+            function.output.as_ref(),
+            &function.name,
+        );
+
         Self {
             prefix: ffi_prefix,
             func_name: NamingConvention::method_name(&function.name),
             ffi_name,
             params: params_info.params,
             return_type,
-            returns_string: ret.is_string,
-            returns_vec: ret.is_vec,
-            returns_option: ret.is_option,
-            returns_result: ret.is_result,
-            returns_enum: ret.is_enum,
-            enum_type_name: ret.enum_type_name,
-            result_ok_type: ret.result_ok_type,
-            result_ok_is_vec: ret.result_ok_is_vec,
-            vec_inner_type: ret.vec_inner_type,
-            vec_inner_is_struct: ret.vec_inner_is_struct,
-            option_inner_type: ret.option_inner_type,
+            return_kind,
             is_async: function.is_async,
             throws: function.throws() || ret.is_result,
-            has_string_params: params_info.has_string_params,
-            has_slice_params: params_info.has_slice_params,
-            has_vec_params: params_info.has_vec_params,
             has_callbacks: params_info.has_callbacks,
             callbacks: params_info.callbacks,
             ffi_poll: naming::function_ffi_poll(&function.name),
@@ -201,8 +178,6 @@ impl FunctionTemplate {
             ffi_free: naming::function_ffi_free(&function.name),
             ffi_cancel: naming::function_ffi_cancel(&function.name),
             ffi_free_vec,
-            ffi_vec_len: naming::function_ffi_vec_len(&function.name),
-            ffi_vec_copy_into: naming::function_ffi_vec_copy_into(&function.name),
             has_wrappers: call_builder.has_wrappers(),
             wrappers_open: call_builder.build_wrappers_open(),
             wrappers_close: call_builder.build_wrappers_close(),
@@ -499,7 +474,6 @@ impl StreamCallbackBodyTemplate {
 #[template(path = "swift/method_sync.txt", escape = "none")]
 pub struct SyncMethodBodyTemplate {
     pub ffi_name: String,
-    pub params: Vec<super::marshal::ParamConversion>,
     pub has_return: bool,
     pub has_wrappers: bool,
     pub wrappers_open: String,
@@ -515,7 +489,6 @@ impl SyncMethodBodyTemplate {
 
         Self {
             ffi_name,
-            params: call_builder.params().to_vec(),
             has_return: method.output.as_ref().is_some_and(|t| !t.is_void()),
             has_wrappers: call_builder.has_wrappers(),
             wrappers_open: call_builder.build_wrappers_open(),
@@ -529,7 +502,6 @@ impl SyncMethodBodyTemplate {
 #[template(path = "swift/method_callback.txt", escape = "none")]
 pub struct CallbackMethodBodyTemplate {
     pub ffi_name: String,
-    pub params: Vec<super::marshal::ParamConversion>,
     pub has_return: bool,
     pub callbacks: Vec<super::conversion::CallbackInfo>,
     pub has_wrappers: bool,
@@ -559,7 +531,6 @@ impl CallbackMethodBodyTemplate {
 
         Self {
             ffi_name,
-            params: call_builder.params().to_vec(),
             has_return: method.output.as_ref().is_some_and(|t| !t.is_void()),
             callbacks: params_info.callbacks,
             has_wrappers: call_builder.has_wrappers(),
@@ -575,7 +546,6 @@ impl CallbackMethodBodyTemplate {
 #[template(path = "swift/method_throwing.txt", escape = "none")]
 pub struct ThrowingMethodBodyTemplate {
     pub ffi_name: String,
-    pub params: Vec<super::marshal::ParamConversion>,
     pub return_type: String,
     pub has_wrappers: bool,
     pub wrappers_open: String,
@@ -591,7 +561,6 @@ impl ThrowingMethodBodyTemplate {
 
         Self {
             ffi_name,
-            params: call_builder.params().to_vec(),
             return_type: method
                 .output
                 .as_ref()

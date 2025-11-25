@@ -38,7 +38,7 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
                         let decision = ctx.decideFinish()
                         if case .alreadyFinished = decision { return }
                         var status = FfiStatus()
-{%- if returns_result && result_ok_is_vec %}
+{%- if return_kind.is_result() && return_kind.result_ok_is_vec() %}
                         let buf = {{ ffi_complete }}(ctx.handle, &status)
                         {{ ffi_free }}(ctx.handle)
                         switch decision {
@@ -57,7 +57,7 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
                         case .alreadyFinished:
                             break
                         }
-{%- else if returns_result %}
+{%- else if return_kind.is_result() %}
                         let result = {{ ffi_complete }}(ctx.handle, &status)
                         {{ ffi_free }}(ctx.handle)
                         switch decision {
@@ -73,7 +73,7 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
                         case .alreadyFinished:
                             break
                         }
-{%- else if returns_string %}
+{%- else if return_kind.is_string() %}
                         let ffiStr = {{ ffi_complete }}(ctx.handle, &status)
                         {{ ffi_free }}(ctx.handle)
                         defer { {{ prefix }}_free_string(ffiStr) }
@@ -91,7 +91,7 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
                         case .alreadyFinished:
                             break
                         }
-{%- else if returns_vec %}
+{%- else if return_kind.is_vec() %}
                         let buf = {{ ffi_complete }}(ctx.handle, &status)
                         {{ ffi_free }}(ctx.handle)
                         switch decision {
@@ -110,7 +110,7 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
                         case .alreadyFinished:
                             break
                         }
-{%- else if returns_option %}
+{%- else if return_kind.is_option() %}
                         let opt = {{ ffi_complete }}(ctx.handle, &status)
                         {{ ffi_free }}(ctx.handle)
                         switch decision {
@@ -186,7 +186,7 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
     }
 {%- else %}
 {#- SYNC FUNCTION #}
-{%- if returns_string %}
+{%- if return_kind.is_string() %}
     var result = FfiString(ptr: nil, len: 0, cap: 0)
 {%- endif %}
 {%- if has_callbacks %}
@@ -202,72 +202,13 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
 {%- endif %}
 {%- if has_wrappers %}
     {% if return_type.is_some() %}return {% endif %}{{ wrappers_open }}
-{%- if returns_result %}
-        var outValue: {% match return_type %}{% when Some with (ret) %}{{ ret }}{% when None %}Void{% endmatch %} = {% match return_type %}{% when Some with (ret) %}0{% when None %}(){% endmatch %}
-        let status = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&outValue)
-        try checkStatus(status)
-        return outValue
-{%- else if returns_string %}
-        let status = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() && !callback_args.is_empty() %}, {% endif %}{{ callback_args }}{% if !ffi_args.is_empty() || !callback_args.is_empty() %}, {% endif %}&result)
-        defer { {{ prefix }}_free_string(result) }
-{%- if has_callbacks %}
-{%- for cb in callbacks %}
-        Unmanaged<{{ cb.box_type }}>.fromOpaque({{ cb.ptr_name }}).release()
-{%- endfor %}
 {%- endif %}
-        ensureOk(status)
-        return stringFromFfi(result)
-{%- else if returns_vec %}
-        let len = {{ ffi_vec_len }}({{ ffi_args }})
-{%- if vec_inner_is_struct %}
-        let ptr = UnsafeMutablePointer<{% match vec_inner_type %}{% when Some with (inner) %}{{ inner }}{% when None %}Int32{% endmatch %}>.allocate(capacity: Int(len))
-        defer { ptr.deallocate() }
-        var written: UInt = 0
-        let status = {{ ffi_vec_copy_into }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}ptr, len, &written)
-        ensureOk(status)
-        return Array(UnsafeBufferPointer(start: ptr, count: Int(written)))
-{%- else %}
-        var arr = [{% match vec_inner_type %}{% when Some with (inner) %}{{ inner }}{% when None %}Int32{% endmatch %}](repeating: 0, count: Int(len))
-        var written: UInt = 0
-        let status = {{ ffi_vec_copy_into }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&arr, len, &written)
-        ensureOk(status)
-        let writtenCount = min(Int(written), arr.count)
-        if writtenCount < arr.count { arr.removeSubrange(writtenCount..<arr.count) }
-        return arr
-{%- endif %}
-{%- else if returns_option %}
-        var outValue: {% match option_inner_type %}{% when Some with (inner) %}{{ inner }}{% when None %}Int32{% endmatch %} = 0
-        let isSome = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&outValue)
-        return isSome != 0 ? outValue : nil
-{%- else if returns_enum %}
-        {% match enum_type_name %}{% when Some with (name) %}{{ name }}{% when None %}UNKNOWN{% endmatch %}(fromC: {{ ffi_name }}({{ ffi_args }}))
-{%- else if return_type.is_some() %}
-{%- if has_callbacks %}
-        let result = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() && !callback_args.is_empty() %}, {% endif %}{{ callback_args }})
-{%- for cb in callbacks %}
-        Unmanaged<{{ cb.box_type }}>.fromOpaque({{ cb.ptr_name }}).release()
-{%- endfor %}
-        return result
-{%- else %}
-        {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() && !callback_args.is_empty() %}, {% endif %}{{ callback_args }})
-{%- endif %}
-{%- else %}
-        let status = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() && !callback_args.is_empty() %}, {% endif %}{{ callback_args }})
-{%- if has_callbacks %}
-{%- for cb in callbacks %}
-        Unmanaged<{{ cb.box_type }}>.fromOpaque({{ cb.ptr_name }}).release()
-{%- endfor %}
-{%- endif %}
-        ensureOk(status)
-{%- endif %}
-    {{ wrappers_close }}
-{%- else %}
-{%- if returns_result %}
+{%- if return_kind.is_result() %}
     var outValue: {% match return_type %}{% when Some with (ret) %}{{ ret }}{% when None %}Void{% endmatch %} = {% match return_type %}{% when Some with (ret) %}0{% when None %}(){% endmatch %}
     let status = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&outValue)
     try checkStatus(status)
     return outValue
-{%- else if returns_string %}
+{%- else if return_kind.is_string() %}
     let status = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() && !callback_args.is_empty() %}, {% endif %}{{ callback_args }}{% if !ffi_args.is_empty() || !callback_args.is_empty() %}, {% endif %}&result)
     defer { {{ prefix }}_free_string(result) }
 {%- if has_callbacks %}
@@ -277,30 +218,44 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
 {%- endif %}
     ensureOk(status)
     return stringFromFfi(result)
-{%- else if returns_vec %}
-    let len = {{ ffi_vec_len }}({{ ffi_args }})
-{%- if vec_inner_is_struct %}
-    let ptr = UnsafeMutablePointer<{% match vec_inner_type %}{% when Some with (inner) %}{{ inner }}{% when None %}Int32{% endmatch %}>.allocate(capacity: Int(len))
+{%- else if return_kind.is_vec() %}
+{%- if let Some(len_fn) = return_kind.vec_len_fn() %}
+    let len = {{ len_fn }}({{ ffi_args }})
+{%- endif %}
+{%- if return_kind.vec_is_struct() %}
+{%- if let Some(inner) = return_kind.inner_type() %}
+    let ptr = UnsafeMutablePointer<{{ inner }}>.allocate(capacity: Int(len))
+{%- endif %}
     defer { ptr.deallocate() }
     var written: UInt = 0
-    let status = {{ ffi_vec_copy_into }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}ptr, len, &written)
+{%- if let Some(copy_fn) = return_kind.vec_copy_fn() %}
+    let status = {{ copy_fn }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}ptr, len, &written)
+{%- endif %}
     ensureOk(status)
     return Array(UnsafeBufferPointer(start: ptr, count: Int(written)))
 {%- else %}
-    var arr = [{% match vec_inner_type %}{% when Some with (inner) %}{{ inner }}{% when None %}Int32{% endmatch %}](repeating: 0, count: Int(len))
+{%- if let Some(inner) = return_kind.inner_type() %}
+    var arr = [{{ inner }}](repeating: 0, count: Int(len))
+{%- endif %}
     var written: UInt = 0
-    let status = {{ ffi_vec_copy_into }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&arr, len, &written)
+{%- if let Some(copy_fn) = return_kind.vec_copy_fn() %}
+    let status = {{ copy_fn }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&arr, len, &written)
+{%- endif %}
     ensureOk(status)
     let writtenCount = min(Int(written), arr.count)
     if writtenCount < arr.count { arr.removeSubrange(writtenCount..<arr.count) }
     return arr
 {%- endif %}
-{%- else if returns_option %}
-    var outValue: {% match option_inner_type %}{% when Some with (inner) %}{{ inner }}{% when None %}Int32{% endmatch %} = 0
+{%- else if return_kind.is_option() %}
+{%- if let Some(inner) = return_kind.inner_type() %}
+    var outValue: {{ inner }} = 0
+{%- endif %}
     let isSome = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() %}, {% endif %}&outValue)
     return isSome != 0 ? outValue : nil
-{%- else if returns_enum %}
-    return {% match enum_type_name %}{% when Some with (name) %}{{ name }}{% when None %}UNKNOWN{% endmatch %}(fromC: {{ ffi_name }}({{ ffi_args }}))
+{%- else if return_kind.is_enum() %}
+{%- if let Some(name) = return_kind.type_name() %}
+    return {{ name }}(fromC: {{ ffi_name }}({{ ffi_args }}))
+{%- endif %}
 {%- else if return_type.is_some() %}
 {%- if has_callbacks %}
     let result = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() && !callback_args.is_empty() %}, {% endif %}{{ callback_args }})
@@ -320,6 +275,8 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
 {%- endif %}
     ensureOk(status)
 {%- endif %}
+{%- if has_wrappers %}
+    {{ wrappers_close }}
 {%- endif %}
 {%- endif %}
 }

@@ -6,17 +6,8 @@ use super::types::TypeMapper;
 pub struct ReturnInfo {
     pub swift_type: Option<String>,
     pub is_void: bool,
-    pub is_string: bool,
-    pub is_vec: bool,
-    pub is_option: bool,
     pub is_result: bool,
-    pub is_enum: bool,
-    pub enum_type_name: Option<String>,
     pub result_ok_type: Option<String>,
-    pub result_ok_is_vec: bool,
-    pub vec_inner_type: Option<String>,
-    pub vec_inner_is_struct: bool,
-    pub option_inner_type: Option<String>,
 }
 
 impl ReturnInfo {
@@ -25,57 +16,16 @@ impl ReturnInfo {
             return Self { is_void: true, ..Default::default() };
         };
 
-        let swift_type = Some(TypeMapper::map_type(ty));
-        
         match ty {
             Type::Void => Self { is_void: true, ..Default::default() },
-            Type::String => Self {
-                swift_type,
-                is_string: true,
-                ..Default::default()
-            },
-            Type::Vec(inner) => Self {
-                swift_type,
-                is_vec: true,
-                vec_inner_type: Some(TypeMapper::map_type(inner)),
-                vec_inner_is_struct: matches!(inner.as_ref(), Type::Record(_) | Type::Object(_)),
-                ..Default::default()
-            },
-            Type::Option(inner) => Self {
-                swift_type,
-                is_option: true,
-                option_inner_type: Some(TypeMapper::map_type(inner)),
-                ..Default::default()
-            },
-            Type::Result { ok, .. } => {
-                let ok_is_vec = matches!(ok.as_ref(), Type::Vec(_));
-                let vec_inner = if let Type::Vec(inner) = ok.as_ref() {
-                    Some(TypeMapper::map_type(inner))
-                } else {
-                    None
-                };
-                Self {
-                    swift_type: Some(TypeMapper::map_type(ok)),
-                    is_result: true,
-                    result_ok_type: Some(TypeMapper::map_type(ok)),
-                    result_ok_is_vec: ok_is_vec,
-                    vec_inner_type: vec_inner,
-                    vec_inner_is_struct: if let Type::Vec(inner) = ok.as_ref() {
-                        matches!(inner.as_ref(), Type::Record(_) | Type::Object(_))
-                    } else {
-                        false
-                    },
-                    ..Default::default()
-                }
-            }
-            Type::Enum(name) => Self {
-                swift_type,
-                is_enum: true,
-                enum_type_name: Some(NamingConvention::class_name(name)),
+            Type::Result { ok, .. } => Self {
+                swift_type: Some(TypeMapper::map_type(ok)),
+                is_result: true,
+                result_ok_type: Some(TypeMapper::map_type(ok)),
                 ..Default::default()
             },
             _ => Self {
-                swift_type,
+                swift_type: Some(TypeMapper::map_type(ty)),
                 ..Default::default()
             },
         }

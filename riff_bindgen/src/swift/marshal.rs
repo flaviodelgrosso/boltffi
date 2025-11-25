@@ -116,67 +116,129 @@ impl SwiftType {
 }
 
 #[derive(Debug, Clone)]
-pub enum ReturnStrategy {
-    Direct,
-    DirectEnum { type_name: String },
-    DirectRecord { type_name: String },
-    String,
-    Vec { inner_type: String, inner_is_struct: bool },
-    Option { inner_type: String },
-    Result { inner: Box<ReturnStrategy> },
+pub enum ReturnKind {
     Void,
-    VoidChecked,
+    Direct,
+    String,
+    Enum { type_name: String },
+    Record { type_name: String },
+    Vec {
+        inner_type: String,
+        is_struct: bool,
+        len_fn: String,
+        copy_fn: String,
+    },
+    Option { inner_type: String },
+    Result { ok_type: String, ok_is_vec: bool },
 }
 
-impl ReturnStrategy {
-    pub fn from_type(ty: &SwiftType) -> Self {
-        match ty {
-            SwiftType::Void => Self::Void,
-            SwiftType::Primitive(_) | SwiftType::Object(_) | SwiftType::BoxedTrait(_) => {
-                Self::Direct
+impl ReturnKind {
+    pub fn from_function(return_type: Option<&Type>, func_name: &str) -> Self {
+        match return_type {
+            None => Self::Void,
+            Some(ty) => {
+                let swift_ty = SwiftType::from_model(ty);
+                Self::from_swift_type(&swift_ty, func_name)
             }
+        }
+    }
+
+    pub fn from_swift_type(swift_ty: &SwiftType, func_name: &str) -> Self {
+        match swift_ty {
+            SwiftType::Void => Self::Void,
             SwiftType::String => Self::String,
-            SwiftType::Enum(name) => Self::DirectEnum {
+            SwiftType::Enum(name) => Self::Enum {
                 type_name: NamingConvention::class_name(name),
             },
-            SwiftType::Record(name) => Self::DirectRecord {
+            SwiftType::Record(name) => Self::Record {
                 type_name: NamingConvention::class_name(name),
             },
             SwiftType::Vec(inner) => Self::Vec {
                 inner_type: inner.swift_type(),
-                inner_is_struct: inner.is_struct(),
+                is_struct: inner.is_struct(),
+                len_fn: naming::function_ffi_vec_len(func_name),
+                copy_fn: naming::function_ffi_vec_copy_into(func_name),
             },
             SwiftType::Option(inner) => Self::Option {
                 inner_type: inner.swift_type(),
             },
             SwiftType::Result { ok } => Self::Result {
-                inner: Box::new(Self::from_type(ok)),
+                ok_type: ok.swift_type(),
+                ok_is_vec: matches!(ok.as_ref(), SwiftType::Vec(_)),
             },
             _ => Self::Direct,
         }
+    }
+
+    pub fn is_void(&self) -> bool {
+        matches!(self, Self::Void)
+    }
+
+    pub fn is_direct(&self) -> bool {
+        matches!(self, Self::Direct)
+    }
+
+    pub fn is_string(&self) -> bool {
+        matches!(self, Self::String)
+    }
+
+    pub fn is_enum(&self) -> bool {
+        matches!(self, Self::Enum { .. })
+    }
+
+    pub fn is_record(&self) -> bool {
+        matches!(self, Self::Record { .. })
+    }
+
+    pub fn is_vec(&self) -> bool {
+        matches!(self, Self::Vec { .. })
+    }
+
+    pub fn is_option(&self) -> bool {
+        matches!(self, Self::Option { .. })
+    }
+
+    pub fn is_result(&self) -> bool {
+        matches!(self, Self::Result { .. })
+    }
+
+    pub fn result_ok_is_vec(&self) -> bool {
+        matches!(self, Self::Result { ok_is_vec: true, .. })
     }
 
     pub fn throws(&self) -> bool {
         matches!(self, Self::Result { .. })
     }
 
-    pub fn has_out_param(&self) -> bool {
-        matches!(
-            self,
-            Self::String | Self::Option { .. } | Self::Result { .. }
-        )
-    }
-
-    pub fn needs_status_check(&self) -> bool {
-        matches!(
-            self,
-            Self::String | Self::Vec { .. } | Self::VoidChecked | Self::Result { .. }
-        )
-    }
-
-    pub fn inner_strategy(&self) -> Option<&ReturnStrategy> {
+    pub fn type_name(&self) -> Option<&str> {
         match self {
-            Self::Result { inner } => Some(inner),
+            Self::Enum { type_name } | Self::Record { type_name } => Some(type_name),
+            _ => None,
+        }
+    }
+
+    pub fn inner_type(&self) -> Option<&str> {
+        match self {
+            Self::Vec { inner_type, .. } | Self::Option { inner_type } => Some(inner_type),
+            Self::Result { ok_type, .. } => Some(ok_type),
+            _ => None,
+        }
+    }
+
+    pub fn vec_is_struct(&self) -> bool {
+        matches!(self, Self::Vec { is_struct: true, .. })
+    }
+
+    pub fn vec_len_fn(&self) -> Option<&str> {
+        match self {
+            Self::Vec { len_fn, .. } => Some(len_fn),
+            _ => None,
+        }
+    }
+
+    pub fn vec_copy_fn(&self) -> Option<&str> {
+        match self {
+            Self::Vec { copy_fn, .. } => Some(copy_fn),
             _ => None,
         }
     }
@@ -266,216 +328,15 @@ impl ParamConversion {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ReturnConversion {
-    pub swift_type: SwiftType,
-    pub strategy: ReturnStrategy,
-    pub display_type: String,
-}
-
-impl ReturnConversion {
-    pub fn from_type(ty: Option<&Type>) -> Self {
-        let swift_type = ty.map(SwiftType::from_model).unwrap_or(SwiftType::Void);
-        let strategy = ReturnStrategy::from_type(&swift_type);
-        let display_type = match &swift_type {
-            SwiftType::Result { ok } => ok.swift_type(),
-            other => other.swift_type(),
-        };
-
-        Self {
-            swift_type,
-            strategy,
-            display_type,
-        }
-    }
-
-    pub fn is_void(&self) -> bool {
-        self.swift_type.is_void()
-    }
-
-    pub fn throws(&self) -> bool {
-        self.strategy.throws()
-    }
-
-    pub fn free_fn(&self) -> Option<String> {
-        let prefix = naming::ffi_prefix();
-        match &self.swift_type {
-            SwiftType::String => Some(format!("{}_free_string", prefix)),
-            SwiftType::Vec(inner) => {
-                Some(format!("{}_free_buf_{}", prefix, inner.ffi_type_suffix()))
-            }
-            SwiftType::Result { ok } => {
-                let inner_ret = ReturnConversion {
-                    swift_type: ok.as_ref().clone(),
-                    strategy: ReturnStrategy::from_type(ok),
-                    display_type: ok.swift_type(),
-                };
-                inner_ret.free_fn()
-            }
-            _ => None,
-        }
-    }
-
-    pub fn inner_type(&self) -> Option<String> {
-        self.swift_type.inner_type().map(|t| t.swift_type())
-    }
-
-    pub fn inner_is_struct(&self) -> bool {
-        self.swift_type
-            .inner_type()
-            .map(|t| t.is_struct())
-            .unwrap_or(false)
-    }
-
-    pub fn default_value(&self) -> String {
-        self.swift_type.unwrap_result().default_value()
-    }
-
-    pub fn convert_ffi_result(&self, expr: &str) -> String {
-        match &self.strategy {
-            ReturnStrategy::Direct => expr.into(),
-            ReturnStrategy::DirectEnum { type_name } => {
-                format!("{}(fromC: {})", type_name, expr)
-            }
-            ReturnStrategy::DirectRecord { type_name } => {
-                format!("{}(fromC: {})", type_name, expr)
-            }
-            ReturnStrategy::String => format!("stringFromFfi({})", expr),
-            ReturnStrategy::Vec { .. } => {
-                format!("Array(UnsafeBufferPointer(start: {}.ptr, count: Int({}.len)))", expr, expr)
-            }
-            ReturnStrategy::Option { inner_type } => {
-                format!("{} != 0 ? {} as {} : nil", expr, expr, inner_type)
-            }
-            ReturnStrategy::Result { inner } => {
-                let inner_conv = ReturnConversion {
-                    swift_type: self.swift_type.unwrap_result().clone(),
-                    strategy: inner.as_ref().clone(),
-                    display_type: self.display_type.clone(),
-                };
-                inner_conv.convert_ffi_result(expr)
-            }
-            ReturnStrategy::Void | ReturnStrategy::VoidChecked => String::new(),
-        }
-    }
-
-    pub fn generate_sync_return(&self, ffi_call: &str) -> SyncReturnCode {
-        match &self.strategy {
-            ReturnStrategy::Direct => SyncReturnCode {
-                declarations: vec![],
-                call_expr: format!("return {}", ffi_call),
-                post_call: vec![],
-            },
-            ReturnStrategy::DirectEnum { type_name } => SyncReturnCode {
-                declarations: vec![],
-                call_expr: format!("return {}(fromC: {})", type_name, ffi_call),
-                post_call: vec![],
-            },
-            ReturnStrategy::DirectRecord { type_name } => SyncReturnCode {
-                declarations: vec![],
-                call_expr: format!("return {}(fromC: {})", type_name, ffi_call),
-                post_call: vec![],
-            },
-            ReturnStrategy::String => {
-                let free_fn = self.free_fn().unwrap_or_default();
-                SyncReturnCode {
-                    declarations: vec![
-                        "var result = FfiString(ptr: nil, len: 0, cap: 0)".into(),
-                    ],
-                    call_expr: format!("let status = {}, &result)", ffi_call.trim_end_matches(')')),
-                    post_call: vec![
-                        format!("defer {{ {}(result) }}", free_fn),
-                        "ensureOk(status)".into(),
-                        "return stringFromFfi(result)".into(),
-                    ],
-                }
-            }
-            ReturnStrategy::Option { inner_type } => SyncReturnCode {
-                declarations: vec![
-                    format!("var outValue: {} = {}", inner_type, self.default_value()),
-                ],
-                call_expr: format!("let isSome = {}, &outValue)", ffi_call.trim_end_matches(')')),
-                post_call: vec![
-                    "return isSome != 0 ? outValue : nil".into(),
-                ],
-            },
-            ReturnStrategy::Result { .. } => SyncReturnCode {
-                declarations: vec![
-                    format!("var outValue: {} = {}", self.display_type, self.default_value()),
-                ],
-                call_expr: format!("let status = {}, &outValue)", ffi_call.trim_end_matches(')')),
-                post_call: vec![
-                    "try checkStatus(status)".into(),
-                    "return outValue".into(),
-                ],
-            },
-            ReturnStrategy::Void => SyncReturnCode {
-                declarations: vec![],
-                call_expr: ffi_call.into(),
-                post_call: vec![],
-            },
-            ReturnStrategy::VoidChecked => SyncReturnCode {
-                declarations: vec![],
-                call_expr: format!("let status = {}", ffi_call),
-                post_call: vec!["ensureOk(status)".into()],
-            },
-            ReturnStrategy::Vec { inner_type, inner_is_struct } => {
-                if *inner_is_struct {
-                    SyncReturnCode {
-                        declarations: vec![],
-                        call_expr: "// Vec of structs requires two-phase copy".into(),
-                        post_call: vec![],
-                    }
-                } else {
-                    SyncReturnCode {
-                        declarations: vec![
-                            format!("var arr = [{}](repeating: {}, count: Int(len))", inner_type, self.default_value()),
-                            "var written: UInt = 0".into(),
-                        ],
-                        call_expr: "// Vec requires ffi_vec_len + ffi_vec_copy_into".into(),
-                        post_call: vec![
-                            "ensureOk(status)".into(),
-                            "let writtenCount = min(Int(written), arr.count)".into(),
-                            "if writtenCount < arr.count { arr.removeSubrange(writtenCount..<arr.count) }".into(),
-                            "return arr".into(),
-                        ],
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SyncReturnCode {
-    pub declarations: Vec<String>,
-    pub call_expr: String,
-    pub post_call: Vec<String>,
-}
-
-impl SyncReturnCode {
-    pub fn declarations_str(&self) -> String {
-        self.declarations.join("\n")
-    }
-
-    pub fn post_call_str(&self) -> String {
-        self.post_call.join("\n")
-    }
-}
-
 pub struct SyncCallBuilder {
-    ffi_name: String,
     params: Vec<ParamConversion>,
-    ret: ReturnConversion,
     include_handle: bool,
 }
 
 impl SyncCallBuilder {
-    pub fn new(ffi_name: &str, include_handle: bool) -> Self {
+    pub fn new(_ffi_name: &str, include_handle: bool) -> Self {
         Self {
-            ffi_name: ffi_name.into(),
             params: Vec::new(),
-            ret: ReturnConversion::from_type(None),
             include_handle,
         }
     }
@@ -485,9 +346,8 @@ impl SyncCallBuilder {
         self
     }
 
-    pub fn with_return(mut self, ty: Option<&Type>) -> Self {
-        self.ret = ReturnConversion::from_type(ty);
-        self
+    pub fn has_wrappers(&self) -> bool {
+        self.params.iter().any(|p| p.needs_wrapper())
     }
 
     pub fn build_wrappers_open(&self) -> String {
@@ -510,29 +370,12 @@ impl SyncCallBuilder {
     }
 
     pub fn build_ffi_args(&self) -> String {
-        let mut args = Vec::new();
-        if self.include_handle {
-            args.push("handle".into());
-        }
-        for param in &self.params {
-            args.extend(param.ffi_args.clone());
-        }
-        args.join(", ")
-    }
-
-    pub fn build_call(&self) -> String {
-        format!("{}({})", self.ffi_name, self.build_ffi_args())
-    }
-
-    pub fn has_wrappers(&self) -> bool {
-        self.params.iter().any(|p| p.needs_wrapper())
-    }
-
-    pub fn return_conversion(&self) -> &ReturnConversion {
-        &self.ret
-    }
-
-    pub fn params(&self) -> &[ParamConversion] {
-        &self.params
+        [if self.include_handle { Some("handle") } else { None }]
+            .into_iter()
+            .flatten()
+            .map(String::from)
+            .chain(self.params.iter().flat_map(|p| p.ffi_args.clone()))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
