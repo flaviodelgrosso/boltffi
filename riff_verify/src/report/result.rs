@@ -84,4 +84,18 @@ impl VerificationResult {
             Self::Verified { duration, .. } | Self::Failed { duration, .. } => *duration,
         }
     }
+
+    pub fn unit_count(&self) -> usize {
+        match self {
+            Self::Verified { unit_count, .. } => *unit_count,
+            Self::Failed { .. } => 0,
+        }
+    }
+
+    pub fn rule_count(&self) -> usize {
+        match self {
+            Self::Verified { rule_count, .. } => *rule_count,
+            Self::Failed { .. } => 0,
+        }
+    }
 }

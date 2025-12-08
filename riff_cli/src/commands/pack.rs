@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use riff_verify::{Verifier, Reporter};
+
 use crate::config::Config;
 use crate::error::{CliError, Result};
 use crate::pack::{AndroidPackager, SpmPackageGenerator, XcframeworkBuilder};
@@ -42,6 +44,10 @@ pub fn run_pack(config: &Config, options: PackOptions) -> Result<()> {
 
 fn pack_xcframework(config: &Config, libraries: Vec<BuiltLibrary>, release: bool) -> Result<()> {
     let profile = if release { "release" } else { "debug" };
+
+    let swift_path = PathBuf::from("dist").join(format!("{}.swift", config.swift_module_name()));
+    verify_generated_bindings(&swift_path)?;
+    println!();
 
     let ios_libs: Vec<_> = libraries
         .into_iter()
@@ -168,4 +174,33 @@ fn detect_version() -> Option<String> {
                         .map(|s| s.trim().trim_matches('"').to_string())
                 })
         })
+}
+
+fn verify_generated_bindings(swift_path: &PathBuf) -> Result<()> {
+    if !swift_path.exists() {
+        return Ok(());
+    }
+
+    println!("Verifying generated bindings...");
+
+    let mut verifier = Verifier::swift()
+        .map_err(|e| CliError::VerifyError(e.to_string()))?;
+
+    let result = verifier.verify_file(swift_path)
+        .map_err(|e| CliError::VerifyError(e.to_string()))?;
+
+    let reporter = Reporter::human();
+    
+    if result.is_failed() {
+        println!();
+        println!("{}", reporter.report(&result));
+        return Err(CliError::VerifyError("verification failed".to_string()));
+    }
+
+    println!("  {} functions verified, {} rules checked",
+        result.unit_count(),
+        result.rule_count()
+    );
+
+    Ok(())
 }
