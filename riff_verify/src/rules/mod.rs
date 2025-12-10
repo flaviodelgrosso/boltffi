@@ -2,12 +2,14 @@ mod branch;
 mod buffer;
 mod memory;
 mod refcount;
+mod status;
 mod violation;
 
 pub use branch::BranchConsistency;
 pub use buffer::BufferBoundsCheck;
 pub use memory::{AllocFreeBalance, NoUseAfterFree, NoDoubleFree};
 pub use refcount::{RetainReleaseBalance, NoDoubleRelease};
+pub use status::StatusMustBeChecked;
 pub use violation::{Violation, ViolationKind, Severity};
 
 use crate::analysis::EffectTrace;
@@ -40,6 +42,7 @@ impl RuleRegistry {
         registry.register(Box::new(RetainReleaseBalance));
         registry.register(Box::new(NoDoubleRelease));
         registry.register(Box::new(BufferBoundsCheck));
+        registry.register(Box::new(StatusMustBeChecked));
         registry
     }
 
