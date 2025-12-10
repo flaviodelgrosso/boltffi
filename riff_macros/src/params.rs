@@ -1,7 +1,7 @@
 use quote::quote;
 use syn::{FnArg, Pat};
 
-use crate::util::{classify_param_transform, len_ident, ptr_ident, ParamTransform};
+use crate::util::{ParamTransform, classify_param_transform, len_ident, ptr_ident};
 
 pub struct FfiParams {
     pub ffi_params: Vec<proc_macro2::TokenStream>,

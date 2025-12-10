@@ -128,44 +128,73 @@ pub fn check_branch_consistency(
 ) -> Vec<BranchDivergence> {
     let mut divergences = Vec::new();
 
-    let then_freed: HashSet<_> = then_state.freed.difference(&pre_branch_state.freed).collect();
-    let else_freed: HashSet<_> = else_state.freed.difference(&pre_branch_state.freed).collect();
+    let then_freed: HashSet<_> = then_state
+        .freed
+        .difference(&pre_branch_state.freed)
+        .collect();
+    let else_freed: HashSet<_> = else_state
+        .freed
+        .difference(&pre_branch_state.freed)
+        .collect();
 
-    then_freed.symmetric_difference(&else_freed).for_each(|&ptr| {
-        if pre_branch_state.allocated.contains(ptr) {
-            divergences.push(BranchDivergence {
-                variable: *ptr,
-                kind: DivergenceKind::FreedInOneBranch,
-                span: span.clone(),
-            });
-        }
-    });
+    then_freed
+        .symmetric_difference(&else_freed)
+        .for_each(|&ptr| {
+            if pre_branch_state.allocated.contains(ptr) {
+                divergences.push(BranchDivergence {
+                    variable: *ptr,
+                    kind: DivergenceKind::FreedInOneBranch,
+                    span: span.clone(),
+                });
+            }
+        });
 
-    let then_released: HashSet<_> = then_state.released.difference(&pre_branch_state.released).collect();
-    let else_released: HashSet<_> = else_state.released.difference(&pre_branch_state.released).collect();
+    let then_released: HashSet<_> = then_state
+        .released
+        .difference(&pre_branch_state.released)
+        .collect();
+    let else_released: HashSet<_> = else_state
+        .released
+        .difference(&pre_branch_state.released)
+        .collect();
 
-    then_released.symmetric_difference(&else_released).for_each(|&handle| {
-        if pre_branch_state.retained.contains(handle) {
-            divergences.push(BranchDivergence {
-                variable: *handle,
-                kind: DivergenceKind::ReleasedInOneBranch,
-                span: span.clone(),
-            });
-        }
-    });
+    then_released
+        .symmetric_difference(&else_released)
+        .for_each(|&handle| {
+            if pre_branch_state.retained.contains(handle) {
+                divergences.push(BranchDivergence {
+                    variable: *handle,
+                    kind: DivergenceKind::ReleasedInOneBranch,
+                    span: span.clone(),
+                });
+            }
+        });
 
     divergences
 }
 
-pub fn merge_branch_states(
-    then_state: &BranchState,
-    else_state: &BranchState,
-) -> BranchState {
+pub fn merge_branch_states(then_state: &BranchState, else_state: &BranchState) -> BranchState {
     BranchState {
-        allocated: then_state.allocated.union(&else_state.allocated).copied().collect(),
-        freed: then_state.freed.intersection(&else_state.freed).copied().collect(),
-        retained: then_state.retained.union(&else_state.retained).copied().collect(),
-        released: then_state.released.intersection(&else_state.released).copied().collect(),
+        allocated: then_state
+            .allocated
+            .union(&else_state.allocated)
+            .copied()
+            .collect(),
+        freed: then_state
+            .freed
+            .intersection(&else_state.freed)
+            .copied()
+            .collect(),
+        retained: then_state
+            .retained
+            .union(&else_state.retained)
+            .copied()
+            .collect(),
+        released: then_state
+            .released
+            .intersection(&else_state.released)
+            .copied()
+            .collect(),
     }
 }
 
@@ -183,7 +212,7 @@ mod tests {
     #[test]
     fn test_consistent_branches_no_divergence() {
         let ptr = VarId::new(0);
-        
+
         let mut pre = BranchState::new();
         pre.allocate(ptr);
 
@@ -200,7 +229,7 @@ mod tests {
     #[test]
     fn test_freed_in_one_branch_detected() {
         let ptr = VarId::new(0);
-        
+
         let mut pre = BranchState::new();
         pre.allocate(ptr);
 
@@ -217,7 +246,7 @@ mod tests {
     #[test]
     fn test_merge_takes_intersection_of_freed() {
         let ptr = VarId::new(0);
-        
+
         let mut then_state = BranchState::new();
         then_state.allocate(ptr);
         then_state.free(ptr);
@@ -226,7 +255,7 @@ mod tests {
         else_state.allocate(ptr);
 
         let merged = merge_branch_states(&then_state, &else_state);
-        
+
         assert!(merged.allocated.contains(&ptr));
         assert!(!merged.freed.contains(&ptr));
     }

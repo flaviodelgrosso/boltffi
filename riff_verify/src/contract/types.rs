@@ -41,13 +41,16 @@ impl FfiContract {
     }
 
     pub fn is_callback_bridge_retain(&self, pattern: &str) -> bool {
-        let is_known_bridge = self.callback_bridges.iter().any(|b| pattern.contains(&b.bridge_class));
-        
-        let is_async_pattern = pattern.contains("ContinuationBox") 
+        let is_known_bridge = self
+            .callback_bridges
+            .iter()
+            .any(|b| pattern.contains(&b.bridge_class));
+
+        let is_async_pattern = pattern.contains("ContinuationBox")
             || pattern.contains("Continuation(")
             || (pattern.contains("passRetained(") && pattern.contains("box"))
             || (pattern.contains("passRetained(") && pattern.contains("Box"));
-        
+
         is_known_bridge || is_async_pattern
     }
 
@@ -108,7 +111,13 @@ impl FfiFunction {
     }
 
     pub fn returns_owned_memory(&self) -> bool {
-        matches!(self.output, FfiOutput::OutParam { ownership: Ownership::Returned, .. })
+        matches!(
+            self.output,
+            FfiOutput::OutParam {
+                ownership: Ownership::Returned,
+                ..
+            }
+        )
     }
 
     pub fn takes_ownership(&self) -> bool {
@@ -246,22 +255,35 @@ pub enum FfiType {
     F64,
     String,
     Bytes,
-    Pointer { element: Box<FfiType>, mutable: bool },
+    Pointer {
+        element: Box<FfiType>,
+        mutable: bool,
+    },
     Handle(String),
     Record(String),
     Enum(String),
     Vec(Box<FfiType>),
     Option(Box<FfiType>),
-    Callback { arg: Box<FfiType> },
+    Callback {
+        arg: Box<FfiType>,
+    },
 }
 
 impl FfiType {
     pub fn is_primitive(&self) -> bool {
         matches!(
             self,
-            Self::Bool | Self::I8 | Self::I16 | Self::I32 | Self::I64 
-            | Self::U8 | Self::U16 | Self::U32 | Self::U64 
-            | Self::F32 | Self::F64
+            Self::Bool
+                | Self::I8
+                | Self::I16
+                | Self::I32
+                | Self::I64
+                | Self::U8
+                | Self::U16
+                | Self::U32
+                | Self::U64
+                | Self::F32
+                | Self::F64
         )
     }
 
@@ -288,24 +310,24 @@ mod tests {
     #[test]
     fn test_contract_builder() {
         let mut contract = FfiContract::new("bench_riff", "riff");
-        
+
         contract.add_function(
-            FfiFunction::new("echo_string", "riff_echo_string")
-                .with_output(FfiOutput::OutParam {
-                    param_type: FfiType::String,
-                    ownership: Ownership::Returned,
-                })
+            FfiFunction::new("echo_string", "riff_echo_string").with_output(FfiOutput::OutParam {
+                param_type: FfiType::String,
+                ownership: Ownership::Returned,
+            }),
         );
-        
+
         contract.add_class(
             FfiClass::new("DataStore")
                 .with_constructor("riff_data_store_new")
-                .with_destructor("riff_data_store_free")
+                .with_destructor("riff_data_store_free"),
         );
-        
-        contract.add_callback_bridge(
-            CallbackBridge::new("AsyncDataFetcher", "AsyncDataFetcherBridge")
-        );
+
+        contract.add_callback_bridge(CallbackBridge::new(
+            "AsyncDataFetcher",
+            "AsyncDataFetcherBridge",
+        ));
 
         assert!(contract.get_function("riff_echo_string").is_some());
         assert!(contract.get_class("DataStore").is_some());
@@ -316,7 +338,7 @@ mod tests {
     fn test_ownership_semantics() {
         let func = FfiFunction::new("take_buffer", "riff_take_buffer")
             .with_param(FfiParam::new("data", FfiType::Bytes).owned());
-        
+
         assert!(func.takes_ownership());
     }
 }

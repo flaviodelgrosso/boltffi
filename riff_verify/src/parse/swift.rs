@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use tree_sitter::{Node, Parser, Tree};
 
-use crate::ir::{
-    BinaryOp, Expression, Literal, Param, PointerType, Statement,
-    StatusCheckKind, UnitKind, VarId, VarIdGenerator, VarName, VerifyUnit,
-};
-use crate::source::{ByteLength, ByteOffset, SourceFile, SourceSpan};
 use super::language::LanguageParser;
 use super::patterns::FfiPatterns;
 use super::ParseError;
+use crate::ir::{
+    BinaryOp, Expression, Literal, Param, PointerType, Statement, StatusCheckKind, UnitKind, VarId,
+    VarIdGenerator, VarName, VerifyUnit,
+};
+use crate::source::{ByteLength, ByteOffset, SourceFile, SourceSpan};
 
 pub struct SwiftParser {
     parser: Parser,
@@ -27,7 +27,7 @@ impl SwiftParser {
             .map_err(|e| ParseError::SyntaxError {
                 message: format!("failed to set Swift language: {}", e),
             })?;
-        Ok(Self { 
+        Ok(Self {
             parser,
             patterns: FfiPatterns::swift(),
         })
@@ -44,9 +44,12 @@ impl LanguageParser for SwiftParser {
     }
 
     fn parse_source(&mut self, path: &Path, source: &str) -> Result<Vec<VerifyUnit>, ParseError> {
-        let tree = self.parser.parse(source, None).ok_or_else(|| ParseError::SyntaxError {
-            message: "failed to parse Swift source".to_string(),
-        })?;
+        let tree = self
+            .parser
+            .parse(source, None)
+            .ok_or_else(|| ParseError::SyntaxError {
+                message: "failed to parse Swift source".to_string(),
+            })?;
 
         let source_file = Arc::new(SourceFile::new(path, source));
         let extractor = SwiftExtractor::new(source_file, source.to_string(), self.patterns.clone());
@@ -68,7 +71,11 @@ struct SwiftExtractor {
 
 impl SwiftExtractor {
     fn new(source_file: Arc<SourceFile>, source: String, patterns: FfiPatterns) -> Self {
-        Self { source_file, source, patterns }
+        Self {
+            source_file,
+            source,
+            patterns,
+        }
     }
 
     fn extract_units(self, tree: &Tree) -> Result<Vec<VerifyUnit>, ParseError> {
@@ -82,7 +89,7 @@ impl SwiftExtractor {
 
     fn collect_functions(&self, node: Node, units: &mut Vec<VerifyUnit>, class_name: Option<&str>) {
         let mut cursor = node.walk();
-        
+
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "function_declaration" => {
@@ -105,7 +112,8 @@ impl SwiftExtractor {
                     }
                 }
                 "class_declaration" => {
-                    let name = self.find_identifier(child)
+                    let name = self
+                        .find_identifier(child)
                         .unwrap_or_else(|| "Unknown".to_string());
                     self.collect_functions(child, units, Some(&name));
                 }
@@ -119,16 +127,18 @@ impl SwiftExtractor {
 
     fn extract_function(&self, node: Node, class_name: Option<&str>) -> Option<VerifyUnit> {
         let name = self.find_identifier(node)?;
-        
+
         let mut ctx = ExtractionContext::new();
         let params = self.extract_parameters(node, &mut ctx);
-        
+
         let body_node = self.find_child_by_kind(node, "function_body")?;
         let statements_node = self.find_child_by_kind(body_node, "statements")?;
         let body = self.extract_statements(statements_node, &mut ctx);
-        
+
         let kind = match class_name {
-            Some(c) => UnitKind::Method { class_name: c.to_string() },
+            Some(c) => UnitKind::Method {
+                class_name: c.to_string(),
+            },
             None => UnitKind::FreeFunction,
         };
 
@@ -144,14 +154,16 @@ impl SwiftExtractor {
     fn extract_initializer(&self, node: Node, class_name: &str) -> Option<VerifyUnit> {
         let mut ctx = ExtractionContext::new();
         let params = self.extract_parameters(node, &mut ctx);
-        
+
         let body_node = self.find_child_by_kind(node, "function_body")?;
         let statements_node = self.find_child_by_kind(body_node, "statements")?;
         let body = self.extract_statements(statements_node, &mut ctx);
 
         Some(VerifyUnit {
             name: "init".to_string(),
-            kind: UnitKind::Initializer { class_name: class_name.to_string() },
+            kind: UnitKind::Initializer {
+                class_name: class_name.to_string(),
+            },
             params,
             body,
             span: self.node_span(node),
@@ -160,14 +172,16 @@ impl SwiftExtractor {
 
     fn extract_deinitializer(&self, node: Node, class_name: &str) -> Option<VerifyUnit> {
         let mut ctx = ExtractionContext::new();
-        
+
         let body_node = self.find_child_by_kind(node, "function_body")?;
         let statements_node = self.find_child_by_kind(body_node, "statements")?;
         let body = self.extract_statements(statements_node, &mut ctx);
 
         Some(VerifyUnit {
             name: "deinit".to_string(),
-            kind: UnitKind::Deinitializer { class_name: class_name.to_string() },
+            kind: UnitKind::Deinitializer {
+                class_name: class_name.to_string(),
+            },
             params: vec![],
             body,
             span: self.node_span(node),
@@ -185,7 +199,8 @@ impl SwiftExtractor {
             .filter(|p| p.kind() == "parameter")
             .filter_map(|param| {
                 let name = self.find_identifier(param)?;
-                let param_type = self.find_child_by_kind(param, "type_annotation")
+                let param_type = self
+                    .find_child_by_kind(param, "type_annotation")
                     .map(|t| self.node_text(t))
                     .unwrap_or_else(|| "Any".to_string());
 
@@ -201,7 +216,11 @@ impl SwiftExtractor {
             .collect()
     }
 
-    fn extract_statements(&self, statements_node: Node, ctx: &mut ExtractionContext) -> Vec<Statement> {
+    fn extract_statements(
+        &self,
+        statements_node: Node,
+        ctx: &mut ExtractionContext,
+    ) -> Vec<Statement> {
         let mut cursor = statements_node.walk();
         statements_node
             .children(&mut cursor)
@@ -226,13 +245,18 @@ impl SwiftExtractor {
         }
     }
 
-    fn extract_property_declaration(&self, node: Node, ctx: &mut ExtractionContext) -> Option<Statement> {
+    fn extract_property_declaration(
+        &self,
+        node: Node,
+        ctx: &mut ExtractionContext,
+    ) -> Option<Statement> {
         let text = self.node_text(node);
         let is_let = text.starts_with("let");
-        
-        let name = self.find_child_by_kind(node, "pattern")
+
+        let name = self
+            .find_child_by_kind(node, "pattern")
             .map(|n| self.node_text(n))?;
-        
+
         let var_id = ctx.new_var(&name);
 
         if self.patterns.is_allocate(&text) {
@@ -243,10 +267,13 @@ impl SwiftExtractor {
             return self.extract_pass_retained_statement(node, var_id, &text, ctx);
         }
 
-        let value = self.find_descendant_by_kind(node, "call_expression")
+        let value = self
+            .find_descendant_by_kind(node, "call_expression")
             .or_else(|| self.find_descendant_by_kind(node, "navigation_expression"))
             .map(|v| self.extract_expression(v, ctx))
-            .unwrap_or(Expression::Other { description: "no value".to_string() });
+            .unwrap_or(Expression::Other {
+                description: "no value".to_string(),
+            });
 
         let span = self.node_span(node);
 
@@ -289,13 +316,17 @@ impl SwiftExtractor {
             let body_start = call_text.find('{')? + 1;
             let body_end = call_text.rfind('}')?;
             let _body_text = &call_text[body_start..body_end];
-            
-            let body = self.find_child_by_kind(node, "lambda_literal")
+
+            let body = self
+                .find_child_by_kind(node, "lambda_literal")
                 .or_else(|| self.find_descendant_by_kind(node, "statements"))
                 .map(|s| self.extract_statements(s, ctx))
                 .unwrap_or_default();
-            
-            return Some(Statement::Defer { body, span: self.node_span(node) });
+
+            return Some(Statement::Defer {
+                body,
+                span: self.node_span(node),
+            });
         }
 
         if self.patterns.is_deallocate(&call_text) {
@@ -322,7 +353,7 @@ impl SwiftExtractor {
             } else {
                 call_text.split('.').next().unwrap_or("").trim()
             };
-            
+
             let opaque_var = ctx.get_var(opaque_name)?;
             return Some(Statement::Release {
                 opaque_var,
@@ -345,15 +376,20 @@ impl SwiftExtractor {
     }
 
     fn extract_if_statement(&self, node: Node, ctx: &mut ExtractionContext) -> Option<Statement> {
-        let condition = self.find_child_by_kind(node, "if_condition_sequence_item")
+        let condition = self
+            .find_child_by_kind(node, "if_condition_sequence_item")
             .map(|c| self.extract_expression(c, ctx))
-            .unwrap_or(Expression::Other { description: "condition".to_string() });
+            .unwrap_or(Expression::Other {
+                description: "condition".to_string(),
+            });
 
-        let then_branch = self.find_child_by_kind(node, "statements")
+        let then_branch = self
+            .find_child_by_kind(node, "statements")
             .map(|s| self.extract_statements(s, ctx))
             .unwrap_or_default();
 
-        let else_branch = self.find_child_by_kind(node, "else")
+        let else_branch = self
+            .find_child_by_kind(node, "else")
             .and_then(|e| self.find_child_by_kind(e, "statements"))
             .map(|s| self.extract_statements(s, ctx));
 
@@ -365,12 +401,20 @@ impl SwiftExtractor {
         })
     }
 
-    fn extract_guard_statement(&self, node: Node, ctx: &mut ExtractionContext) -> Option<Statement> {
-        let condition = self.find_child_by_kind(node, "condition")
+    fn extract_guard_statement(
+        &self,
+        node: Node,
+        ctx: &mut ExtractionContext,
+    ) -> Option<Statement> {
+        let condition = self
+            .find_child_by_kind(node, "condition")
             .map(|c| self.extract_expression(c, ctx))
-            .unwrap_or(Expression::Other { description: "guard".to_string() });
+            .unwrap_or(Expression::Other {
+                description: "guard".to_string(),
+            });
 
-        let else_branch = self.find_child_by_kind(node, "statements")
+        let else_branch = self
+            .find_child_by_kind(node, "statements")
             .map(|s| self.extract_statements(s, ctx))
             .unwrap_or_default();
 
@@ -382,20 +426,40 @@ impl SwiftExtractor {
         })
     }
 
-    fn extract_return_statement(&self, node: Node, ctx: &mut ExtractionContext) -> Option<Statement> {
+    fn extract_return_statement(
+        &self,
+        node: Node,
+        ctx: &mut ExtractionContext,
+    ) -> Option<Statement> {
         let value = node.child(1).map(|v| self.extract_expression(v, ctx));
-        Some(Statement::Return { value, span: self.node_span(node) })
+        Some(Statement::Return {
+            value,
+            span: self.node_span(node),
+        })
     }
 
-    fn extract_defer_statement(&self, node: Node, ctx: &mut ExtractionContext) -> Option<Statement> {
-        let body = self.find_child_by_kind(node, "statements")
+    fn extract_defer_statement(
+        &self,
+        node: Node,
+        ctx: &mut ExtractionContext,
+    ) -> Option<Statement> {
+        let body = self
+            .find_child_by_kind(node, "statements")
             .map(|s| self.extract_statements(s, ctx))
             .unwrap_or_default();
 
-        Some(Statement::Defer { body, span: self.node_span(node) })
+        Some(Statement::Defer {
+            body,
+            span: self.node_span(node),
+        })
     }
 
-    fn extract_allocate_statement(&self, node: Node, var_id: VarId, text: &str) -> Option<Statement> {
+    fn extract_allocate_statement(
+        &self,
+        node: Node,
+        var_id: VarId,
+        text: &str,
+    ) -> Option<Statement> {
         let element_type = text
             .split('<')
             .nth(1)
@@ -425,11 +489,19 @@ impl SwiftExtractor {
                 let trimmed = s.trim();
                 let end = trimmed.find(|c: char| c == ')' || c == ',')?;
                 let cap_str = trimmed[..end].trim();
-                cap_str.parse::<i64>().ok()
+                cap_str
+                    .parse::<i64>()
+                    .ok()
                     .map(|n| Expression::Literal(Literal::Integer(n)))
-                    .or_else(|| Some(Expression::Other { description: cap_str.to_string() }))
+                    .or_else(|| {
+                        Some(Expression::Other {
+                            description: cap_str.to_string(),
+                        })
+                    })
             })
-            .unwrap_or(Expression::Other { description: "unknown".to_string() })
+            .unwrap_or(Expression::Other {
+                description: "unknown".to_string(),
+            })
     }
 
     fn extract_pass_retained_statement(
@@ -485,7 +557,11 @@ impl SwiftExtractor {
         ctx: &mut ExtractionContext,
     ) -> Option<Statement> {
         let status_name = text
-            .split(if text.contains("checkStatus(") { "checkStatus(" } else { "ensureOk(" })
+            .split(if text.contains("checkStatus(") {
+                "checkStatus("
+            } else {
+                "ensureOk("
+            })
             .nth(1)
             .and_then(|s| s.split(')').next())?
             .trim();
@@ -518,19 +594,21 @@ impl SwiftExtractor {
 
     fn extract_expression(&self, node: Node, ctx: &ExtractionContext) -> Expression {
         match node.kind() {
-            "integer_literal" => {
-                self.node_text(node).parse::<i64>()
-                    .map(|n| Expression::Literal(Literal::Integer(n)))
-                    .unwrap_or(Expression::Other { description: self.node_text(node) })
-            }
-            "real_literal" => {
-                self.node_text(node).parse::<f64>()
-                    .map(|n| Expression::Literal(Literal::Float(n)))
-                    .unwrap_or(Expression::Other { description: self.node_text(node) })
-            }
-            "boolean_literal" => {
-                Expression::Literal(Literal::Bool(self.node_text(node) == "true"))
-            }
+            "integer_literal" => self
+                .node_text(node)
+                .parse::<i64>()
+                .map(|n| Expression::Literal(Literal::Integer(n)))
+                .unwrap_or(Expression::Other {
+                    description: self.node_text(node),
+                }),
+            "real_literal" => self
+                .node_text(node)
+                .parse::<f64>()
+                .map(|n| Expression::Literal(Literal::Float(n)))
+                .unwrap_or(Expression::Other {
+                    description: self.node_text(node),
+                }),
+            "boolean_literal" => Expression::Literal(Literal::Bool(self.node_text(node) == "true")),
             "line_string_literal" => {
                 let text = self.node_text(node);
                 Expression::Literal(Literal::String(text.trim_matches('"').to_string()))
@@ -566,7 +644,9 @@ impl SwiftExtractor {
             "infix_expression" | "comparison_expression" => {
                 self.extract_binary_expression(node, ctx)
             }
-            _ => Expression::Other { description: self.node_text(node) },
+            _ => Expression::Other {
+                description: self.node_text(node),
+            },
         }
     }
 
@@ -593,7 +673,11 @@ impl SwiftExtractor {
                 ">=" => BinaryOp::GreaterThanOrEqual,
                 "&&" => BinaryOp::LogicalAnd,
                 "||" => BinaryOp::LogicalOr,
-                _ => return Expression::Other { description: self.node_text(node) },
+                _ => {
+                    return Expression::Other {
+                        description: self.node_text(node),
+                    }
+                }
             };
 
             return Expression::BinaryOperation {
@@ -603,7 +687,9 @@ impl SwiftExtractor {
             };
         }
 
-        Expression::Other { description: self.node_text(node) }
+        Expression::Other {
+            description: self.node_text(node),
+        }
     }
 
     fn is_ffi_call(&self, text: &str) -> bool {
@@ -627,7 +713,9 @@ impl SwiftExtractor {
         }
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
-        children.into_iter().find_map(|child| self.find_descendant_by_kind(child, kind))
+        children
+            .into_iter()
+            .find_map(|child| self.find_descendant_by_kind(child, kind))
     }
 
     fn node_text(&self, node: Node) -> String {
@@ -691,7 +779,9 @@ public func add(a: Int32, b: Int32) -> Int32 {
 }
 "#;
         let mut parser = SwiftParser::new().unwrap();
-        let units = parser.parse_source(Path::new("test.swift"), source).unwrap();
+        let units = parser
+            .parse_source(Path::new("test.swift"), source)
+            .unwrap();
 
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].name, "add");
@@ -707,13 +797,21 @@ public func test() {
 }
 "#;
         let mut parser = SwiftParser::new().unwrap();
-        let units = parser.parse_source(Path::new("test.swift"), source).unwrap();
+        let units = parser
+            .parse_source(Path::new("test.swift"), source)
+            .unwrap();
 
         assert_eq!(units.len(), 1);
-        
-        let has_alloc = units[0].body.iter().any(|s| matches!(s, Statement::Allocate { .. }));
-        let has_defer = units[0].body.iter().any(|s| matches!(s, Statement::Defer { .. }));
-        
+
+        let has_alloc = units[0]
+            .body
+            .iter()
+            .any(|s| matches!(s, Statement::Allocate { .. }));
+        let has_defer = units[0]
+            .body
+            .iter()
+            .any(|s| matches!(s, Statement::Defer { .. }));
+
         assert!(has_alloc, "Should have allocate statement");
         assert!(has_defer, "Should have defer statement");
     }
@@ -732,7 +830,9 @@ public class MyClass {
 }
 "#;
         let mut parser = SwiftParser::new().unwrap();
-        let units = parser.parse_source(Path::new("test.swift"), source).unwrap();
+        let units = parser
+            .parse_source(Path::new("test.swift"), source)
+            .unwrap();
 
         assert!(!units.is_empty());
     }

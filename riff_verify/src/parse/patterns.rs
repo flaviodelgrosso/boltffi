@@ -26,7 +26,12 @@ impl FfiPatterns {
             defer_keyword: vec!["defer "],
             ffi_prefix: vec!["riff_", "ffi_"],
             callback_bridge: vec!["Bridge", "ContinuationBox", "Box)"],
-            class_decl: vec!["public class ", "private class ", "internal class ", "class "],
+            class_decl: vec![
+                "public class ",
+                "private class ",
+                "internal class ",
+                "class ",
+            ],
             enum_decl: vec!["public enum ", "private enum ", "enum "],
             bridge_markers: vec!["Bridge"],
         }
@@ -87,7 +92,9 @@ impl FfiPatterns {
 
     pub fn is_class_decl(&self, text: &str) -> bool {
         let trimmed = text.trim();
-        self.class_decl.iter().any(|p| trimmed.starts_with(p) || trimmed.contains(p))
+        self.class_decl
+            .iter()
+            .any(|p| trimmed.starts_with(p) || trimmed.contains(p))
     }
 
     pub fn is_bridge_class(&self, text: &str) -> bool {
@@ -103,7 +110,10 @@ impl FfiPatterns {
                 trimmed
                     .split(prefix)
                     .nth(1)
-                    .and_then(|rest| rest.split(|c: char| c == ':' || c == '{' || c == '(' || c.is_whitespace()).next())
+                    .and_then(|rest| {
+                        rest.split(|c: char| c == ':' || c == '{' || c == '(' || c.is_whitespace())
+                            .next()
+                    })
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty())
             })
@@ -119,7 +129,11 @@ impl FfiPatterns {
     pub fn extract_capacity<'a>(&self, text: &'a str) -> Option<&'a str> {
         text.split("capacity:")
             .nth(1)
-            .or_else(|| text.split("allocArray<").nth(1).and_then(|s| s.split('>').nth(1)))
+            .or_else(|| {
+                text.split("allocArray<")
+                    .nth(1)
+                    .and_then(|s| s.split('>').nth(1))
+            })
             .and_then(|s| {
                 let trimmed = s.trim();
                 let end = trimmed.find(|c: char| c == ')' || c == ',' || c == '}')?;
@@ -143,7 +157,7 @@ mod tests {
     #[test]
     fn test_swift_patterns() {
         let patterns = FfiPatterns::swift();
-        
+
         assert!(patterns.is_allocate("UnsafeMutablePointer<Int32>.allocate(capacity: 10)"));
         assert!(patterns.is_deallocate("ptr.deallocate()"));
         assert!(patterns.is_retain("Unmanaged.passRetained(obj)"));
@@ -155,7 +169,7 @@ mod tests {
     #[test]
     fn test_kotlin_patterns() {
         let patterns = FfiPatterns::kotlin();
-        
+
         assert!(patterns.is_allocate("nativeHeap.allocArray<Int>(10)"));
         assert!(patterns.is_deallocate("nativeHeap.free(ptr)"));
         assert!(patterns.is_retain("StableRef.create(obj)"));
@@ -165,7 +179,7 @@ mod tests {
     #[test]
     fn test_extract_element_type() {
         let patterns = FfiPatterns::swift();
-        
+
         assert_eq!(
             patterns.extract_element_type("UnsafeMutablePointer<Int32>.allocate"),
             Some("Int32")

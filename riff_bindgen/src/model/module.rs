@@ -82,7 +82,10 @@ impl Module {
 
     pub fn has_async(&self) -> bool {
         self.functions.iter().any(|f| f.is_async)
-            || self.classes.iter().any(|c| c.methods.iter().any(|m| m.is_async))
+            || self
+                .classes
+                .iter()
+                .any(|c| c.methods.iter().any(|m| m.is_async))
     }
 
     pub fn has_streams(&self) -> bool {

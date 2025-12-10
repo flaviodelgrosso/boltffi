@@ -1,5 +1,5 @@
-use crate::rules::Violation;
 use super::VerificationResult;
+use crate::rules::Violation;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub enum OutputFormat {
@@ -38,7 +38,11 @@ impl Reporter {
         let mut output = String::new();
 
         match result {
-            VerificationResult::Verified { unit_count, rule_count, duration } => {
+            VerificationResult::Verified {
+                unit_count,
+                rule_count,
+                duration,
+            } => {
                 output.push_str("✓ Verification PASSED\n");
                 output.push_str(&format!("  {} functions verified\n", unit_count));
                 output.push_str(&format!("  {} rules checked\n", rule_count));
@@ -51,7 +55,10 @@ impl Reporter {
                 output.push_str("    ✓ All retains released\n");
                 output.push_str("    ✓ No double-release\n");
             }
-            VerificationResult::Failed { violations, duration } => {
+            VerificationResult::Failed {
+                violations,
+                duration,
+            } => {
                 output.push_str("✗ Verification FAILED\n");
                 output.push_str(&format!(
                     "  {} error(s), {} warning(s) in {:?}\n\n",
@@ -104,7 +111,11 @@ impl Reporter {
 
     fn format_json(&self, result: &VerificationResult) -> String {
         match result {
-            VerificationResult::Verified { unit_count, rule_count, duration } => {
+            VerificationResult::Verified {
+                unit_count,
+                rule_count,
+                duration,
+            } => {
                 format!(
                     r#"{{"status":"verified","units":{},"rules":{},"duration_ms":{}}}"#,
                     unit_count,
@@ -112,7 +123,10 @@ impl Reporter {
                     duration.as_millis()
                 )
             }
-            VerificationResult::Failed { violations, duration } => {
+            VerificationResult::Failed {
+                violations,
+                duration,
+            } => {
                 let violations_json: Vec<String> = violations
                     .iter()
                     .map(|v| {
@@ -140,13 +154,18 @@ impl Reporter {
             VerificationResult::Verified { unit_count, .. } => {
                 format!("OK: {} functions verified", unit_count)
             }
-            VerificationResult::Failed { violations, .. } => {
-                violations
-                    .iter()
-                    .map(|v| format!("{}: {} - {}", v.span.display_location(), v.code(), v.message()))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+            VerificationResult::Failed { violations, .. } => violations
+                .iter()
+                .map(|v| {
+                    format!(
+                        "{}: {} - {}",
+                        v.span.display_location(),
+                        v.code(),
+                        v.message()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         }
     }
 }

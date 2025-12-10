@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::{Rule, Violation, ViolationKind};
-use crate::analysis::{Effect, EffectTrace, Capacity};
+use crate::analysis::{Capacity, Effect, EffectTrace};
 use crate::ir::VarId;
 
 pub struct BufferBoundsCheck;
@@ -20,10 +20,15 @@ impl Rule for BufferBoundsCheck {
         let mut violations = Vec::new();
 
         trace.iter().for_each(|entry| match &entry.effect {
-            Effect::Allocate { pointer, capacity, .. } => {
-                allocations.insert(*pointer, AllocationInfo {
-                    capacity: capacity.clone(),
-                });
+            Effect::Allocate {
+                pointer, capacity, ..
+            } => {
+                allocations.insert(
+                    *pointer,
+                    AllocationInfo {
+                        capacity: capacity.clone(),
+                    },
+                );
             }
 
             Effect::BufferWrite { pointer, size } => {
@@ -60,23 +65,30 @@ struct AllocationInfo {
 fn capacities_compatible(allocated: &Capacity, written: &Capacity) -> bool {
     match (allocated, written) {
         (Capacity::Literal(alloc), Capacity::Literal(write)) => write <= alloc,
-        
+
         (Capacity::Variable(alloc_var), Capacity::Variable(write_var)) => alloc_var == write_var,
-        
-        (Capacity::FfiResult { function_name: fn_a, .. }, Capacity::FfiResult { function_name: fn_b, .. }) => {
-            fn_a == fn_b
-        }
-        
+
+        (
+            Capacity::FfiResult {
+                function_name: fn_a,
+                ..
+            },
+            Capacity::FfiResult {
+                function_name: fn_b,
+                ..
+            },
+        ) => fn_a == fn_b,
+
         (Capacity::FfiResult { function_name, .. }, Capacity::Variable(_)) => {
             function_name.ends_with("_len")
         }
-        
+
         (Capacity::Variable(_), Capacity::FfiResult { function_name, .. }) => {
             function_name.ends_with("_len")
         }
-        
+
         (Capacity::Unknown, _) | (_, Capacity::Unknown) => true,
-        
+
         _ => false,
     }
 }
@@ -143,7 +155,10 @@ mod tests {
         let rule = BufferBoundsCheck;
         let violations = rule.check(&trace);
         assert_eq!(violations.len(), 1);
-        assert!(matches!(violations[0].kind, ViolationKind::BufferOverflow { .. }));
+        assert!(matches!(
+            violations[0].kind,
+            ViolationKind::BufferOverflow { .. }
+        ));
     }
 
     #[test]

@@ -9,10 +9,15 @@ pub enum SwiftType {
     Primitive(Primitive),
     String,
     Bytes,
-    Slice { inner: Box<SwiftType>, mutable: bool },
+    Slice {
+        inner: Box<SwiftType>,
+        mutable: bool,
+    },
     Vec(Box<SwiftType>),
     Option(Box<SwiftType>),
-    Result { ok: Box<SwiftType> },
+    Result {
+        ok: Box<SwiftType>,
+    },
     Enum(String),
     Record(String),
     Object(String),
@@ -120,16 +125,25 @@ pub enum ReturnKind {
     Void,
     Direct,
     String,
-    Enum { type_name: String },
-    Record { type_name: String },
+    Enum {
+        type_name: String,
+    },
+    Record {
+        type_name: String,
+    },
     Vec {
         inner_type: String,
         is_struct: bool,
         len_fn: String,
         copy_fn: String,
     },
-    Option { inner_type: String },
-    Result { ok_type: String, ok_is_vec: bool },
+    Option {
+        inner_type: String,
+    },
+    Result {
+        ok_type: String,
+        ok_is_vec: bool,
+    },
 }
 
 impl ReturnKind {
@@ -203,7 +217,13 @@ impl ReturnKind {
     }
 
     pub fn result_ok_is_vec(&self) -> bool {
-        matches!(self, Self::Result { ok_is_vec: true, .. })
+        matches!(
+            self,
+            Self::Result {
+                ok_is_vec: true,
+                ..
+            }
+        )
     }
 
     pub fn throws(&self) -> bool {
@@ -226,7 +246,13 @@ impl ReturnKind {
     }
 
     pub fn vec_is_struct(&self) -> bool {
-        matches!(self, Self::Vec { is_struct: true, .. })
+        matches!(
+            self,
+            Self::Vec {
+                is_struct: true,
+                ..
+            }
+        )
     }
 
     pub fn vec_len_fn(&self) -> Option<&str> {
@@ -259,28 +285,43 @@ impl ParamConversion {
     pub fn from_param(name: &str, ty: &Type) -> Self {
         let swift_ty = SwiftType::from_model(ty);
         let swift_name = NamingConvention::param_name(name);
-        
+
         let (wrapper_pre, ffi_args, wrapper_post, is_mutable) = match &swift_ty {
             SwiftType::String => (
-                Some(format!("{}.withCString {{ {}Ptr in", swift_name, swift_name)),
+                Some(format!(
+                    "{}.withCString {{ {}Ptr in",
+                    swift_name, swift_name
+                )),
                 vec![
-                    format!("UnsafeRawPointer({}Ptr).assumingMemoryBound(to: UInt8.self)", swift_name),
+                    format!(
+                        "UnsafeRawPointer({}Ptr).assumingMemoryBound(to: UInt8.self)",
+                        swift_name
+                    ),
                     format!("UInt({}.utf8.count)", swift_name),
                 ],
                 Some("}".into()),
                 false,
             ),
             SwiftType::Bytes => (
-                Some(format!("{}.withUnsafeBytes {{ {}Ptr in", swift_name, swift_name)),
+                Some(format!(
+                    "{}.withUnsafeBytes {{ {}Ptr in",
+                    swift_name, swift_name
+                )),
                 vec![
-                    format!("{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)", swift_name),
+                    format!(
+                        "{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)",
+                        swift_name
+                    ),
                     format!("UInt({}.count)", swift_name),
                 ],
                 Some("}".into()),
                 false,
             ),
             SwiftType::Slice { mutable: false, .. } | SwiftType::Vec(_) => (
-                Some(format!("{}.withUnsafeBufferPointer {{ {}Ptr in", swift_name, swift_name)),
+                Some(format!(
+                    "{}.withUnsafeBufferPointer {{ {}Ptr in",
+                    swift_name, swift_name
+                )),
                 vec![
                     format!("{}Ptr.baseAddress", swift_name),
                     format!("UInt({}Ptr.count)", swift_name),
@@ -289,7 +330,10 @@ impl ParamConversion {
                 false,
             ),
             SwiftType::Slice { mutable: true, .. } => (
-                Some(format!("{}.withUnsafeMutableBufferPointer {{ {}Ptr in", swift_name, swift_name)),
+                Some(format!(
+                    "{}.withUnsafeMutableBufferPointer {{ {}Ptr in",
+                    swift_name, swift_name
+                )),
                 vec![
                     format!("{}Ptr.baseAddress", swift_name),
                     format!("UInt({}Ptr.count)", swift_name),
@@ -297,15 +341,14 @@ impl ParamConversion {
                 Some("}".into()),
                 true,
             ),
-            SwiftType::Enum(_) => (
-                None,
-                vec![format!("{}.cValue", swift_name)],
-                None,
-                false,
-            ),
+            SwiftType::Enum(_) => (None, vec![format!("{}.cValue", swift_name)], None, false),
             SwiftType::BoxedTrait(trait_name) => (
                 None,
-                vec![format!("{}Bridge.create({})", NamingConvention::class_name(trait_name), swift_name)],
+                vec![format!(
+                    "{}Bridge.create({})",
+                    NamingConvention::class_name(trait_name),
+                    swift_name
+                )],
                 None,
                 false,
             ),
@@ -342,7 +385,9 @@ impl SyncCallBuilder {
     }
 
     pub fn with_params<'a>(mut self, params: impl Iterator<Item = (&'a str, &'a Type)>) -> Self {
-        self.params = params.map(|(n, t)| ParamConversion::from_param(n, t)).collect();
+        self.params = params
+            .map(|(n, t)| ParamConversion::from_param(n, t))
+            .collect();
         self
     }
 
@@ -370,12 +415,16 @@ impl SyncCallBuilder {
     }
 
     pub fn build_ffi_args(&self) -> String {
-        [if self.include_handle { Some("handle") } else { None }]
-            .into_iter()
-            .flatten()
-            .map(String::from)
-            .chain(self.params.iter().flat_map(|p| p.ffi_args.clone()))
-            .collect::<Vec<_>>()
-            .join(", ")
+        [if self.include_handle {
+            Some("handle")
+        } else {
+            None
+        }]
+        .into_iter()
+        .flatten()
+        .map(String::from)
+        .chain(self.params.iter().flat_map(|p| p.ffi_args.clone()))
+        .collect::<Vec<_>>()
+        .join(", ")
     }
 }

@@ -3,7 +3,7 @@ use quote::quote;
 use riff_ffi_rules::naming;
 use syn::{FnArg, ReturnType, Type};
 
-use crate::params::{transform_method_params, FfiParams};
+use crate::params::{FfiParams, transform_method_params};
 
 pub fn ffi_class_impl(item: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(item as syn::ItemImpl);
@@ -182,18 +182,30 @@ fn generate_stream_exports(
     let method_name = &method.sig.ident;
     let stream_name = method_name.to_string();
 
-    let subscribe_ident =
-        syn::Ident::new(&naming::stream_ffi_subscribe(class_name, &stream_name), method_name.span());
-    let pop_batch_ident =
-        syn::Ident::new(&naming::stream_ffi_pop_batch(class_name, &stream_name), method_name.span());
-    let wait_ident =
-        syn::Ident::new(&naming::stream_ffi_wait(class_name, &stream_name), method_name.span());
-    let poll_ident =
-        syn::Ident::new(&naming::stream_ffi_poll(class_name, &stream_name), method_name.span());
-    let unsubscribe_ident =
-        syn::Ident::new(&naming::stream_ffi_unsubscribe(class_name, &stream_name), method_name.span());
-    let free_ident =
-        syn::Ident::new(&naming::stream_ffi_free(class_name, &stream_name), method_name.span());
+    let subscribe_ident = syn::Ident::new(
+        &naming::stream_ffi_subscribe(class_name, &stream_name),
+        method_name.span(),
+    );
+    let pop_batch_ident = syn::Ident::new(
+        &naming::stream_ffi_pop_batch(class_name, &stream_name),
+        method_name.span(),
+    );
+    let wait_ident = syn::Ident::new(
+        &naming::stream_ffi_wait(class_name, &stream_name),
+        method_name.span(),
+    );
+    let poll_ident = syn::Ident::new(
+        &naming::stream_ffi_poll(class_name, &stream_name),
+        method_name.span(),
+    );
+    let unsubscribe_ident = syn::Ident::new(
+        &naming::stream_ffi_unsubscribe(class_name, &stream_name),
+        method_name.span(),
+    );
+    let free_ident = syn::Ident::new(
+        &naming::stream_ffi_free(class_name, &stream_name),
+        method_name.span(),
+    );
 
     quote! {
         #[unsafe(no_mangle)]

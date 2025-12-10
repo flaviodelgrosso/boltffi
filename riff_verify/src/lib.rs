@@ -1,17 +1,19 @@
-pub mod source;
+pub mod analysis;
+pub mod contract;
 pub mod ir;
 pub mod parse;
-pub mod analysis;
-pub mod rules;
 pub mod report;
-pub mod contract;
+pub mod rules;
+pub mod source;
 pub mod verifier;
 
-pub use source::{SourceFile, SourceSpan, SourcePosition, LineNumber, ColumnNumber, ByteOffset, ByteLength};
-pub use ir::{VerifyUnit, UnitKind, Statement, Expression, VarId, VarName, VarIdGenerator};
-pub use parse::{SwiftParser, ParseError, Language, LanguageParser, FfiPatterns};
-pub use analysis::{Effect, EffectTrace, EffectEntry, EffectCollector, MemoryState, Capacity};
-pub use rules::{Rule, RuleRegistry, Violation, ViolationKind, Severity};
-pub use report::{VerificationResult, Reporter, OutputFormat};
-pub use contract::{FfiContract, FfiFunction, FfiClass, ContractLoader};
+pub use analysis::{Capacity, Effect, EffectCollector, EffectEntry, EffectTrace, MemoryState};
+pub use contract::{ContractLoader, FfiClass, FfiContract, FfiFunction};
+pub use ir::{Expression, Statement, UnitKind, VarId, VarIdGenerator, VarName, VerifyUnit};
+pub use parse::{FfiPatterns, Language, LanguageParser, ParseError, SwiftParser};
+pub use report::{OutputFormat, Reporter, VerificationResult};
+pub use rules::{Rule, RuleRegistry, Severity, Violation, ViolationKind};
+pub use source::{
+    ByteLength, ByteOffset, ColumnNumber, LineNumber, SourceFile, SourcePosition, SourceSpan,
+};
 pub use verifier::{Verifier, VerifyError};

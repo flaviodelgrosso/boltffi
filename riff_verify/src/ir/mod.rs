@@ -2,7 +2,7 @@ mod types;
 mod var;
 
 pub use types::{
-    VerifyUnit, UnitKind, Statement, Expression, Param, Literal, BinaryOp,
-    StatusCheckKind, PointerType, BufferKind,
+    BinaryOp, BufferKind, Expression, Literal, Param, PointerType, Statement, StatusCheckKind,
+    UnitKind, VerifyUnit,
 };
 pub use var::{VarId, VarIdGenerator, VarName};

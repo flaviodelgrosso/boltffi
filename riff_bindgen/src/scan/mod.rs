@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use syn::{Attribute, Fields, FnArg, ImplItem, Item, ItemEnum, ItemImpl, ItemStruct, ItemTrait, Type};
+use syn::{
+    Attribute, Fields, FnArg, ImplItem, Item, ItemEnum, ItemImpl, ItemStruct, ItemTrait, Type,
+};
 use walkdir::WalkDir;
 
 use crate::model::{
@@ -151,14 +153,17 @@ impl SourceScanner {
                         || (has_attribute(&item_struct.attrs, "derive")
                             && has_ffi_type_derive(&item_struct.attrs))
                     {
-                        self.type_registry.register_record(item_struct.ident.to_string());
+                        self.type_registry
+                            .register_record(item_struct.ident.to_string());
                     }
                 }
                 Item::Enum(item_enum) => {
                     if has_repr_int(&item_enum.attrs) {
-                        self.type_registry.register_enum(item_enum.ident.to_string());
+                        self.type_registry
+                            .register_enum(item_enum.ident.to_string());
                     } else if has_attribute(&item_enum.attrs, "data") {
-                        self.type_registry.register_enum(item_enum.ident.to_string());
+                        self.type_registry
+                            .register_enum(item_enum.ident.to_string());
                     }
                 }
                 _ => {}
@@ -349,9 +354,10 @@ impl SourceScanner {
 
         for item in &item_trait.items {
             if let syn::TraitItem::Fn(method) = item
-                && let Some(scanned_method) = self.process_trait_method(method) {
-                    methods.push(scanned_method);
-                }
+                && let Some(scanned_method) = self.process_trait_method(method)
+            {
+                methods.push(scanned_method);
+            }
         }
 
         self.callback_traits
@@ -665,7 +671,10 @@ fn has_ffi_type_derive(attrs: &[Attribute]) -> bool {
     })
 }
 
-fn extract_stream_attr(attrs: &[Attribute], registry: &TypeRegistry) -> Option<(MType, StreamMode)> {
+fn extract_stream_attr(
+    attrs: &[Attribute],
+    registry: &TypeRegistry,
+) -> Option<(MType, StreamMode)> {
     for attr in attrs {
         if !attr.path().is_ident("ffi_stream") {
             continue;
@@ -720,29 +729,31 @@ fn rust_type_to_ffi_type(ty: &Type, registry: &TypeRegistry) -> Option<MType> {
 
             if ident == "Box"
                 && let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
-                    && let Some(syn::GenericArgument::Type(Type::TraitObject(trait_obj))) =
-                        args.args.first()
-                        && let Some(syn::TypeParamBound::Trait(trait_bound)) =
-                            trait_obj.bounds.first()
-                            && let Some(seg) = trait_bound.path.segments.last() {
-                                return Some(MType::BoxedTrait(seg.ident.to_string()));
-                            }
+                && let Some(syn::GenericArgument::Type(Type::TraitObject(trait_obj))) =
+                    args.args.first()
+                && let Some(syn::TypeParamBound::Trait(trait_bound)) = trait_obj.bounds.first()
+                && let Some(seg) = trait_bound.path.segments.last()
+            {
+                return Some(MType::BoxedTrait(seg.ident.to_string()));
+            }
 
             if ident == "Vec" {
                 if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
-                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                        let inner = rust_type_to_ffi_type(inner_ty, registry)?;
-                        return Some(MType::Vec(Box::new(inner)));
-                    }
+                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                {
+                    let inner = rust_type_to_ffi_type(inner_ty, registry)?;
+                    return Some(MType::Vec(Box::new(inner)));
+                }
                 return None;
             }
 
             if ident == "Option" {
                 if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
-                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                        let inner = rust_type_to_ffi_type(inner_ty, registry)?;
-                        return Some(MType::Option(Box::new(inner)));
-                    }
+                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                {
+                    let inner = rust_type_to_ffi_type(inner_ty, registry)?;
+                    return Some(MType::Option(Box::new(inner)));
+                }
                 return None;
             }
 
@@ -813,21 +824,23 @@ fn rust_type_to_ffi_type(ty: &Type, registry: &TypeRegistry) -> Option<MType> {
                     if (trait_name == "FnMut" || trait_name == "Fn" || trait_name == "FnOnce")
                         && let syn::PathArguments::Parenthesized(args) =
                             &trait_bound.path.segments.last()?.arguments
-                        {
-                            let param_type = args.inputs.first().and_then(|t| rust_type_to_ffi_type(t, registry));
-                            return Some(MType::Callback(Box::new(
-                                param_type.unwrap_or(MType::Void),
-                            )));
-                        }
+                    {
+                        let param_type = args
+                            .inputs
+                            .first()
+                            .and_then(|t| rust_type_to_ffi_type(t, registry));
+                        return Some(MType::Callback(Box::new(param_type.unwrap_or(MType::Void))));
+                    }
                 }
             }
             None
         }
         Type::TraitObject(trait_obj) => {
             if let Some(syn::TypeParamBound::Trait(trait_bound)) = trait_obj.bounds.first()
-                && let Some(seg) = trait_bound.path.segments.last() {
-                    return Some(MType::BoxedTrait(seg.ident.to_string()));
-                }
+                && let Some(seg) = trait_bound.path.segments.last()
+            {
+                return Some(MType::BoxedTrait(seg.ident.to_string()));
+            }
             None
         }
         _ => None,
@@ -856,7 +869,9 @@ fn string_to_ffi_type(s: &str, registry: &TypeRegistry) -> Option<MType> {
         }
         s if s.starts_with("Option<") => {
             let inner = &s[7..s.len() - 1];
-            Some(MType::Option(Box::new(string_to_ffi_type(inner, registry)?)))
+            Some(MType::Option(Box::new(string_to_ffi_type(
+                inner, registry,
+            )?)))
         }
         s if s.starts_with("Result<") => {
             let inner = &s[7..s.len() - 1];

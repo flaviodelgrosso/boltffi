@@ -20,7 +20,11 @@ fn expand_ffi_trait(item_trait: syn::ItemTrait) -> Result<proc_macro2::TokenStre
         trait_name.span(),
     );
     let register_fn = syn::Ident::new(
-        &format!("{}_register_{}_vtable", naming::ffi_prefix(), trait_name_snake),
+        &format!(
+            "{}_register_{}_vtable",
+            naming::ffi_prefix(),
+            trait_name_snake
+        ),
         trait_name.span(),
     );
     let create_fn = syn::Ident::new(

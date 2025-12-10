@@ -1,6 +1,6 @@
+use crate::analysis::Capacity;
 use crate::ir::VarId;
 use crate::source::SourceSpan;
-use crate::analysis::Capacity;
 
 #[derive(Debug)]
 pub struct Violation {
@@ -140,7 +140,10 @@ impl ViolationKind {
                 format!("use after free: accessing freed pointer {}", pointer)
             }
             Self::DoubleAllocation { pointer } => {
-                format!("double allocation: pointer {} allocated multiple times", pointer)
+                format!(
+                    "double allocation: pointer {} allocated multiple times",
+                    pointer
+                )
             }
             Self::RetainLeak { handle } => {
                 format!("retain leak: handle {} retained but never released", handle)
@@ -155,16 +158,26 @@ impl ViolationKind {
                 format!("use after release: accessing released handle {}", handle)
             }
             Self::CapacityMismatch { expected, actual } => {
-                format!("capacity mismatch: expected {:?}, got {:?}", expected, actual)
+                format!(
+                    "capacity mismatch: expected {:?}, got {:?}",
+                    expected, actual
+                )
             }
-            Self::BufferOverflow { pointer, capacity, access_size } => {
+            Self::BufferOverflow {
+                pointer,
+                capacity,
+                access_size,
+            } => {
                 format!(
                     "buffer overflow: pointer {} has capacity {:?} but accessed with size {:?}",
                     pointer, capacity, access_size
                 )
             }
             Self::UncheckedStatus { status } => {
-                format!("unchecked status: status {} not checked before using result", status)
+                format!(
+                    "unchecked status: status {} not checked before using result",
+                    status
+                )
             }
             Self::UseBeforeStatusCheck { out_param, status } => {
                 format!(
@@ -176,16 +189,28 @@ impl ViolationKind {
                 format!("contract violation: {}", description)
             }
             Self::InconsistentFree { pointer } => {
-                format!("inconsistent free: pointer {} freed in one branch but not the other", pointer)
+                format!(
+                    "inconsistent free: pointer {} freed in one branch but not the other",
+                    pointer
+                )
             }
             Self::InconsistentRelease { handle } => {
-                format!("inconsistent release: handle {} released in one branch but not the other", handle)
+                format!(
+                    "inconsistent release: handle {} released in one branch but not the other",
+                    handle
+                )
             }
             Self::InconsistentAllocation { pointer } => {
-                format!("inconsistent allocation: pointer {} allocated in one branch only", pointer)
+                format!(
+                    "inconsistent allocation: pointer {} allocated in one branch only",
+                    pointer
+                )
             }
             Self::InconsistentRetain { handle } => {
-                format!("inconsistent retain: handle {} retained in one branch only", handle)
+                format!(
+                    "inconsistent retain: handle {} retained in one branch only",
+                    handle
+                )
             }
         }
     }

@@ -1,20 +1,20 @@
 use std::path::Path;
 
-use crate::ir::VerifyUnit;
 use super::ParseError;
+use crate::ir::VerifyUnit;
 
 pub trait LanguageParser: Send {
     fn language_name(&self) -> &'static str;
-    
+
     fn file_extensions(&self) -> &'static [&'static str];
-    
+
     fn parse_file(&mut self, path: &Path) -> Result<Vec<VerifyUnit>, ParseError> {
         let content = std::fs::read_to_string(path)?;
         self.parse_source(path, &content)
     }
-    
+
     fn parse_source(&mut self, path: &Path, source: &str) -> Result<Vec<VerifyUnit>, ParseError>;
-    
+
     fn can_parse(&self, path: &Path) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())

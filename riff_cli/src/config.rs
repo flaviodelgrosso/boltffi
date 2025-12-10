@@ -48,8 +48,7 @@ pub struct AndroidConfig {
     pub ndk_version: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[derive(Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 pub struct PackConfig {
     #[serde(default)]
     pub xcframework: XcframeworkConfig,
@@ -122,7 +121,6 @@ impl Default for AndroidConfig {
         }
     }
 }
-
 
 impl Default for XcframeworkConfig {
     fn default() -> Self {

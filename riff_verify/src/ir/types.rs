@@ -1,5 +1,5 @@
-use crate::source::SourceSpan;
 use super::var::{VarId, VarName};
+use crate::source::SourceSpan;
 
 #[derive(Debug, Clone)]
 pub struct VerifyUnit {
@@ -34,9 +34,9 @@ impl UnitKind {
 
     pub fn class_name(&self) -> Option<&str> {
         match self {
-            Self::Method { class_name } | Self::Initializer { class_name } | Self::Deinitializer { class_name } => {
-                Some(class_name)
-            }
+            Self::Method { class_name }
+            | Self::Initializer { class_name }
+            | Self::Deinitializer { class_name } => Some(class_name),
             Self::FreeFunction | Self::Closure => None,
         }
     }
@@ -194,9 +194,15 @@ impl Statement {
             Self::Allocate { target_var, .. } => vec![*target_var],
             Self::TakeRetainedValue { result_var, .. } => vec![*result_var],
             Self::PassRetained { opaque_var, .. } => vec![*opaque_var],
-            Self::FfiCall { result_var, out_params, .. } => {
-                result_var.iter().copied().chain(out_params.iter().copied()).collect()
-            }
+            Self::FfiCall {
+                result_var,
+                out_params,
+                ..
+            } => result_var
+                .iter()
+                .copied()
+                .chain(out_params.iter().copied())
+                .collect(),
             _ => vec![],
         }
     }
@@ -299,36 +305,37 @@ impl Expression {
             Self::Variable(var_id) => vec![*var_id],
             Self::AddressOf(var_id) => vec![*var_id],
             Self::FieldAccess { base, .. } => base.referenced_vars(),
-            Self::MethodCall { receiver, arguments, .. } => {
-                receiver
-                    .referenced_vars()
-                    .into_iter()
-                    .chain(arguments.iter().flat_map(|arg| arg.referenced_vars()))
-                    .collect()
-            }
-            Self::BinaryOperation { left, right, .. } => {
-                left.referenced_vars()
-                    .into_iter()
-                    .chain(right.referenced_vars())
-                    .collect()
-            }
+            Self::MethodCall {
+                receiver,
+                arguments,
+                ..
+            } => receiver
+                .referenced_vars()
+                .into_iter()
+                .chain(arguments.iter().flat_map(|arg| arg.referenced_vars()))
+                .collect(),
+            Self::BinaryOperation { left, right, .. } => left
+                .referenced_vars()
+                .into_iter()
+                .chain(right.referenced_vars())
+                .collect(),
             Self::UnaryOperation { operand, .. } => operand.referenced_vars(),
             Self::Cast { expression, .. } => expression.referenced_vars(),
             Self::Dereference(inner) => inner.referenced_vars(),
-            Self::FfiCallExpr { arguments, .. } => {
-                arguments.iter().flat_map(|arg| arg.referenced_vars()).collect()
-            }
+            Self::FfiCallExpr { arguments, .. } => arguments
+                .iter()
+                .flat_map(|arg| arg.referenced_vars())
+                .collect(),
             Self::ArrayLiteral { elements } => {
                 elements.iter().flat_map(|e| e.referenced_vars()).collect()
             }
-            Self::Closure { body, .. } => {
-                body.iter()
-                    .flat_map(|stmt| match stmt {
-                        Statement::Expression { expression, .. } => expression.referenced_vars(),
-                        _ => vec![],
-                    })
-                    .collect()
-            }
+            Self::Closure { body, .. } => body
+                .iter()
+                .flat_map(|stmt| match stmt {
+                    Statement::Expression { expression, .. } => expression.referenced_vars(),
+                    _ => vec![],
+                })
+                .collect(),
             Self::Literal(_) | Self::Other { .. } => vec![],
         }
     }
@@ -410,7 +417,9 @@ mod tests {
 
     #[test]
     fn test_unit_kind_class_name() {
-        let method = UnitKind::Method { class_name: "MyClass".to_string() };
+        let method = UnitKind::Method {
+            class_name: "MyClass".to_string(),
+        };
         assert_eq!(method.class_name(), Some("MyClass"));
 
         let free_fn = UnitKind::FreeFunction;

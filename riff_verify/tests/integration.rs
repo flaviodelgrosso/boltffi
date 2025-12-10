@@ -1,10 +1,10 @@
+use riff_verify::{Reporter, VerificationResult, Verifier};
 use std::path::Path;
-use riff_verify::{Verifier, Reporter, VerificationResult};
 
 #[test]
 fn test_verify_generated_benchriff() {
     let swift_path = Path::new("../bench_demo/rust-riff/dist/BenchRiff.swift");
-    
+
     if !swift_path.exists() {
         eprintln!("Skipping test: BenchRiff.swift not found (run `riff pack` first)");
         return;
@@ -12,14 +12,17 @@ fn test_verify_generated_benchriff() {
 
     let mut verifier = Verifier::swift().expect("failed to create verifier");
     let result = verifier.verify_file(swift_path).expect("failed to verify");
-    
+
     let reporter = Reporter::human();
     eprintln!("{}", reporter.report(&result));
-    
-    eprintln!("Verified {} functions", match &result {
-        VerificationResult::Verified { unit_count, .. } => unit_count,
-        VerificationResult::Failed { .. } => &0,
-    });
+
+    eprintln!(
+        "Verified {} functions",
+        match &result {
+            VerificationResult::Verified { unit_count, .. } => unit_count,
+            VerificationResult::Failed { .. } => &0,
+        }
+    );
 }
 
 #[test]
@@ -70,8 +73,10 @@ public func echoString(value: String) -> String {
 "#;
 
     let mut verifier = Verifier::swift().expect("failed to create verifier");
-    let result = verifier.verify_source(std::path::Path::new("test.swift"), source).expect("failed to verify");
-    
+    let result = verifier
+        .verify_source(std::path::Path::new("test.swift"), source)
+        .expect("failed to verify");
+
     let reporter = Reporter::human();
     eprintln!("{}", reporter.report(&result));
 }

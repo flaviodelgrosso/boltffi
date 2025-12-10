@@ -1,11 +1,11 @@
 use std::path::Path;
 use std::time::Instant;
 
-use crate::analysis::{EffectCollector, CollectionResult};
-use crate::rules::BranchConsistency;
+use crate::analysis::{CollectionResult, EffectCollector};
 use crate::contract::{ContractLoader, FfiContract};
 use crate::parse::{FfiPatterns, Language, LanguageParser, ParseError, SwiftParser};
 use crate::report::VerificationResult;
+use crate::rules::BranchConsistency;
 use crate::rules::{RuleRegistry, Violation};
 
 pub struct Verifier {
@@ -52,7 +52,7 @@ impl Verifier {
             Language::Swift => (Box::new(SwiftParser::new()?), FfiPatterns::swift()),
             Language::Kotlin => return Err(VerifyError::UnsupportedLanguage("Kotlin".into())),
         };
-        
+
         Ok(Self {
             parser,
             patterns,
@@ -62,13 +62,14 @@ impl Verifier {
     }
 
     pub fn for_path(path: &Path) -> Result<Self, VerifyError> {
-        let language = Language::from_path(path)
-            .ok_or_else(|| VerifyError::UnsupportedLanguage(
+        let language = Language::from_path(path).ok_or_else(|| {
+            VerifyError::UnsupportedLanguage(
                 path.extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("unknown")
-                    .to_string()
-            ))?;
+                    .to_string(),
+            )
+        })?;
         Self::for_language(language)
     }
 
@@ -76,7 +77,10 @@ impl Verifier {
         Self::for_language(Language::Swift)
     }
 
-    pub fn with_parser_and_patterns<P: LanguageParser + 'static>(parser: P, patterns: FfiPatterns) -> Self {
+    pub fn with_parser_and_patterns<P: LanguageParser + 'static>(
+        parser: P,
+        patterns: FfiPatterns,
+    ) -> Self {
         Self {
             parser: Box::new(parser),
             patterns,
@@ -96,7 +100,11 @@ impl Verifier {
     }
 
     pub fn with_auto_contract(mut self, source: &str, prefix: &str) -> Self {
-        self.contract = Some(ContractLoader::from_source_with_patterns(source, prefix, &self.patterns));
+        self.contract = Some(ContractLoader::from_source_with_patterns(
+            source,
+            prefix,
+            &self.patterns,
+        ));
         self
     }
 
@@ -105,20 +113,25 @@ impl Verifier {
         self.verify_source(path, &content)
     }
 
-    pub fn verify_source(&mut self, path: &Path, source: &str) -> Result<VerificationResult, VerifyError> {
+    pub fn verify_source(
+        &mut self,
+        path: &Path,
+        source: &str,
+    ) -> Result<VerificationResult, VerifyError> {
         let start = Instant::now();
-        
-        let contract = self.contract
-            .clone()
-            .unwrap_or_else(|| ContractLoader::from_source_with_patterns(source, "riff", &self.patterns));
-        
+
+        let contract = self.contract.clone().unwrap_or_else(|| {
+            ContractLoader::from_source_with_patterns(source, "riff", &self.patterns)
+        });
+
         let units = self.parser.parse_source(path, source)?;
         let branch_rule = BranchConsistency;
-        
+
         let all_violations: Vec<Violation> = units
             .iter()
             .flat_map(|unit| {
-                let CollectionResult { trace, divergences } = EffectCollector::collect_with_flow(unit);
+                let CollectionResult { trace, divergences } =
+                    EffectCollector::collect_with_flow(unit);
                 let mut violations = self.rules.check_all_with_contract(&trace, &contract);
                 violations.extend(branch_rule.check_divergences(&divergences));
                 violations
@@ -155,7 +168,9 @@ mod tests {
 
     fn verify_swift(source: &str) -> VerificationResult {
         let mut verifier = Verifier::swift().unwrap();
-        verifier.verify_source(Path::new("test.swift"), source).unwrap()
+        verifier
+            .verify_source(Path::new("test.swift"), source)
+            .unwrap()
     }
 
     #[test]
@@ -192,7 +207,10 @@ public func test() {
 }
 "#;
         let result = verify_swift(source);
-        assert!(result.is_verified(), "Should verify: balanced retain/release");
+        assert!(
+            result.is_verified(),
+            "Should verify: balanced retain/release"
+        );
     }
 
     #[test]
@@ -223,6 +241,9 @@ public func test(condition: Bool) {
 }
 "#;
         let result = verify_swift(source);
-        assert!(result.is_verified(), "Should verify: alloc+defer in same branch");
+        assert!(
+            result.is_verified(),
+            "Should verify: alloc+defer in same branch"
+        );
     }
 }

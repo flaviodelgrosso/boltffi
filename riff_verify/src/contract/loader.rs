@@ -1,7 +1,7 @@
 use std::path::Path;
 
+use super::types::{CallbackBridge, FfiClass, FfiContract, FfiFunction, FfiOutput, FfiType};
 use crate::parse::FfiPatterns;
-use super::types::{FfiContract, FfiFunction, FfiClass, FfiOutput, FfiType, CallbackBridge};
 
 pub struct ContractLoader;
 
@@ -10,13 +10,17 @@ impl ContractLoader {
         Self::from_source_with_patterns(source, prefix, &FfiPatterns::swift())
     }
 
-    pub fn from_source_with_patterns(source: &str, prefix: &str, patterns: &FfiPatterns) -> FfiContract {
+    pub fn from_source_with_patterns(
+        source: &str,
+        prefix: &str,
+        patterns: &FfiPatterns,
+    ) -> FfiContract {
         let mut contract = FfiContract::new("detected", prefix);
-        
+
         Self::detect_classes(source, prefix, patterns, &mut contract);
         Self::detect_callback_bridges(source, patterns, &mut contract);
         Self::detect_vec_patterns(source, prefix, &mut contract);
-        
+
         contract
     }
 
@@ -25,7 +29,12 @@ impl ContractLoader {
         Ok(FfiContract::default())
     }
 
-    fn detect_classes(source: &str, prefix: &str, patterns: &FfiPatterns, contract: &mut FfiContract) {
+    fn detect_classes(
+        source: &str,
+        prefix: &str,
+        patterns: &FfiPatterns,
+        contract: &mut FfiContract,
+    ) {
         source.lines().for_each(|line| {
             if patterns.is_class_decl(line) && !patterns.is_bridge_class(line) {
                 if let Some(class_name) = patterns.extract_class_name(line) {
@@ -33,7 +42,7 @@ impl ContractLoader {
                     let class = FfiClass::new(class_name)
                         .with_constructor(format!("{}_{}_new", prefix, snake_name))
                         .with_destructor(format!("{}_{}_free", prefix, snake_name));
-                    
+
                     contract.add_class(class);
                 }
             }
@@ -44,11 +53,12 @@ impl ContractLoader {
         source.lines().for_each(|line| {
             if patterns.is_bridge_class(line) {
                 if let Some(bridge_name) = patterns.extract_class_name(line) {
-                    let trait_name = patterns.bridge_markers
+                    let trait_name = patterns
+                        .bridge_markers
                         .iter()
                         .find_map(|marker| bridge_name.strip_suffix(marker))
                         .unwrap_or(bridge_name);
-                    
+
                     contract.add_callback_bridge(CallbackBridge::new(trait_name, bridge_name));
                 }
             }
@@ -58,26 +68,25 @@ impl ContractLoader {
     fn detect_vec_patterns(source: &str, prefix: &str, contract: &mut FfiContract) {
         let len_pattern = format!("{}_", prefix);
         let copy_pattern = "_copy_into";
-        
+
         source.lines().for_each(|line| {
             if line.contains(&len_pattern) && line.contains("_len(") {
                 let func_name = line
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .find(|s| s.starts_with(&len_pattern) && s.ends_with("_len"))
                     .unwrap_or("");
-                
+
                 if !func_name.is_empty() {
                     let base_name = func_name.strip_suffix("_len").unwrap_or(func_name);
                     let copy_fn = format!("{}{}", base_name, copy_pattern);
-                    
-                    contract.add_function(
-                        FfiFunction::new(base_name, func_name)
-                            .with_output(FfiOutput::VecPattern {
-                                len_fn: func_name.to_string(),
-                                copy_fn,
-                                element_type: FfiType::Void,
-                            })
-                    );
+
+                    contract.add_function(FfiFunction::new(base_name, func_name).with_output(
+                        FfiOutput::VecPattern {
+                            len_fn: func_name.to_string(),
+                            copy_fn,
+                            element_type: FfiType::Void,
+                        },
+                    ));
                 }
             }
         });
@@ -85,7 +94,7 @@ impl ContractLoader {
 
     fn to_snake_case(s: &str) -> String {
         let mut result = String::new();
-        
+
         s.chars().for_each(|c| {
             if c.is_uppercase() {
                 if !result.is_empty() {
@@ -96,7 +105,7 @@ impl ContractLoader {
                 result.push(c);
             }
         });
-        
+
         result
     }
 }
@@ -120,9 +129,9 @@ public class DataStore {
     }
 }
 "#;
-        
+
         let contract = ContractLoader::from_source(source, "riff");
-        
+
         assert!(contract.get_class("DataStore").is_some());
         let class = contract.get_class("DataStore").unwrap();
         assert_eq!(class.destructor.as_deref(), Some("riff_data_store_free"));
@@ -140,9 +149,9 @@ private class AsyncDataFetcherBridge {
     }
 }
 "#;
-        
+
         let contract = ContractLoader::from_source(source, "riff");
-        
+
         assert!(contract.is_callback_bridge_retain("AsyncDataFetcherBridge"));
     }
 
@@ -159,16 +168,21 @@ public func generateLocations(count: Int32) -> [Location] {
     return Array(UnsafeBufferPointer(start: ptr, count: Int(written)))
 }
 "#;
-        
+
         let contract = ContractLoader::from_source(source, "riff");
-        
-        assert!(contract.get_function("riff_generate_locations_len").is_some());
+
+        assert!(contract
+            .get_function("riff_generate_locations_len")
+            .is_some());
     }
 
     #[test]
     fn test_snake_case() {
         assert_eq!(ContractLoader::to_snake_case("DataStore"), "data_store");
-        assert_eq!(ContractLoader::to_snake_case("HTTPClient"), "h_t_t_p_client");
+        assert_eq!(
+            ContractLoader::to_snake_case("HTTPClient"),
+            "h_t_t_p_client"
+        );
         assert_eq!(ContractLoader::to_snake_case("Simple"), "simple");
     }
 }

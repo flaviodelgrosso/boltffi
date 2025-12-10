@@ -75,9 +75,7 @@ impl Method {
     }
 
     pub fn has_return_value(&self) -> bool {
-        self.output
-            .as_ref()
-            .is_some_and(|output| !output.is_void())
+        self.output.as_ref().is_some_and(|output| !output.is_void())
     }
 
     pub fn has_callbacks(&self) -> bool {

@@ -7,10 +7,10 @@ mod violation;
 
 pub use branch::BranchConsistency;
 pub use buffer::BufferBoundsCheck;
-pub use memory::{AllocFreeBalance, NoUseAfterFree, NoDoubleFree};
-pub use refcount::{RetainReleaseBalance, NoDoubleRelease};
+pub use memory::{AllocFreeBalance, NoDoubleFree, NoUseAfterFree};
+pub use refcount::{NoDoubleRelease, RetainReleaseBalance};
 pub use status::StatusMustBeChecked;
-pub use violation::{Violation, ViolationKind, Severity};
+pub use violation::{Severity, Violation, ViolationKind};
 
 use crate::analysis::EffectTrace;
 use crate::contract::FfiContract;
@@ -19,7 +19,7 @@ pub trait Rule: Send + Sync {
     fn id(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn check(&self, trace: &EffectTrace) -> Vec<Violation>;
-    
+
     fn check_with_contract(&self, trace: &EffectTrace, _contract: &FfiContract) -> Vec<Violation> {
         self.check(trace)
     }
@@ -57,7 +57,11 @@ impl RuleRegistry {
             .collect()
     }
 
-    pub fn check_all_with_contract(&self, trace: &EffectTrace, contract: &FfiContract) -> Vec<Violation> {
+    pub fn check_all_with_contract(
+        &self,
+        trace: &EffectTrace,
+        contract: &FfiContract,
+    ) -> Vec<Violation> {
         self.rules
             .iter()
             .flat_map(|rule| rule.check_with_contract(trace, contract))

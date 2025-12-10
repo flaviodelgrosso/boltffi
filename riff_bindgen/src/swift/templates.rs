@@ -115,13 +115,19 @@ impl FunctionTemplate {
         let ret = ReturnInfo::from_type(function.output.as_ref());
         let func_name_pascal = NamingConvention::class_name(&function.name);
         let params_info = ParamsInfo::from_inputs(
-            function.inputs.iter().map(|p| (p.name.as_str(), &p.param_type)),
+            function
+                .inputs
+                .iter()
+                .map(|p| (p.name.as_str(), &p.param_type)),
             &func_name_pascal,
         );
 
         let ffi_name = naming::function_ffi_name(&function.name);
-        let call_builder = super::marshal::SyncCallBuilder::new(&ffi_name, false)
-            .with_params(function.non_callback_params().map(|p| (p.name.as_str(), &p.param_type)));
+        let call_builder = super::marshal::SyncCallBuilder::new(&ffi_name, false).with_params(
+            function
+                .non_callback_params()
+                .map(|p| (p.name.as_str(), &p.param_type)),
+        );
 
         let callback_args = params_info
             .callbacks
@@ -157,10 +163,8 @@ impl FunctionTemplate {
             })
             .unwrap_or_default();
 
-        let return_kind = super::marshal::ReturnKind::from_function(
-            function.output.as_ref(),
-            &function.name,
-        );
+        let return_kind =
+            super::marshal::ReturnKind::from_function(function.output.as_ref(), &function.name);
 
         Self {
             prefix: ffi_prefix,
@@ -229,27 +233,27 @@ impl DataEnumTemplate {
                 .variants
                 .iter()
                 .map(|variant| {
-                    let is_single_tuple = variant.fields.len() == 1 
-                        && variant.fields[0].name.starts_with('_');
+                    let is_single_tuple =
+                        variant.fields.len() == 1 && variant.fields[0].name.starts_with('_');
                     DataVariantView {
                         swift_name: NamingConvention::enum_case_name(&variant.name),
                         c_name: variant.name.clone(),
                         tag_constant: format!("{}_TAG_{}", enumeration.name, variant.name),
                         is_single_tuple,
                         fields: variant
-                        .fields
-                        .iter()
-                        .map(|field| {
-                            let swift_name = NamingConvention::param_name(&field.name);
-                            let c_name = field.name.clone();
-                            FieldView {
-                                needs_alias: swift_name != c_name,
-                                swift_name,
-                                c_name,
-                                swift_type: TypeMapper::map_type(&field.field_type),
-                            }
-                        })
-                        .collect(),
+                            .fields
+                            .iter()
+                            .map(|field| {
+                                let swift_name = NamingConvention::param_name(&field.name);
+                                let c_name = field.name.clone();
+                                FieldView {
+                                    needs_alias: swift_name != c_name,
+                                    swift_name,
+                                    c_name,
+                                    swift_type: TypeMapper::map_type(&field.field_type),
+                                }
+                            })
+                            .collect(),
                     }
                 })
                 .collect(),
@@ -299,13 +303,19 @@ impl ClassTemplate {
                 .iter()
                 .map(|method| {
                     let params_info = super::conversion::ParamsInfo::from_inputs(
-                        method.inputs.iter().map(|p| (p.name.as_str(), &p.param_type)),
+                        method
+                            .inputs
+                            .iter()
+                            .map(|p| (p.name.as_str(), &p.param_type)),
                         &NamingConvention::class_name(&method.name),
                     );
                     MethodView {
                         doc: method.doc.clone(),
                         deprecated: method.deprecated.is_some(),
-                        deprecated_message: method.deprecated.as_ref().and_then(|d| d.message.clone()),
+                        deprecated_message: method
+                            .deprecated
+                            .as_ref()
+                            .and_then(|d| d.message.clone()),
                         swift_name: NamingConvention::method_name(&method.name),
                         is_static: method.is_static(),
                         is_async: method.is_async,
@@ -484,8 +494,11 @@ pub struct SyncMethodBodyTemplate {
 impl SyncMethodBodyTemplate {
     pub fn from_method(method: &Method, class: &Class, _module: &Module) -> Self {
         let ffi_name = naming::method_ffi_name(&class.name, &method.name);
-        let call_builder = super::marshal::SyncCallBuilder::new(&ffi_name, true)
-            .with_params(method.non_callback_params().map(|p| (p.name.as_str(), &p.param_type)));
+        let call_builder = super::marshal::SyncCallBuilder::new(&ffi_name, true).with_params(
+            method
+                .non_callback_params()
+                .map(|p| (p.name.as_str(), &p.param_type)),
+        );
 
         Self {
             ffi_name,
@@ -514,11 +527,17 @@ pub struct CallbackMethodBodyTemplate {
 impl CallbackMethodBodyTemplate {
     pub fn from_method(method: &Method, class: &Class, _module: &Module) -> Self {
         let ffi_name = naming::method_ffi_name(&class.name, &method.name);
-        let call_builder = super::marshal::SyncCallBuilder::new(&ffi_name, true)
-            .with_params(method.non_callback_params().map(|p| (p.name.as_str(), &p.param_type)));
+        let call_builder = super::marshal::SyncCallBuilder::new(&ffi_name, true).with_params(
+            method
+                .non_callback_params()
+                .map(|p| (p.name.as_str(), &p.param_type)),
+        );
 
         let params_info = super::conversion::ParamsInfo::from_inputs(
-            method.inputs.iter().map(|p| (p.name.as_str(), &p.param_type)),
+            method
+                .inputs
+                .iter()
+                .map(|p| (p.name.as_str(), &p.param_type)),
             &NamingConvention::class_name(&method.name),
         );
 
@@ -556,8 +575,12 @@ pub struct ThrowingMethodBodyTemplate {
 impl ThrowingMethodBodyTemplate {
     pub fn from_method(method: &Method, class: &Class, _module: &Module) -> Self {
         let ffi_name = naming::method_ffi_name(&class.name, &method.name);
-        let call_builder = super::marshal::SyncCallBuilder::new(&ffi_name, true)
-            .with_params(method.inputs.iter().map(|p| (p.name.as_str(), &p.param_type)));
+        let call_builder = super::marshal::SyncCallBuilder::new(&ffi_name, true).with_params(
+            method
+                .inputs
+                .iter()
+                .map(|p| (p.name.as_str(), &p.param_type)),
+        );
 
         Self {
             ffi_name,

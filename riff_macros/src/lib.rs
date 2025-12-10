@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, ItemFn};
+use syn::{DeriveInput, ItemFn, parse_macro_input};
 
 mod callback_trait;
 mod class;

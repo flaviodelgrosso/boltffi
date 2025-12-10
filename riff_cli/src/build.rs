@@ -9,7 +9,6 @@ pub struct BuildOptions {
     pub package: Option<String>,
 }
 
-
 pub struct Builder<'a> {
     config: &'a Config,
     options: BuildOptions,

@@ -3,10 +3,10 @@ use quote::quote;
 use riff_ffi_rules::naming;
 use syn::ItemFn;
 
-use crate::params::{transform_params, transform_params_async, FfiParams};
+use crate::params::{FfiParams, transform_params, transform_params_async};
 use crate::returns::{
-    classify_async_return, classify_return, get_complete_conversion, get_default_ffi_value,
-    get_ffi_return_type, get_rust_return_type, ReturnKind,
+    ReturnKind, classify_async_return, classify_return, get_complete_conversion,
+    get_default_ffi_value, get_ffi_return_type, get_rust_return_type,
 };
 
 pub fn ffi_export_impl(item: TokenStream) -> TokenStream {

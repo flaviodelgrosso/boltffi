@@ -1,6 +1,6 @@
-use crate::model::Type;
 use super::names::NamingConvention;
 use super::types::TypeMapper;
+use crate::model::Type;
 
 #[derive(Debug, Clone, Default)]
 pub struct ReturnInfo {
@@ -13,11 +13,17 @@ pub struct ReturnInfo {
 impl ReturnInfo {
     pub fn from_type(ty: Option<&Type>) -> Self {
         let Some(ty) = ty else {
-            return Self { is_void: true, ..Default::default() };
+            return Self {
+                is_void: true,
+                ..Default::default()
+            };
         };
 
         match ty {
-            Type::Void => Self { is_void: true, ..Default::default() },
+            Type::Void => Self {
+                is_void: true,
+                ..Default::default()
+            },
             Type::Result { ok, .. } => Self {
                 swift_type: Some(TypeMapper::map_type(ok)),
                 is_result: true,
@@ -58,7 +64,7 @@ impl ParamInfo {
     pub fn from_param(name: &str, ty: &Type, is_first_pointer: bool) -> Self {
         let swift_name = NamingConvention::param_name(name);
         let swift_type = TypeMapper::map_type(ty);
-        
+
         let is_string = matches!(ty, Type::String);
         let is_slice = matches!(ty, Type::Slice(_));
         let is_mut_slice = matches!(ty, Type::MutSlice(_));
@@ -67,7 +73,7 @@ impl ParamInfo {
         let is_enum = matches!(ty, Type::Enum(_));
         let is_boxed_trait = matches!(ty, Type::BoxedTrait(_));
         let is_escaping = is_callback;
-        
+
         let is_pointer_param = is_string || is_slice || is_mut_slice || is_vec;
         let is_first_pointer_param = is_pointer_param && is_first_pointer;
 
@@ -132,7 +138,11 @@ impl CallbackInfo {
         };
 
         let param_name = NamingConvention::param_name(name);
-        let suffix = if index > 0 { format!("{}", index + 1) } else { String::new() };
+        let suffix = if index > 0 {
+            format!("{}", index + 1)
+        } else {
+            String::new()
+        };
 
         Some(Self {
             param_name: param_name.clone(),
@@ -176,7 +186,9 @@ impl ParamsInfo {
             params.push(info);
 
             if matches!(ty, Type::Callback(_)) {
-                if let Some(cb) = CallbackInfo::from_param(name, ty, func_name_pascal, callback_index) {
+                if let Some(cb) =
+                    CallbackInfo::from_param(name, ty, func_name_pascal, callback_index)
+                {
                     callbacks.push(cb);
                     callback_index += 1;
                 }

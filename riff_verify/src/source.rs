@@ -137,7 +137,11 @@ pub struct SourcePosition {
 }
 
 impl SourcePosition {
-    pub fn new(line: impl Into<LineNumber>, column: impl Into<ColumnNumber>, offset: impl Into<ByteOffset>) -> Self {
+    pub fn new(
+        line: impl Into<LineNumber>,
+        column: impl Into<ColumnNumber>,
+        offset: impl Into<ByteOffset>,
+    ) -> Self {
         Self {
             line: line.into(),
             column: column.into(),
@@ -163,7 +167,7 @@ impl SourceFile {
     pub fn new(path: impl AsRef<Path>, content: impl Into<String>) -> Self {
         let content: Arc<str> = content.into().into();
         let line_starts = Self::compute_line_starts(&content);
-        
+
         Self {
             path: path.as_ref().to_path_buf(),
             content,
@@ -178,7 +182,7 @@ impl SourceFile {
                     .bytes()
                     .enumerate()
                     .filter(|(_, byte)| *byte == b'\n')
-                    .map(|(index, _)| ByteOffset::new((index + 1) as u32))
+                    .map(|(index, _)| ByteOffset::new((index + 1) as u32)),
             )
             .collect()
     }
@@ -196,14 +200,15 @@ impl SourceFile {
     }
 
     pub fn position_at_offset(&self, offset: ByteOffset) -> SourcePosition {
-        let line_index = self.line_starts
+        let line_index = self
+            .line_starts
             .iter()
             .rposition(|&start| start.as_u32() <= offset.as_u32())
             .unwrap_or(0);
-        
+
         let line_start = self.line_starts[line_index];
         let column = offset.as_u32() - line_start.as_u32();
-        
+
         SourcePosition {
             line: LineNumber::new((line_index + 1) as u32),
             column: ColumnNumber::new(column + 1),
@@ -214,12 +219,15 @@ impl SourceFile {
     pub fn line_content(&self, line: LineNumber) -> Option<&str> {
         let line_index = line.as_usize().checked_sub(1)?;
         let start = self.line_starts.get(line_index)?.as_usize();
-        let end = self.line_starts
+        let end = self
+            .line_starts
             .get(line_index + 1)
             .map(|o| o.as_usize())
             .unwrap_or(self.content.len());
-        
-        self.content.get(start..end).map(|s| s.trim_end_matches('\n'))
+
+        self.content
+            .get(start..end)
+            .map(|s| s.trim_end_matches('\n'))
     }
 
     pub fn slice(&self, start: ByteOffset, length: ByteLength) -> Option<&str> {
@@ -246,7 +254,11 @@ pub struct SourceSpan {
 }
 
 impl SourceSpan {
-    pub fn new(file: Arc<SourceFile>, start: impl Into<ByteOffset>, length: impl Into<ByteLength>) -> Self {
+    pub fn new(
+        file: Arc<SourceFile>,
+        start: impl Into<ByteOffset>,
+        length: impl Into<ByteLength>,
+    ) -> Self {
         Self {
             file,
             start: start.into(),
@@ -298,7 +310,7 @@ impl SourceSpan {
 
         let start = self.start.as_u32().min(other.start.as_u32());
         let end = self.end_offset().as_u32().max(other.end_offset().as_u32());
-        
+
         Some(SourceSpan {
             file: Arc::clone(&self.file),
             start: ByteOffset::new(start),
@@ -332,11 +344,11 @@ mod tests {
     #[test]
     fn test_position_at_offset() {
         let source = SourceFile::new("test.swift", "abc\ndef\nghi");
-        
+
         let pos = source.position_at_offset(ByteOffset::new(0));
         assert_eq!(pos.line.as_u32(), 1);
         assert_eq!(pos.column.as_u32(), 1);
-        
+
         let pos = source.position_at_offset(ByteOffset::new(4));
         assert_eq!(pos.line.as_u32(), 2);
         assert_eq!(pos.column.as_u32(), 1);
@@ -345,7 +357,7 @@ mod tests {
     #[test]
     fn test_line_content() {
         let source = SourceFile::new("test.swift", "first\nsecond\nthird");
-        
+
         assert_eq!(source.line_content(LineNumber::new(1)), Some("first"));
         assert_eq!(source.line_content(LineNumber::new(2)), Some("second"));
         assert_eq!(source.line_content(LineNumber::new(3)), Some("third"));

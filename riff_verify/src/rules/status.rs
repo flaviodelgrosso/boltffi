@@ -116,8 +116,18 @@ mod tests {
             },
             test_span(),
         );
-        trace.push(Effect::StatusProduced { status_var: status1 }, test_span());
-        trace.push(Effect::StatusChecked { status_var: status1 }, test_span());
+        trace.push(
+            Effect::StatusProduced {
+                status_var: status1,
+            },
+            test_span(),
+        );
+        trace.push(
+            Effect::StatusChecked {
+                status_var: status1,
+            },
+            test_span(),
+        );
 
         trace.push(
             Effect::FfiCall {
@@ -127,7 +137,12 @@ mod tests {
             },
             test_span(),
         );
-        trace.push(Effect::StatusProduced { status_var: status2 }, test_span());
+        trace.push(
+            Effect::StatusProduced {
+                status_var: status2,
+            },
+            test_span(),
+        );
 
         let rule = StatusMustBeChecked;
         let violations = rule.check(&trace);

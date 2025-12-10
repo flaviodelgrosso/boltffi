@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use riff_verify::{Verifier, Reporter};
+use riff_verify::{Reporter, Verifier};
 
 use crate::config::Config;
 use crate::error::{CliError, Result};
@@ -183,21 +183,22 @@ fn verify_generated_bindings(swift_path: &PathBuf) -> Result<()> {
 
     println!("Verifying generated bindings...");
 
-    let mut verifier = Verifier::swift()
-        .map_err(|e| CliError::VerifyError(e.to_string()))?;
+    let mut verifier = Verifier::swift().map_err(|e| CliError::VerifyError(e.to_string()))?;
 
-    let result = verifier.verify_file(swift_path)
+    let result = verifier
+        .verify_file(swift_path)
         .map_err(|e| CliError::VerifyError(e.to_string()))?;
 
     let reporter = Reporter::human();
-    
+
     if result.is_failed() {
         println!();
         println!("{}", reporter.report(&result));
         return Err(CliError::VerifyError("verification failed".to_string()));
     }
 
-    println!("  {} functions verified, {} rules checked",
+    println!(
+        "  {} functions verified, {} rules checked",
         result.unit_count(),
         result.rule_count()
     );

@@ -1,8 +1,8 @@
 use riff_ffi_rules::naming;
 
 use crate::model::{
-    CallbackTrait, Class, Enumeration, Function, Method, Module, Parameter, Primitive,
-    Record, StreamMethod, TraitMethod, Type,
+    CallbackTrait, Class, Enumeration, Function, Method, Module, Parameter, Primitive, Record,
+    StreamMethod, TraitMethod, Type,
 };
 
 pub struct CHeaderGenerator;
@@ -86,29 +86,30 @@ void {prefix}_clear_last_error(void);
         let mut buf_types: HashSet<String> = HashSet::new();
         let mut option_types: HashSet<String> = HashSet::new();
 
-        let collect_from_type = |ty: &Type, buf_types: &mut HashSet<String>, option_types: &mut HashSet<String>| {
-            match ty {
-                Type::Vec(inner) if inner.is_primitive() => {
-                    buf_types.insert(Self::primitive_to_cbindgen_name(inner));
-                }
-                Type::Option(inner) if inner.is_primitive() => {
-                    option_types.insert(Self::primitive_to_cbindgen_name(inner));
-                }
-                Type::Result { ok, .. } => {
-                    if let Type::Vec(inner) = ok.as_ref() {
-                        if inner.is_primitive() {
-                            buf_types.insert(Self::primitive_to_cbindgen_name(inner));
+        let collect_from_type =
+            |ty: &Type, buf_types: &mut HashSet<String>, option_types: &mut HashSet<String>| {
+                match ty {
+                    Type::Vec(inner) if inner.is_primitive() => {
+                        buf_types.insert(Self::primitive_to_cbindgen_name(inner));
+                    }
+                    Type::Option(inner) if inner.is_primitive() => {
+                        option_types.insert(Self::primitive_to_cbindgen_name(inner));
+                    }
+                    Type::Result { ok, .. } => {
+                        if let Type::Vec(inner) = ok.as_ref() {
+                            if inner.is_primitive() {
+                                buf_types.insert(Self::primitive_to_cbindgen_name(inner));
+                            }
+                        }
+                        if let Type::Option(inner) = ok.as_ref() {
+                            if inner.is_primitive() {
+                                option_types.insert(Self::primitive_to_cbindgen_name(inner));
+                            }
                         }
                     }
-                    if let Type::Option(inner) = ok.as_ref() {
-                        if inner.is_primitive() {
-                            option_types.insert(Self::primitive_to_cbindgen_name(inner));
-                        }
-                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-        };
+            };
 
         for func in &module.functions {
             if func.is_async {
@@ -543,14 +544,7 @@ void {prefix}_clear_last_error(void);
              void {}_poll(SubscriptionHandle subscription_handle, uint64_t callback_data, StreamContinuationCallback callback);\n\
              void {}_unsubscribe(SubscriptionHandle subscription_handle);\n\
              void {}_free(SubscriptionHandle subscription_handle);\n",
-            base_name,
-            class_name,
-            base_name,
-            item_type,
-            base_name,
-            base_name,
-            base_name,
-            base_name,
+            base_name, class_name, base_name, item_type, base_name, base_name, base_name, base_name,
         )
     }
 
@@ -692,5 +686,4 @@ void {prefix}_clear_last_error(void);
             Type::Result { ok, .. } => Self::type_to_c(ok),
         }
     }
-
 }

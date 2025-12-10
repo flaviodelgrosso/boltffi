@@ -151,7 +151,11 @@ pub mod naming {
     }
 
     pub fn callback_register_fn(trait_name: &str) -> String {
-        format!("{}_register_{}_vtable", FFI_PREFIX, to_snake_case(trait_name))
+        format!(
+            "{}_register_{}_vtable",
+            FFI_PREFIX,
+            to_snake_case(trait_name)
+        )
     }
 
     pub fn callback_create_fn(trait_name: &str) -> String {

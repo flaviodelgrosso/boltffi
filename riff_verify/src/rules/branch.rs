@@ -1,5 +1,5 @@
 use super::{Rule, Violation, ViolationKind};
-use crate::analysis::{EffectTrace, BranchDivergence, DivergenceKind};
+use crate::analysis::{BranchDivergence, DivergenceKind, EffectTrace};
 
 pub struct BranchConsistency;
 
@@ -26,15 +26,15 @@ impl BranchConsistency {
                     DivergenceKind::FreedInOneBranch => ViolationKind::InconsistentFree {
                         pointer: d.variable,
                     },
-                    DivergenceKind::ReleasedInOneBranch => ViolationKind::InconsistentRelease {
-                        handle: d.variable,
-                    },
+                    DivergenceKind::ReleasedInOneBranch => {
+                        ViolationKind::InconsistentRelease { handle: d.variable }
+                    }
                     DivergenceKind::AllocatedInOneBranch => ViolationKind::InconsistentAllocation {
                         pointer: d.variable,
                     },
-                    DivergenceKind::RetainedInOneBranch => ViolationKind::InconsistentRetain {
-                        handle: d.variable,
-                    },
+                    DivergenceKind::RetainedInOneBranch => {
+                        ViolationKind::InconsistentRetain { handle: d.variable }
+                    }
                 };
                 Violation::new(kind, self.id(), d.span.clone())
             })

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::rules::{Violation, Severity};
+use crate::rules::{Severity, Violation};
 
 #[derive(Debug)]
 pub enum VerificationResult {
@@ -25,7 +25,10 @@ impl VerificationResult {
     }
 
     pub fn failed(violations: Vec<Violation>, duration: Duration) -> Self {
-        Self::Failed { violations, duration }
+        Self::Failed {
+            violations,
+            duration,
+        }
     }
 
     pub fn is_verified(&self) -> bool {
@@ -63,18 +66,20 @@ impl VerificationResult {
 
     pub fn error_count(&self) -> usize {
         match self {
-            Self::Failed { violations, .. } => {
-                violations.iter().filter(|v| v.severity() == Severity::Error).count()
-            }
+            Self::Failed { violations, .. } => violations
+                .iter()
+                .filter(|v| v.severity() == Severity::Error)
+                .count(),
             Self::Verified { .. } => 0,
         }
     }
 
     pub fn warning_count(&self) -> usize {
         match self {
-            Self::Failed { violations, .. } => {
-                violations.iter().filter(|v| v.severity() == Severity::Warning).count()
-            }
+            Self::Failed { violations, .. } => violations
+                .iter()
+                .filter(|v| v.severity() == Severity::Warning)
+                .count(),
             Self::Verified { .. } => 0,
         }
     }

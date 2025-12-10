@@ -37,11 +37,14 @@ impl RetainReleaseBalance {
                 let is_callback_bridge = contract
                     .map(|c| c.is_callback_bridge_retain(&source_text))
                     .unwrap_or(false);
-                
-                retained.insert(*opaque_handle, RetainInfo {
-                    span: entry.span.clone(),
-                    is_callback_bridge,
-                });
+
+                retained.insert(
+                    *opaque_handle,
+                    RetainInfo {
+                        span: entry.span.clone(),
+                        is_callback_bridge,
+                    },
+                );
             }
             Effect::Release { opaque_handle } | Effect::TakeRetained { opaque_handle, .. } => {
                 if !retained.contains_key(opaque_handle) {

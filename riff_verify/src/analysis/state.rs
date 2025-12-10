@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::ir::VarId;
 use super::effects::Capacity;
+use crate::ir::VarId;
 
 #[derive(Debug, Clone, Default)]
 pub struct MemoryState {
@@ -19,7 +19,10 @@ struct DeferBlock {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PointerState {
     Unallocated,
-    Allocated { capacity: Capacity, element_type: String },
+    Allocated {
+        capacity: Capacity,
+        element_type: String,
+    },
     Freed,
     Unknown,
 }
@@ -96,21 +99,30 @@ impl MemoryState {
     }
 
     pub fn pointer_state(&self, pointer: VarId) -> &PointerState {
-        self.pointers.get(&pointer).unwrap_or(&PointerState::Unallocated)
+        self.pointers
+            .get(&pointer)
+            .unwrap_or(&PointerState::Unallocated)
     }
 
     pub fn ref_count_state(&self, handle: VarId) -> &RefCountState {
-        self.ref_counts.get(&handle).unwrap_or(&RefCountState::NotRetained)
+        self.ref_counts
+            .get(&handle)
+            .unwrap_or(&RefCountState::NotRetained)
     }
 
     pub fn status_state(&self, status: VarId) -> &StatusState {
-        self.statuses.get(&status).unwrap_or(&StatusState::Unchecked)
+        self.statuses
+            .get(&status)
+            .unwrap_or(&StatusState::Unchecked)
     }
 
     pub fn allocate(&mut self, pointer: VarId, element_type: String, capacity: Capacity) {
         self.pointers.insert(
             pointer,
-            PointerState::Allocated { capacity, element_type },
+            PointerState::Allocated {
+                capacity,
+                element_type,
+            },
         );
     }
 
@@ -125,7 +137,8 @@ impl MemoryState {
             RefCountState::Retained { count } => count + 1,
             RefCountState::Released => 1,
         };
-        self.ref_counts.insert(handle, RefCountState::Retained { count: new_count });
+        self.ref_counts
+            .insert(handle, RefCountState::Retained { count: new_count });
     }
 
     pub fn release(&mut self, handle: VarId) {

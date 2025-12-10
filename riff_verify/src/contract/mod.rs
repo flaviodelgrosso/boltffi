@@ -1,8 +1,7 @@
-mod types;
 mod loader;
+mod types;
 
-pub use types::{
-    FfiContract, FfiFunction, FfiClass, FfiParam, FfiOutput, 
-    Ownership, FunctionSemantics, FfiType,
-};
 pub use loader::ContractLoader;
+pub use types::{
+    FfiClass, FfiContract, FfiFunction, FfiOutput, FfiParam, FfiType, FunctionSemantics, Ownership,
+};

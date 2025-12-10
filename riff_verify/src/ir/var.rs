@@ -92,11 +92,11 @@ mod tests {
     #[test]
     fn test_var_id_generator() {
         let generator = VarIdGenerator::new();
-        
+
         let first = generator.next();
         let second = generator.next();
         let third = generator.next();
-        
+
         assert_eq!(first.as_u32(), 0);
         assert_eq!(second.as_u32(), 1);
         assert_eq!(third.as_u32(), 2);
