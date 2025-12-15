@@ -99,9 +99,11 @@ public func leaksMemory() {
     let result = verify_swift(source);
     assert!(result.is_failed(), "Should detect memory leak");
     assert!(result.error_count() > 0);
-    
+
     if let VerificationResult::Failed { violations, .. } = &result {
-        assert!(violations.iter().any(|v| matches!(v.kind, ViolationKind::MemoryLeak { .. })));
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v.kind, ViolationKind::MemoryLeak { .. })));
     }
 }
 
@@ -116,9 +118,11 @@ public func doublesFree() {
 "#;
     let result = verify_swift(source);
     assert!(result.is_failed(), "Should detect double free");
-    
+
     if let VerificationResult::Failed { violations, .. } = &result {
-        assert!(violations.iter().any(|v| matches!(v.kind, ViolationKind::DoubleFree { .. })));
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v.kind, ViolationKind::DoubleFree { .. })));
     }
 }
 
@@ -133,9 +137,11 @@ public func leaksRetain() {
 "#;
     let result = verify_swift(source);
     assert!(result.is_failed(), "Should detect retain leak");
-    
+
     if let VerificationResult::Failed { violations, .. } = &result {
-        assert!(violations.iter().any(|v| matches!(v.kind, ViolationKind::RetainLeak { .. })));
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v.kind, ViolationKind::RetainLeak { .. })));
     }
 }
 
@@ -151,9 +157,11 @@ public func doublesRelease() {
 "#;
     let result = verify_swift(source);
     assert!(result.is_failed(), "Should detect double release");
-    
+
     if let VerificationResult::Failed { violations, .. } = &result {
-        assert!(violations.iter().any(|v| matches!(v.kind, ViolationKind::DoubleRelease { .. })));
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v.kind, ViolationKind::DoubleRelease { .. })));
     }
 }
 
@@ -172,7 +180,10 @@ public func correctRetain() {
 }
 "#;
     let result = verify_swift(source);
-    assert!(result.is_verified(), "Correct code should pass verification");
+    assert!(
+        result.is_verified(),
+        "Correct code should pass verification"
+    );
 }
 
 #[test]
@@ -186,7 +197,10 @@ public enum DataProviderBridge {
 }
 "#;
     let result = verify_swift(source);
-    assert!(result.is_verified(), "Callback bridge pattern should not trigger false positive");
+    assert!(
+        result.is_verified(),
+        "Callback bridge pattern should not trigger false positive"
+    );
 }
 
 #[test]
@@ -204,7 +218,10 @@ func installContinuation(_ continuation: Continuation) -> Bool {
 }
 "#;
     let result = verify_swift(source);
-    assert!(result.is_verified(), "ContinuationBox pattern should not trigger false positive");
+    assert!(
+        result.is_verified(),
+        "ContinuationBox pattern should not trigger false positive"
+    );
 }
 
 #[test]
@@ -216,7 +233,10 @@ func decideFinish(prior: UInt) -> Continuation {
 }
 "#;
     let result = verify_swift(source);
-    assert!(result.is_verified(), "takeRetainedValue pattern should pass");
+    assert!(
+        result.is_verified(),
+        "takeRetainedValue pattern should pass"
+    );
 }
 
 #[test]
@@ -241,5 +261,8 @@ public final class RustFuture<T> {
 }
 "#;
     let result = verify_swift(source);
-    assert!(result.is_verified(), "RustFuture async pattern should pass verification");
+    assert!(
+        result.is_verified(),
+        "RustFuture async pattern should pass verification"
+    );
 }
