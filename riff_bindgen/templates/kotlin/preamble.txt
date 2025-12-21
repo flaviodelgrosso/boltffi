@@ -1,12 +1,17 @@
 package {{ package_name }}
 
+import com.sun.jna.Callback
 import com.sun.jna.Library
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import com.sun.jna.Structure
 import com.sun.jna.ptr.LongByReference
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class FfiException(val code: Int, message: String) : Exception(message)
 
@@ -66,4 +71,9 @@ private fun lastErrorMessage(): String? {
     Native.{{ prefix }}_free_string(result)
     Native.{{ prefix }}_clear_last_error()
     return message
+}
+
+interface FfiCallback : Callback {
+    fun onSuccess(result: Long)
+    fun onError(code: Int)
 }

@@ -1,3 +1,26 @@
+{%- if is_async %}
+suspend fun {{ func_name }}({% for param in params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% match return_type %}{% when Some with (ret) %}: {{ ret }}{% when None %}{% endmatch %} = suspendCancellableCoroutine { cont ->
+    val callback = object : FfiCallback {
+        override fun onSuccess(result: Long) {
+{%- if return_kind.is_primitive() %}
+            cont.resume(result{% match return_type %}{% when Some with (ret) %}.to{{ ret }}(){% when None %}{% endmatch %})
+{%- else if return_kind.is_string() %}
+            val ffiString = FfiString().apply { ptr = Pointer(result) }
+            cont.resume(ffiString.toKotlinString().also { Native.{{ prefix }}_free_string(ffiString) })
+{%- else if return_kind.is_unit() %}
+            cont.resume(Unit)
+{%- else %}
+            cont.resume(result)
+{%- endif %}
+        }
+        override fun onError(code: Int) {
+            cont.resumeWithException(FfiException(code, lastErrorMessage() ?: "Async error"))
+        }
+    }
+    val handle = Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}{% if !params.is_empty() %}, {% endif %}callback)
+    cont.invokeOnCancellation { Native.{{ prefix }}_cancel_async(handle) }
+}
+{%- else %}
 fun {{ func_name }}({% for param in params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% match return_type %}{% when Some with (ret) %}: {{ ret }}{% when None %}{% endmatch %} {
 {%- if return_kind.is_primitive() %}
     return Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
@@ -26,3 +49,4 @@ fun {{ func_name }}({% for param in params %}{{ param.name }}: {{ param.kotlin_t
     TODO("return kind not implemented")
 {%- endif %}
 }
+{%- endif %}

@@ -216,4 +216,16 @@ mod tests {
         assert!(output.contains("override fun close()"));
         assert!(output.contains("fun getReading()"));
     }
+
+    #[test]
+    fn test_render_async_function() {
+        let function = Function::new("fetch_data")
+            .with_output(Type::String)
+            .make_async();
+
+        let output = Kotlin::render_function(&function);
+        assert!(output.contains("suspend fun fetchData"));
+        assert!(output.contains("suspendCancellableCoroutine"));
+        assert!(output.contains("FfiCallback"));
+    }
 }

@@ -132,6 +132,7 @@ pub struct FunctionTemplate {
     pub inner_type: Option<String>,
     pub len_fn: Option<String>,
     pub copy_fn: Option<String>,
+    pub is_async: bool,
 }
 
 pub struct ParamView {
@@ -177,6 +178,7 @@ impl FunctionTemplate {
             inner_type,
             len_fn,
             copy_fn,
+            is_async: function.is_async,
         }
     }
 }
