@@ -1,0 +1,153 @@
+#include <jni.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include "{{ module_name }}.h"
+
+{%- for func in functions %}
+{%- if func.is_vec %}
+
+JNIEXPORT jlong JNICALL {{ func.vec_len_jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
+{%- for param in func.params %}
+{%- if param.is_string %}
+    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
+{%- endif %}
+{%- endfor %}
+    jlong _result = (jlong){{ func.vec_len_ffi }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- for param in func.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    return _result;
+}
+
+JNIEXPORT jint JNICALL {{ func.vec_copy_jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}, {{ func.vec_jni_array_type }} dst, jlong dstCap, jlongArray written) {
+{%- for param in func.params %}
+{%- if param.is_string %}
+    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
+{%- endif %}
+{%- endfor %}
+    {{ func.vec_c_type }}* _dst = ({{ func.vec_c_type }}*)(*env)->GetPrimitiveArrayCritical(env, dst, NULL);
+    uintptr_t _written = 0;
+    FfiStatus _status = {{ func.vec_copy_ffi }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}_dst, (uintptr_t)dstCap, &_written);
+    (*env)->ReleasePrimitiveArrayCritical(env, dst, _dst, 0);
+{%- for param in func.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    jlong _writtenVal = (jlong)_written;
+    (*env)->SetLongArrayRegion(env, written, 0, 1, &_writtenVal);
+    return (jint)_status.code;
+}
+{%- else %}
+
+JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
+{%- for param in func.params %}
+{%- if param.is_string %}
+    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
+{%- endif %}
+{%- endfor %}
+{%- if func.return_kind.is_void() %}
+    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- for param in func.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    (void)_status;
+{%- else if func.return_kind.is_string() %}
+    FfiString _out;
+    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}&_out);
+{%- for param in func.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    if (_status.code != 0) return NULL;
+    jstring _result = (*env)->NewStringUTF(env, (char*)_out.ptr);
+    {{ prefix }}_free_string(_out);
+    return _result;
+{%- else %}
+    {{ func.jni_return }} _result = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- for param in func.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    return _result;
+{%- endif %}
+}
+{%- endif %}
+{%- endfor %}
+
+{%- for class in classes %}
+{%- for ctor in class.constructors %}
+
+JNIEXPORT jlong JNICALL {{ ctor.jni_name }}(JNIEnv *env, jclass cls{{ ctor.jni_params }}) {
+{%- for param in ctor.params %}
+{%- if param.is_string %}
+    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
+{%- endif %}
+{%- endfor %}
+    void* _handle = {{ ctor.ffi_name }}({% for param in ctor.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- for param in ctor.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    return (jlong)_handle;
+}
+{%- endfor %}
+
+JNIEXPORT void JNICALL Java_{{ class.jni_prefix }}_Native_{{ class.jni_ffi_prefix }}_1free(JNIEnv *env, jclass cls, jlong handle) {
+    if (handle != 0) {{ class.ffi_prefix }}_free((void*)handle);
+}
+
+{%- for method in class.methods %}
+
+JNIEXPORT {{ method.jni_return }} JNICALL {{ method.jni_name }}(JNIEnv *env, jclass cls, jlong handle{{ method.jni_params }}) {
+{%- if method.return_kind.is_void() %}
+    if (handle == 0) return;
+{%- else %}
+    if (handle == 0) return 0;
+{%- endif %}
+{%- for param in method.params %}
+{%- if param.is_string %}
+    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
+{%- endif %}
+{%- endfor %}
+{%- if method.return_kind.is_void() %}
+    {{ method.ffi_name }}((void*)handle{% for param in method.params %}, {{ param.ffi_arg() }}{% endfor %});
+{%- for param in method.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+{%- else %}
+    {{ method.jni_return }} _result = {{ method.ffi_name }}((void*)handle{% for param in method.params %}, {{ param.ffi_arg() }}{% endfor %});
+{%- for param in method.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    return _result;
+{%- endif %}
+}
+{%- endfor %}
+{%- endfor %}
+
+JNIEXPORT jstring JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1last_1error_1message(JNIEnv *env, jclass cls) {
+    FfiString out;
+    FfiStatus status = {{ prefix }}_last_error_message(&out);
+    if (status.code != 0) return NULL;
+    jstring result = (*env)->NewStringUTF(env, (char*)out.ptr);
+    {{ prefix }}_free_string(out);
+    return result;
+}
+
+JNIEXPORT void JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1clear_1last_1error(JNIEnv *env, jclass cls) {
+    {{ prefix }}_clear_last_error();
+}
