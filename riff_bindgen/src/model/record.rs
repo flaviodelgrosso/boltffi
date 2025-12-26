@@ -42,6 +42,27 @@ impl Record {
     pub fn field_count(&self) -> usize {
         self.fields.len()
     }
+
+    pub fn struct_size(&self) -> usize {
+        let (size, max_align) = self.fields.iter().fold((0usize, 1usize), |(offset, max_align), field| {
+            let (field_size, field_align) = field.field_type.c_layout();
+            let aligned_offset = (offset + field_align - 1) & !(field_align - 1);
+            (aligned_offset + field_size, max_align.max(field_align))
+        });
+        (size + max_align - 1) & !(max_align - 1)
+    }
+
+    pub fn field_offsets(&self) -> Vec<usize> {
+        let mut offsets = Vec::with_capacity(self.fields.len());
+        let mut offset = 0usize;
+        for field in &self.fields {
+            let (field_size, field_align) = field.field_type.c_layout();
+            offset = (offset + field_align - 1) & !(field_align - 1);
+            offsets.push(offset);
+            offset += field_size;
+        }
+        offsets
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

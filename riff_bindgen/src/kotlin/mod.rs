@@ -1,4 +1,5 @@
 mod jni;
+mod layout;
 mod marshal;
 mod names;
 mod templates;
@@ -10,8 +11,8 @@ pub use jni::JniGenerator;
 pub use marshal::{JniParamInfo, JniReturnKind, ParamConversion, ReturnKind};
 pub use names::NamingConvention;
 pub use templates::{
-    CallbackTraitTemplate, ClassTemplate, CStyleEnumTemplate, FunctionTemplate, NativeTemplate,
-    PreambleTemplate, RecordTemplate, SealedEnumTemplate,
+    CStyleEnumTemplate, CallbackTraitTemplate, ClassTemplate, FunctionTemplate, NativeTemplate,
+    PreambleTemplate, RecordReaderTemplate, RecordTemplate, SealedEnumTemplate,
 };
 pub use types::TypeMapper;
 
@@ -34,10 +35,10 @@ impl Kotlin {
             .iter()
             .for_each(|enumeration| sections.push(Self::render_enum(enumeration)));
 
-        module
-            .records
-            .iter()
-            .for_each(|record| sections.push(Self::render_record(record)));
+        module.records.iter().for_each(|record| {
+            sections.push(Self::render_record(record));
+            sections.push(Self::render_record_reader(record));
+        });
 
         module
             .functions
@@ -97,6 +98,12 @@ impl Kotlin {
             .expect("record template failed")
     }
 
+    pub fn render_record_reader(record: &Record) -> String {
+        RecordReaderTemplate::from_record(record)
+            .render()
+            .expect("record reader template failed")
+    }
+
     pub fn render_function(function: &Function, module: &Module) -> String {
         FunctionTemplate::from_function(function, module)
             .render()
@@ -128,9 +135,8 @@ impl Kotlin {
             return false;
         }
 
-        // Vec<Record> needs struct layout work
         if let Some(Type::Vec(inner)) = &func.output {
-            if !matches!(inner.as_ref(), Type::Primitive(_)) {
+            if !matches!(inner.as_ref(), Type::Primitive(_) | Type::Record(_)) {
                 return false;
             }
         }
@@ -264,8 +270,7 @@ mod tests {
 
     #[test]
     fn test_render_string_function() {
-        let function = Function::new("fetch_data")
-            .with_output(Type::String);
+        let function = Function::new("fetch_data").with_output(Type::String);
 
         let module = Module::new("test");
         let output = Kotlin::render_function(&function, &module);
@@ -277,13 +282,14 @@ mod tests {
     fn test_render_callback_trait() {
         let callback = CallbackTrait::new("data_handler")
             .with_method(
-                TraitMethod::new("on_data")
-                    .with_param(TraitMethodParam::new("data", Type::Bytes)),
+                TraitMethod::new("on_data").with_param(TraitMethodParam::new("data", Type::Bytes)),
             )
-            .with_method(TraitMethod::new("on_error").with_param(TraitMethodParam::new(
-                "code",
-                Type::Primitive(Primitive::I32),
-            )));
+            .with_method(
+                TraitMethod::new("on_error").with_param(TraitMethodParam::new(
+                    "code",
+                    Type::Primitive(Primitive::I32),
+                )),
+            );
 
         let module = Module::new("test");
         let output = Kotlin::render_callback_trait(&callback, &module);

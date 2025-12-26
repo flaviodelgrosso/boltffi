@@ -6,6 +6,7 @@ pub enum ReturnKind {
     Primitive,
     String,
     Vec { inner: String, len_fn: String, copy_fn: String },
+    VecRecord { inner: String, reader: String },
     Option { inner: String },
     Result { ok: String },
     Enum { name: String },
@@ -18,10 +19,16 @@ impl ReturnKind {
             Type::Void => Self::Void,
             Type::Primitive(_) => Self::Primitive,
             Type::String => Self::String,
-            Type::Vec(inner) => Self::Vec {
-                inner: super::TypeMapper::map_type(inner),
-                len_fn: format!("{}_len", ffi_base),
-                copy_fn: format!("{}_copy_into", ffi_base),
+            Type::Vec(inner) => match inner.as_ref() {
+                Type::Record(name) => Self::VecRecord {
+                    inner: super::NamingConvention::class_name(name),
+                    reader: format!("{}Reader", super::NamingConvention::class_name(name)),
+                },
+                _ => Self::Vec {
+                    inner: super::TypeMapper::map_type(inner),
+                    len_fn: format!("{}_len", ffi_base),
+                    copy_fn: format!("{}_copy_into", ffi_base),
+                },
             },
             Type::Option(inner) => Self::Option {
                 inner: super::TypeMapper::map_type(inner),
@@ -56,6 +63,17 @@ impl ReturnKind {
         matches!(self, Self::Vec { .. })
     }
 
+    pub fn is_vec_record(&self) -> bool {
+        matches!(self, Self::VecRecord { .. })
+    }
+
+    pub fn reader_name(&self) -> Option<&str> {
+        match self {
+            Self::VecRecord { reader, .. } => Some(reader),
+            _ => None,
+        }
+    }
+
     pub fn is_option(&self) -> bool {
         matches!(self, Self::Option { .. })
     }
@@ -75,6 +93,7 @@ impl ReturnKind {
     pub fn inner_type(&self) -> Option<&str> {
         match self {
             Self::Vec { inner, .. } => Some(inner),
+            Self::VecRecord { inner, .. } => Some(inner),
             Self::Option { inner } => Some(inner),
             Self::Result { ok } => Some(ok),
             _ => None,

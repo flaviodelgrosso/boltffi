@@ -6,7 +6,28 @@
 #include "{{ module_name }}.h"
 
 {%- for func in functions %}
-{%- if func.is_vec %}
+{%- if func.is_vec_record %}
+
+JNIEXPORT jobject JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
+{%- for param in func.params %}
+{%- if param.is_string %}
+    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
+{%- endif %}
+{%- endfor %}
+    uintptr_t _len = {{ func.vec_len_ffi }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+    size_t _byte_size = _len * {{ func.vec_struct_size }};
+    void* _buf = malloc(_byte_size);
+    if (!_buf) return NULL;
+    uintptr_t _written = 0;
+    {{ func.vec_copy_ffi }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}_buf, _len, &_written);
+{%- for param in func.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    return (*env)->NewDirectByteBuffer(env, _buf, (jlong)_byte_size);
+}
+{%- else if func.is_vec %}
 
 JNIEXPORT {{ func.vec_jni_array_type }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
 {%- for param in func.params %}

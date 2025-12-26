@@ -5,6 +5,10 @@ fun {{ func_name }}({% for param in params %}{{ param.name }}: {{ param.kotlin_t
     return Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}) ?: throw FfiException(-1, "Null string returned")
 {%- else if return_kind.is_vec() %}
     return Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %}).toList()
+{%- else if return_kind.is_vec_record() %}
+    val buf = Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
+    buf.order(ByteOrder.nativeOrder())
+    return {{ reader_name.as_ref().unwrap() }}.readAll(buf, buf.capacity() / {{ reader_name.as_ref().unwrap() }}.STRUCT_SIZE)
 {%- else if return_kind.is_unit() %}
     val status = Native.{{ ffi_name }}({% for param in params %}{{ param.conversion }}{% if !loop.last %}, {% endif %}{% endfor %})
     checkStatus(status)

@@ -149,6 +149,51 @@ impl RecordTemplate {
 }
 
 #[derive(Template)]
+#[template(path = "kotlin/record_reader.txt", escape = "none")]
+pub struct RecordReaderTemplate {
+    pub reader_name: String,
+    pub class_name: String,
+    pub struct_size: usize,
+    pub fields: Vec<ReaderFieldView>,
+}
+
+pub struct ReaderFieldView {
+    pub name: String,
+    pub const_name: String,
+    pub offset: usize,
+    pub getter: String,
+    pub conversion: String,
+}
+
+impl RecordReaderTemplate {
+    pub fn from_record(record: &Record) -> Self {
+        use super::layout::ByteBufferHelpers;
+        use heck::ToShoutySnakeCase;
+
+        let offsets = record.field_offsets();
+        let fields = record
+            .fields
+            .iter()
+            .zip(offsets.iter())
+            .map(|(field, &offset)| ReaderFieldView {
+                name: NamingConvention::property_name(&field.name),
+                const_name: field.name.to_shouty_snake_case(),
+                offset,
+                getter: ByteBufferHelpers::getter(&field.field_type).to_string(),
+                conversion: ByteBufferHelpers::conversion(&field.field_type).to_string(),
+            })
+            .collect();
+
+        Self {
+            reader_name: format!("{}Reader", NamingConvention::class_name(&record.name)),
+            class_name: NamingConvention::class_name(&record.name),
+            struct_size: record.struct_size(),
+            fields,
+        }
+    }
+}
+
+#[derive(Template)]
 #[template(path = "kotlin/function.txt", escape = "none")]
 pub struct FunctionTemplate {
     pub func_name: String,
@@ -160,6 +205,7 @@ pub struct FunctionTemplate {
     pub inner_type: Option<String>,
     pub len_fn: Option<String>,
     pub copy_fn: Option<String>,
+    pub reader_name: Option<String>,
     pub is_async: bool,
 }
 
@@ -195,6 +241,7 @@ impl FunctionTemplate {
         let inner_type = return_kind.inner_type().map(String::from);
         let len_fn = return_kind.len_fn().map(String::from);
         let copy_fn = return_kind.copy_fn().map(String::from);
+        let reader_name = return_kind.reader_name().map(String::from);
 
         Self {
             func_name: NamingConvention::method_name(&function.name),
@@ -206,6 +253,7 @@ impl FunctionTemplate {
             inner_type,
             len_fn,
             copy_fn,
+            reader_name,
             is_async: function.is_async,
         }
     }
@@ -473,6 +521,7 @@ impl NativeTemplate {
                 Type::Bytes => (false, String::new(), "ByteArray?".to_string()),
                 Type::Vec(inner) => match inner.as_ref() {
                     Type::Primitive(_) => (false, String::new(), TypeMapper::jni_type(ty)),
+                    Type::Record(_) => (false, String::new(), "ByteBuffer".to_string()),
                     _ => (false, String::new(), "Long".to_string()),
                 },
                 _ => (false, String::new(), TypeMapper::jni_type(ty)),

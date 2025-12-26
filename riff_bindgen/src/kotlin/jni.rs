@@ -22,11 +22,13 @@ pub struct JniFunctionView {
     pub return_kind: JniReturnKind,
     pub params: Vec<JniParamInfo>,
     pub is_vec: bool,
+    pub is_vec_record: bool,
     pub vec_len_ffi: String,
     pub vec_copy_ffi: String,
     pub vec_c_type: String,
     pub vec_jni_array_type: String,
     pub vec_new_array_fn: String,
+    pub vec_struct_size: usize,
 }
 
 pub struct JniClassView {
@@ -71,7 +73,7 @@ impl JniGlueTemplate {
             .functions
             .iter()
             .filter(|f| !f.is_async && Self::is_supported_function(f))
-            .map(|f| Self::map_function(f, &prefix, &jni_prefix))
+            .map(|f| Self::map_function(f, &prefix, &jni_prefix, module))
             .collect();
 
         let classes: Vec<JniClassView> = module
@@ -94,7 +96,7 @@ impl JniGlueTemplate {
             None => true,
             Some(Type::Primitive(_)) => true,
             Some(Type::String) => true,
-            Some(Type::Vec(inner)) => matches!(inner.as_ref(), Type::Primitive(_)),
+            Some(Type::Vec(inner)) => matches!(inner.as_ref(), Type::Primitive(_) | Type::Record(_)),
             _ => false,
         };
 
@@ -119,7 +121,7 @@ impl JniGlueTemplate {
         supported_output && supported_inputs
     }
 
-    fn map_function(func: &Function, prefix: &str, jni_prefix: &str) -> JniFunctionView {
+    fn map_function(func: &Function, prefix: &str, jni_prefix: &str, module: &Module) -> JniFunctionView {
         let ffi_name = format!("{}_{}", prefix, func.name);
         let jni_name = format!(
             "Java_{}_Native_{}",
@@ -148,20 +150,23 @@ impl JniGlueTemplate {
             )
         };
 
-        let (is_vec, vec_len_ffi, vec_copy_ffi, vec_c_type, vec_jni_array_type, vec_new_array_fn) =
+        let (is_vec, is_vec_record, vec_len_ffi, vec_copy_ffi, vec_c_type, vec_jni_array_type, vec_new_array_fn, vec_struct_size) =
             if let Some(Type::Vec(inner)) = &func.output {
                 let len_ffi = naming::function_ffi_vec_len(&func.name);
                 let copy_ffi = naming::function_ffi_vec_copy_into(&func.name);
+                let is_record = matches!(inner.as_ref(), Type::Record(_));
                 (
                     true,
+                    is_record,
                     len_ffi,
                     copy_ffi,
                     Self::primitive_c_type(inner),
                     Self::primitive_jni_array_type(inner),
                     Self::new_array_fn(inner),
+                    if is_record { Self::record_struct_size(inner, module) } else { 0 },
                 )
             } else {
-                (false, String::new(), String::new(), String::new(), String::new(), String::new())
+                (false, false, String::new(), String::new(), String::new(), String::new(), String::new(), 0)
             };
 
         JniFunctionView {
@@ -172,11 +177,24 @@ impl JniGlueTemplate {
             return_kind,
             params,
             is_vec,
+            is_vec_record,
             vec_len_ffi,
             vec_copy_ffi,
             vec_c_type,
             vec_jni_array_type,
             vec_new_array_fn,
+            vec_struct_size,
+        }
+    }
+
+    fn record_struct_size(inner: &Type, module: &Module) -> usize {
+        if let Type::Record(name) = inner {
+            module.records.iter()
+                .find(|r| &r.name == name)
+                .map(|r| r.struct_size())
+                .unwrap_or(0)
+        } else {
+            0
         }
     }
 

@@ -166,6 +166,32 @@ impl Type {
             err: Box::new(err),
         }
     }
+
+    pub fn c_layout(&self) -> (usize, usize) {
+        match self {
+            Self::Primitive(p) => p.c_layout(),
+            Self::String | Self::Bytes | Self::Vec(_) | Self::Slice(_) | Self::MutSlice(_) => (24, 8),
+            Self::Object(_) | Self::BoxedTrait(_) | Self::Callback(_) => (8, 8),
+            Self::Record(_) | Self::Enum(_) => (8, 8),
+            Self::Option(inner) => {
+                let (inner_size, inner_align) = inner.c_layout();
+                (inner_size + inner_align, inner_align)
+            }
+            Self::Result { ok, .. } => ok.c_layout(),
+            Self::Void => (0, 1),
+        }
+    }
+}
+
+impl Primitive {
+    pub fn c_layout(self) -> (usize, usize) {
+        match self {
+            Self::Bool | Self::I8 | Self::U8 => (1, 1),
+            Self::I16 | Self::U16 => (2, 2),
+            Self::I32 | Self::U32 | Self::F32 => (4, 4),
+            Self::I64 | Self::U64 | Self::F64 | Self::Usize | Self::Isize => (8, 8),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
