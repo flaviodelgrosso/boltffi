@@ -103,6 +103,7 @@ impl Default for SwiftConfig {
             module_name: None,
             output: PathBuf::from("bindings/swift"),
             tools_version: None,
+            error_style: ErrorStyle::default(),
         }
     }
 }
@@ -112,6 +113,7 @@ impl Default for KotlinConfig {
         Self {
             package: String::from("com.example"),
             output: PathBuf::from("bindings/kotlin"),
+            error_style: ErrorStyle::default(),
         }
     }
 }

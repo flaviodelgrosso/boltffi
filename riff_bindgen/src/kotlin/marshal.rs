@@ -224,16 +224,58 @@ pub enum ResultOkKind {
 }
 
 #[derive(Debug, Clone)]
+pub enum ResultErrKind {
+    String,
+    Enum { name: String },
+    DataEnum { name: String, struct_size: usize },
+}
+
+#[derive(Debug, Clone)]
 pub struct ResultView {
     pub ok_type: String,
     pub ok_kind: ResultOkKind,
+    pub err_type: String,
+    pub err_kind: ResultErrKind,
 }
 
 impl ResultView {
-    pub fn from_result(ok: &Type, _err: &Type, module: &Module, func_name: &str) -> Self {
+    pub fn from_result(ok: &Type, err: &Type, module: &Module, func_name: &str) -> Self {
         let ok_type = TypeMapper::map_type(ok);
         let ok_kind = Self::resolve_ok_kind(ok, module, func_name);
-        Self { ok_type, ok_kind }
+        let err_type = TypeMapper::map_type(err);
+        let err_kind = Self::resolve_err_kind(err, module);
+        Self { ok_type, ok_kind, err_type, err_kind }
+    }
+
+    fn resolve_err_kind(err: &Type, module: &Module) -> ResultErrKind {
+        match err {
+            Type::Enum(name) => {
+                let is_data_enum = module
+                    .enums
+                    .iter()
+                    .find(|e| &e.name == name)
+                    .map(|e| e.is_data_enum())
+                    .unwrap_or(false);
+                if is_data_enum {
+                    let struct_size = module
+                        .enums
+                        .iter()
+                        .find(|e| &e.name == name)
+                        .and_then(|e| DataEnumLayout::from_enum(e))
+                        .map(|l| l.struct_size().as_usize())
+                        .unwrap_or(0);
+                    ResultErrKind::DataEnum {
+                        name: NamingConvention::class_name(name),
+                        struct_size,
+                    }
+                } else {
+                    ResultErrKind::Enum {
+                        name: NamingConvention::class_name(name),
+                    }
+                }
+            }
+            _ => ResultErrKind::String,
+        }
     }
 
     fn resolve_ok_kind(ok: &Type, module: &Module, func_name: &str) -> ResultOkKind {
@@ -445,6 +487,28 @@ impl ResultView {
             ResultOkKind::VecPrimitive { primitive, .. } => primitive.jni_array_type(),
             ResultOkKind::VecRecord { .. } => "jobject",
             ResultOkKind::Option(s) => s.jni_return_type(),
+        }
+    }
+
+    pub fn has_structured_error(&self) -> bool {
+        matches!(self.err_kind, ResultErrKind::Enum { .. } | ResultErrKind::DataEnum { .. })
+    }
+
+    pub fn err_is_data_enum(&self) -> bool {
+        matches!(self.err_kind, ResultErrKind::DataEnum { .. })
+    }
+
+    pub fn err_enum_name(&self) -> &str {
+        match &self.err_kind {
+            ResultErrKind::Enum { name } | ResultErrKind::DataEnum { name, .. } => name,
+            _ => "",
+        }
+    }
+
+    pub fn err_struct_size(&self) -> usize {
+        match &self.err_kind {
+            ResultErrKind::DataEnum { struct_size, .. } => *struct_size,
+            _ => 0,
         }
     }
 }
