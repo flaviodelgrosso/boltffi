@@ -12,6 +12,16 @@ pub enum ReturnKind {
     OptionPrimitive(syn::Type),
 }
 
+pub enum AsyncErrorKind {
+    StringLike(proc_macro2::TokenStream),
+    Typed(proc_macro2::TokenStream),
+}
+
+pub struct AsyncResultInfo {
+    pub ok_type: proc_macro2::TokenStream,
+    pub err_kind: AsyncErrorKind,
+}
+
 pub enum AsyncReturnKind {
     Unit,
     Primitive(proc_macro2::TokenStream),
@@ -19,10 +29,7 @@ pub enum AsyncReturnKind {
     Struct(proc_macro2::TokenStream),
     Vec(proc_macro2::TokenStream),
     Option(proc_macro2::TokenStream),
-    ResultPrimitive(proc_macro2::TokenStream),
-    ResultString,
-    ResultStruct(proc_macro2::TokenStream),
-    ResultVec(proc_macro2::TokenStream),
+    Result(AsyncResultInfo),
 }
 
 pub fn extract_vec_inner(ty: &Type) -> Option<syn::Type> {
@@ -113,6 +120,29 @@ pub fn classify_return(output: &ReturnType) -> ReturnKind {
     }
 }
 
+fn extract_result_types(ty: &Type) -> Option<(syn::Type, syn::Type)> {
+    if let Type::Path(path) = ty
+        && let Some(segment) = path.path.segments.last()
+        && segment.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && args.args.len() >= 2
+        && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
+        && let Some(syn::GenericArgument::Type(err_ty)) = args.args.iter().nth(1)
+    {
+        return Some((ok_ty.clone(), err_ty.clone()));
+    }
+    None
+}
+
+fn classify_error_kind(err_ty: &syn::Type) -> AsyncErrorKind {
+    let err_str = quote!(#err_ty).to_string().replace(' ', "");
+    if err_str.contains("str") || err_str == "String" || err_str == "std::string::String" {
+        AsyncErrorKind::StringLike(quote! { #err_ty })
+    } else {
+        AsyncErrorKind::Typed(quote! { #err_ty })
+    }
+}
+
 pub fn classify_async_return(output: &ReturnType) -> AsyncReturnKind {
     match output {
         ReturnType::Default => AsyncReturnKind::Unit,
@@ -131,25 +161,21 @@ pub fn classify_async_return(output: &ReturnType) -> AsyncReturnKind {
                 return AsyncReturnKind::Option(quote! { #inner_ty });
             }
 
-            if let Type::Path(path) = ty.as_ref()
-                && let Some(segment) = path.path.segments.last()
-                && segment.ident == "Result"
-                && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
-            {
-                let inner_str = quote!(#inner_ty).to_string().replace(' ', "");
-
-                if inner_str == "String" || inner_str == "std::string::String" {
-                    return AsyncReturnKind::ResultString;
-                } else if inner_str == "()" {
-                    return AsyncReturnKind::Unit;
-                } else if let Some(vec_inner) = extract_generic_inner(inner_ty, "Vec") {
-                    return AsyncReturnKind::ResultVec(quote! { #vec_inner });
-                } else if is_primitive_type(&inner_str) {
-                    return AsyncReturnKind::ResultPrimitive(quote! { #inner_ty });
+            if let Some((ok_ty, err_ty)) = extract_result_types(ty) {
+                let ok_str = quote!(#ok_ty).to_string().replace(' ', "");
+                let err_kind = classify_error_kind(&err_ty);
+                
+                let ok_type = if ok_str == "()" {
+                    quote! { () }
+                } else if ok_str == "String" || ok_str == "std::string::String" {
+                    quote! { String }
+                } else if let Some(vec_inner) = extract_generic_inner(&ok_ty, "Vec") {
+                    quote! { Vec<#vec_inner> }
                 } else {
-                    return AsyncReturnKind::ResultStruct(quote! { #inner_ty });
-                }
+                    quote! { #ok_ty }
+                };
+                
+                return AsyncReturnKind::Result(AsyncResultInfo { ok_type, err_kind });
             }
 
             if is_primitive_type(&type_str) {
@@ -169,11 +195,32 @@ pub fn get_ffi_return_type(return_kind: &AsyncReturnKind) -> proc_macro2::TokenS
         AsyncReturnKind::Struct(ty) => quote! { #ty },
         AsyncReturnKind::Vec(inner_ty) => quote! { crate::FfiBuf<#inner_ty> },
         AsyncReturnKind::Option(inner_ty) => quote! { crate::FfiOption<#inner_ty> },
-        AsyncReturnKind::ResultPrimitive(ty) => quote! { #ty },
-        AsyncReturnKind::ResultString => quote! { crate::FfiString },
-        AsyncReturnKind::ResultStruct(ty) => quote! { #ty },
-        AsyncReturnKind::ResultVec(inner_ty) => quote! { crate::FfiBuf<#inner_ty> },
+        AsyncReturnKind::Result(info) => {
+            let ok = &info.ok_type;
+            let ok_str = quote!(#ok).to_string().replace(' ', "");
+            if ok_str == "()" {
+                quote! { () }
+            } else if ok_str == "String" {
+                quote! { crate::FfiString }
+            } else if ok_str.starts_with("Vec<") {
+                let inner = extract_generic_inner_from_tokens(ok);
+                quote! { crate::FfiBuf<#inner> }
+            } else {
+                quote! { #ok }
+            }
+        }
     }
+}
+
+fn extract_generic_inner_from_tokens(tokens: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let s = tokens.to_string();
+    if let Some(start) = s.find('<') {
+        if let Some(end) = s.rfind('>') {
+            let inner = &s[start + 1..end];
+            return inner.parse().unwrap_or_else(|_| quote! { () });
+        }
+    }
+    quote! { () }
 }
 
 pub fn get_rust_return_type(return_kind: &AsyncReturnKind) -> proc_macro2::TokenStream {
@@ -184,17 +231,11 @@ pub fn get_rust_return_type(return_kind: &AsyncReturnKind) -> proc_macro2::Token
         AsyncReturnKind::Struct(ty) => quote! { #ty },
         AsyncReturnKind::Vec(inner_ty) => quote! { Vec<#inner_ty> },
         AsyncReturnKind::Option(inner_ty) => quote! { Option<#inner_ty> },
-        AsyncReturnKind::ResultPrimitive(ty) => {
-            quote! { Result<#ty, Box<dyn std::error::Error + Send + Sync>> }
-        }
-        AsyncReturnKind::ResultString => {
-            quote! { Result<String, Box<dyn std::error::Error + Send + Sync>> }
-        }
-        AsyncReturnKind::ResultStruct(ty) => {
-            quote! { Result<#ty, Box<dyn std::error::Error + Send + Sync>> }
-        }
-        AsyncReturnKind::ResultVec(inner_ty) => {
-            quote! { Result<Vec<#inner_ty>, Box<dyn std::error::Error + Send + Sync>> }
+        AsyncReturnKind::Result(info) => {
+            let ok = &info.ok_type;
+            match &info.err_kind {
+                AsyncErrorKind::StringLike(err) | AsyncErrorKind::Typed(err) => quote! { Result<#ok, #err> },
+            }
         }
     }
 }
@@ -228,74 +269,61 @@ pub fn get_complete_conversion(return_kind: &AsyncReturnKind) -> proc_macro2::To
                 None => crate::FfiOption { is_some: 0, value: Default::default() },
             }
         },
-        AsyncReturnKind::ResultPrimitive(_) => quote! {
-            match result {
-                Ok(v) => {
-                    if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
-                    v
-                }
-                Err(e) => {
-                    if !out_status.is_null() {
-                        *out_status = crate::fail_with_error(
-                            crate::FfiStatus::INTERNAL_ERROR,
-                            &e.to_string()
-                        );
+        AsyncReturnKind::Result(info) => {
+            let ok_convert = get_result_ok_conversion(&info.ok_type);
+            let err_write = get_result_err_write(&info.err_kind);
+            let default_val = get_result_default(&info.ok_type);
+            quote! {
+                match result {
+                    Ok(v) => {
+                        if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
+                        #ok_convert
                     }
-                    Default::default()
+                    Err(e) => {
+                        if !out_status.is_null() { *out_status = crate::FfiStatus::INTERNAL_ERROR; }
+                        #err_write
+                        #default_val
+                    }
                 }
             }
+        }
+    }
+}
+
+fn get_result_ok_conversion(ok_type: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let ok_str = ok_type.to_string().replace(' ', "");
+    if ok_str == "()" {
+        quote! { () }
+    } else if ok_str == "String" {
+        quote! { crate::FfiString::from(v) }
+    } else if ok_str.starts_with("Vec<") {
+        quote! { crate::FfiBuf::from_vec(v) }
+    } else {
+        quote! { v }
+    }
+}
+
+fn get_result_err_write(err_kind: &AsyncErrorKind) -> proc_macro2::TokenStream {
+    match err_kind {
+        AsyncErrorKind::StringLike(_) => quote! {
+            if !out_err.is_null() { *out_err = crate::FfiError::new(e.to_string()); }
         },
-        AsyncReturnKind::ResultString => quote! {
-            match result {
-                Ok(v) => {
-                    if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
-                    crate::FfiString::from(v)
-                }
-                Err(e) => {
-                    if !out_status.is_null() {
-                        *out_status = crate::fail_with_error(
-                            crate::FfiStatus::INTERNAL_ERROR,
-                            &e.to_string()
-                        );
-                    }
-                    crate::FfiString::default()
-                }
-            }
+        AsyncErrorKind::Typed(_) => quote! {
+            if !out_err.is_null() { *out_err = e; }
         },
-        AsyncReturnKind::ResultStruct(_) => quote! {
-            match result {
-                Ok(v) => {
-                    if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
-                    v
-                }
-                Err(e) => {
-                    if !out_status.is_null() {
-                        *out_status = crate::fail_with_error(
-                            crate::FfiStatus::INTERNAL_ERROR,
-                            &e.to_string()
-                        );
-                    }
-                    Default::default()
-                }
-            }
-        },
-        AsyncReturnKind::ResultVec(_) => quote! {
-            match result {
-                Ok(v) => {
-                    if !out_status.is_null() { *out_status = crate::FfiStatus::OK; }
-                    crate::FfiBuf::from_vec(v)
-                }
-                Err(e) => {
-                    if !out_status.is_null() {
-                        *out_status = crate::fail_with_error(
-                            crate::FfiStatus::INTERNAL_ERROR,
-                            &e.to_string()
-                        );
-                    }
-                    crate::FfiBuf::default()
-                }
-            }
-        },
+    }
+}
+
+fn get_result_default(ok_type: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let ok_str = ok_type.to_string().replace(' ', "");
+    if ok_str == "()" {
+        quote! { () }
+    } else if ok_str == "String" {
+        quote! { crate::FfiString::default() }
+    } else if ok_str.starts_with("Vec<") {
+        quote! { crate::FfiBuf::default() }
+    } else {
+        quote! { Default::default() }
     }
 }
 
@@ -309,9 +337,6 @@ pub fn get_default_ffi_value(return_kind: &AsyncReturnKind) -> proc_macro2::Toke
         AsyncReturnKind::Option(_) => {
             quote! { crate::FfiOption { is_some: 0, value: Default::default() } }
         }
-        AsyncReturnKind::ResultPrimitive(_) => quote! { Default::default() },
-        AsyncReturnKind::ResultString => quote! { crate::FfiString::default() },
-        AsyncReturnKind::ResultStruct(_) => quote! { Default::default() },
-        AsyncReturnKind::ResultVec(_) => quote! { crate::FfiBuf::default() },
+        AsyncReturnKind::Result(info) => get_result_default(&info.ok_type),
     }
 }

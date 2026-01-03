@@ -57,6 +57,11 @@ pub fn data(_attr: TokenStream, item: TokenStream) -> TokenStream {
     data::data_impl(item)
 }
 
+#[proc_macro_attribute]
+pub fn error(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    data::data_impl(item)
+}
+
 #[proc_macro_derive(Data)]
 pub fn derive_data(input: TokenStream) -> TokenStream {
     data::derive_data_impl(input)

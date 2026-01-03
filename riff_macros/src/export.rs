@@ -695,6 +695,50 @@ fn generate_async_export(input: &ItemFn) -> TokenStream {
         }
     };
 
+    use crate::returns::{AsyncReturnKind, AsyncErrorKind};
+    
+    let complete_fn = match &return_kind {
+        AsyncReturnKind::Result(info) => {
+            let out_err_type = match &info.err_kind {
+                AsyncErrorKind::StringLike(_) => quote! { crate::FfiError },
+                AsyncErrorKind::Typed(err) => quote! { #err },
+            };
+            quote! {
+                #[unsafe(no_mangle)]
+                #fn_vis unsafe extern "C" fn #complete_ident(
+                    handle: crate::RustFutureHandle,
+                    out_status: *mut crate::FfiStatus,
+                    out_err: *mut #out_err_type,
+                ) -> #ffi_return_type {
+                    match crate::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
+                        Some(result) => { #complete_conversion }
+                        None => {
+                            if !out_status.is_null() { *out_status = crate::FfiStatus::CANCELLED; }
+                            #default_value
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            quote! {
+                #[unsafe(no_mangle)]
+                #fn_vis unsafe extern "C" fn #complete_ident(
+                    handle: crate::RustFutureHandle,
+                    out_status: *mut crate::FfiStatus,
+                ) -> #ffi_return_type {
+                    match crate::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
+                        Some(result) => { #complete_conversion }
+                        None => {
+                            if !out_status.is_null() { *out_status = crate::FfiStatus::CANCELLED; }
+                            #default_value
+                        }
+                    }
+                }
+            }
+        }
+    };
+
     let expanded = quote! {
         #fn_vis async fn #fn_name(#fn_inputs) #fn_output #fn_block
 
@@ -709,19 +753,7 @@ fn generate_async_export(input: &ItemFn) -> TokenStream {
             unsafe { crate::rustfuture::rust_future_poll::<#rust_return_type>(handle, callback, callback_data) }
         }
 
-        #[unsafe(no_mangle)]
-        #fn_vis unsafe extern "C" fn #complete_ident(
-            handle: crate::RustFutureHandle,
-            out_status: *mut crate::FfiStatus,
-        ) -> #ffi_return_type {
-            match crate::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
-                Some(result) => { #complete_conversion }
-                None => {
-                    if !out_status.is_null() { *out_status = crate::FfiStatus::CANCELLED; }
-                    #default_value
-                }
-            }
-        }
+        #complete_fn
 
         #[unsafe(no_mangle)]
         #fn_vis extern "C" fn #cancel_ident(handle: crate::RustFutureHandle) {
