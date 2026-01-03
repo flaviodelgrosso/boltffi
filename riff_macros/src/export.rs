@@ -10,6 +10,17 @@ use crate::returns::{
 };
 use crate::safety;
 
+fn is_reference_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Reference(_) => true,
+        syn::Type::Path(path) => {
+            let type_str = quote::quote!(#path).to_string().replace(' ', "");
+            type_str.starts_with("&") || type_str == "str"
+        }
+        _ => false,
+    }
+}
+
 pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(item as ItemFn);
 
@@ -88,112 +99,345 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                 }
             }
         }
-        ReturnKind::ResultString => {
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    match #fn_name(#(#call_args),*) {
-                        Ok(value) => {
-                            *out = crate::FfiString::from(value);
-                            crate::FfiStatus::OK
+        ReturnKind::ResultString { err } => {
+            let err_is_ref = is_reference_type(&err);
+            let body = if err_is_ref {
+                if has_conversions {
+                    quote! {
+                        #(#conversions)*
+                        match #fn_name(#(#call_args),*) {
+                            Ok(value) => {
+                                *out_ok = crate::FfiString::from(value);
+                                crate::FfiStatus::OK
+                            }
+                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
                         }
-                        Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                    }
+                } else {
+                    quote! {
+                        match #fn_name(#(#call_args),*) {
+                            Ok(value) => {
+                                *out_ok = crate::FfiString::from(value);
+                                crate::FfiStatus::OK
+                            }
+                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                        }
                     }
                 }
             } else {
-                quote! {
-                    match #fn_name(#(#call_args),*) {
-                        Ok(value) => {
-                            *out = crate::FfiString::from(value);
-                            crate::FfiStatus::OK
+                if has_conversions {
+                    quote! {
+                        #(#conversions)*
+                        match #fn_name(#(#call_args),*) {
+                            Ok(value) => {
+                                *out_ok = crate::FfiString::from(value);
+                                crate::FfiStatus::OK
+                            }
+                            Err(e) => {
+                                *out_err = e;
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
                         }
-                        Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                    }
+                } else {
+                    quote! {
+                        match #fn_name(#(#call_args),*) {
+                            Ok(value) => {
+                                *out_ok = crate::FfiString::from(value);
+                                crate::FfiStatus::OK
+                            }
+                            Err(e) => {
+                                *out_err = e;
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
+                        }
                     }
                 }
             };
 
-            if has_params {
-                quote! {
-                    #input
+            if err_is_ref {
+                if has_params {
+                    quote! {
+                        #input
 
-                    #[unsafe(no_mangle)]
-                    #fn_vis unsafe extern "C" fn #export_ident(
-                        #(#ffi_params),*,
-                        out: *mut crate::FfiString
-                    ) -> crate::FfiStatus {
-                        if out.is_null() {
-                            return crate::FfiStatus::NULL_POINTER;
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            #(#ffi_params),*,
+                            out_ok: *mut crate::FfiString
+                        ) -> crate::FfiStatus {
+                            if out_ok.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
                         }
-                        #body
+                    }
+                } else {
+                    quote! {
+                        #input
+
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            out_ok: *mut crate::FfiString
+                        ) -> crate::FfiStatus {
+                            if out_ok.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
+                        }
                     }
                 }
             } else {
-                quote! {
-                    #input
+                if has_params {
+                    quote! {
+                        #input
 
-                    #[unsafe(no_mangle)]
-                    #fn_vis unsafe extern "C" fn #export_ident(
-                        out: *mut crate::FfiString
-                    ) -> crate::FfiStatus {
-                        if out.is_null() {
-                            return crate::FfiStatus::NULL_POINTER;
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            #(#ffi_params),*,
+                            out_ok: *mut crate::FfiString,
+                            out_err: *mut #err
+                        ) -> crate::FfiStatus {
+                            if out_ok.is_null() || out_err.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
                         }
-                        #body
+                    }
+                } else {
+                    quote! {
+                        #input
+
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            out_ok: *mut crate::FfiString,
+                            out_err: *mut #err
+                        ) -> crate::FfiStatus {
+                            if out_ok.is_null() || out_err.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
+                        }
                     }
                 }
             }
         }
-        ReturnKind::ResultPrimitive(inner_ty) => {
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    match #fn_name(#(#call_args),*) {
-                        Ok(value) => {
-                            *out = value;
-                            crate::FfiStatus::OK
+        ReturnKind::ResultPrimitive { ok, err } => {
+            let err_is_ref = is_reference_type(&err);
+            let body = if err_is_ref {
+                if has_conversions {
+                    quote! {
+                        #(#conversions)*
+                        match #fn_name(#(#call_args),*) {
+                            Ok(value) => {
+                                *out_ok = value;
+                                crate::FfiStatus::OK
+                            }
+                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
                         }
-                        Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                    }
+                } else {
+                    quote! {
+                        match #fn_name(#(#call_args),*) {
+                            Ok(value) => {
+                                *out_ok = value;
+                                crate::FfiStatus::OK
+                            }
+                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                        }
                     }
                 }
             } else {
-                quote! {
-                    match #fn_name(#(#call_args),*) {
-                        Ok(value) => {
-                            *out = value;
-                            crate::FfiStatus::OK
+                if has_conversions {
+                    quote! {
+                        #(#conversions)*
+                        match #fn_name(#(#call_args),*) {
+                            Ok(value) => {
+                                *out_ok = value;
+                                crate::FfiStatus::OK
+                            }
+                            Err(e) => {
+                                *out_err = e;
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
                         }
-                        Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                    }
+                } else {
+                    quote! {
+                        match #fn_name(#(#call_args),*) {
+                            Ok(value) => {
+                                *out_ok = value;
+                                crate::FfiStatus::OK
+                            }
+                            Err(e) => {
+                                *out_err = e;
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
+                        }
                     }
                 }
             };
 
-            if has_params {
-                quote! {
-                    #input
+            if err_is_ref {
+                if has_params {
+                    quote! {
+                        #input
 
-                    #[unsafe(no_mangle)]
-                    #fn_vis unsafe extern "C" fn #export_ident(
-                        #(#ffi_params),*,
-                        out: *mut #inner_ty
-                    ) -> crate::FfiStatus {
-                        if out.is_null() {
-                            return crate::FfiStatus::NULL_POINTER;
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            #(#ffi_params),*,
+                            out_ok: *mut #ok
+                        ) -> crate::FfiStatus {
+                            if out_ok.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
                         }
-                        #body
+                    }
+                } else {
+                    quote! {
+                        #input
+
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            out_ok: *mut #ok
+                        ) -> crate::FfiStatus {
+                            if out_ok.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
+                        }
                     }
                 }
             } else {
-                quote! {
-                    #input
+                if has_params {
+                    quote! {
+                        #input
 
-                    #[unsafe(no_mangle)]
-                    #fn_vis unsafe extern "C" fn #export_ident(
-                        out: *mut #inner_ty
-                    ) -> crate::FfiStatus {
-                        if out.is_null() {
-                            return crate::FfiStatus::NULL_POINTER;
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            #(#ffi_params),*,
+                            out_ok: *mut #ok,
+                            out_err: *mut #err
+                        ) -> crate::FfiStatus {
+                            if out_ok.is_null() || out_err.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
                         }
-                        #body
+                    }
+                } else {
+                    quote! {
+                        #input
+
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            out_ok: *mut #ok,
+                            out_err: *mut #err
+                        ) -> crate::FfiStatus {
+                            if out_ok.is_null() || out_err.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
+                        }
+                    }
+                }
+            }
+        }
+        ReturnKind::ResultUnit { err } => {
+            let err_is_ref = is_reference_type(&err);
+            let body = if err_is_ref {
+                if has_conversions {
+                    quote! {
+                        #(#conversions)*
+                        match #fn_name(#(#call_args),*) {
+                            Ok(()) => crate::FfiStatus::OK,
+                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                        }
+                    }
+                } else {
+                    quote! {
+                        match #fn_name(#(#call_args),*) {
+                            Ok(()) => crate::FfiStatus::OK,
+                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                        }
+                    }
+                }
+            } else {
+                if has_conversions {
+                    quote! {
+                        #(#conversions)*
+                        match #fn_name(#(#call_args),*) {
+                            Ok(()) => crate::FfiStatus::OK,
+                            Err(e) => {
+                                *out_err = e;
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
+                        }
+                    }
+                } else {
+                    quote! {
+                        match #fn_name(#(#call_args),*) {
+                            Ok(()) => crate::FfiStatus::OK,
+                            Err(e) => {
+                                *out_err = e;
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
+                        }
+                    }
+                }
+            };
+
+            if err_is_ref {
+                if has_params {
+                    quote! {
+                        #input
+
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            #(#ffi_params),*
+                        ) -> crate::FfiStatus {
+                            #body
+                        }
+                    }
+                } else {
+                    quote! {
+                        #input
+
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident() -> crate::FfiStatus {
+                            #body
+                        }
+                    }
+                }
+            } else {
+                if has_params {
+                    quote! {
+                        #input
+
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            #(#ffi_params),*,
+                            out_err: *mut #err
+                        ) -> crate::FfiStatus {
+                            if out_err.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
+                        }
+                    }
+                } else {
+                    quote! {
+                        #input
+
+                        #[unsafe(no_mangle)]
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            out_err: *mut #err
+                        ) -> crate::FfiStatus {
+                            if out_err.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
+                            #body
+                        }
                     }
                 }
             }

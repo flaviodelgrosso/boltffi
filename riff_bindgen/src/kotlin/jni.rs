@@ -1,7 +1,7 @@
 use askama::Template;
 use riff_ffi_rules::naming;
 
-use super::marshal::{JniParamInfo, JniReturnKind, OptionView};
+use super::marshal::{JniParamInfo, JniReturnKind, OptionView, ResultView};
 use crate::model::{Class, Function, Method, Module, Type};
 
 #[derive(Template)]
@@ -9,6 +9,7 @@ use crate::model::{Class, Function, Method, Module, Type};
 pub struct JniGlueTemplate {
     pub prefix: String,
     pub jni_prefix: String,
+    pub package_path: String,
     pub module_name: String,
     pub functions: Vec<JniFunctionView>,
     pub classes: Vec<JniClassView>,
@@ -97,6 +98,7 @@ pub struct JniFunctionView {
     pub vec_new_array_fn: String,
     pub vec_struct_size: usize,
     pub option: Option<OptionView>,
+    pub result: Option<ResultView>,
 }
 
 pub struct JniClassView {
@@ -139,6 +141,7 @@ impl JniGlueTemplate {
             .replace('_', "_1")
             .replace('.', "_")
             .replace('-', "_1");
+        let package_path = package.replace('.', "/");
 
         let functions: Vec<JniFunctionView> = module
             .functions
@@ -156,6 +159,7 @@ impl JniGlueTemplate {
         Self {
             prefix,
             jni_prefix,
+            package_path,
             module_name: module.name.clone(),
             functions,
             classes,
@@ -174,6 +178,7 @@ impl JniGlueTemplate {
                 _ => false,
             },
             Some(Type::Option(inner)) => Self::is_supported_option_inner(inner, module),
+            Some(Type::Result { ok, .. }) => Self::is_supported_result_ok(ok, module),
             _ => false,
         };
 
@@ -200,6 +205,21 @@ impl JniGlueTemplate {
                 .find(|e| &e.name == name)
                 .map(|e| e.is_data_enum())
                 .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    fn is_supported_result_ok(ok: &Type, module: &Module) -> bool {
+        match ok {
+            Type::Primitive(_) | Type::String | Type::Void => true,
+            Type::Record(name) => Self::is_record_blittable(name, module),
+            Type::Enum(name) => module.enums.iter().any(|e| &e.name == name),
+            Type::Vec(inner) => match inner.as_ref() {
+                Type::Primitive(_) => true,
+                Type::Record(name) => Self::is_record_blittable(name, module),
+                _ => false,
+            },
+            Type::Option(inner) => Self::is_supported_option_inner(inner, module),
             _ => false,
         }
     }
@@ -276,6 +296,20 @@ impl JniGlueTemplate {
             vec_new_array_fn: Self::extract_new_array_fn(&vec_return),
             vec_struct_size: Self::extract_struct_size(&vec_return),
             option: return_kind.option_view().cloned(),
+            result: Self::extract_result_view(&func.output, module, &func.name),
+        }
+    }
+
+    fn extract_result_view(
+        output: &Option<Type>,
+        module: &Module,
+        func_name: &str,
+    ) -> Option<ResultView> {
+        match output {
+            Some(Type::Result { ok, err }) => {
+                Some(ResultView::from_result(ok, err, module, func_name))
+            }
+            _ => None,
         }
     }
 

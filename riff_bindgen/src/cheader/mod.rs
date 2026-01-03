@@ -395,8 +395,8 @@ void {prefix}_clear_last_error(void);
                 Self::generate_vec_return_function(ffi_name, params, &inner_c)
             }
             Some(Type::String) => Self::generate_string_return_function(ffi_name, params),
-            Some(Type::Result { ok, .. }) => {
-                Self::generate_result_return_function(ffi_name, params, ok)
+            Some(Type::Result { ok, err }) => {
+                Self::generate_result_return_function_with_err(ffi_name, params, ok, Some(err))
             }
             Some(Type::Option(inner)) if inner.is_primitive() => {
                 Self::generate_option_return_function(ffi_name, params, inner)
@@ -458,15 +458,51 @@ void {prefix}_clear_last_error(void);
         params: &[(String, String)],
         ok_type: &Type,
     ) -> String {
+        Self::generate_result_return_function_with_err(ffi_name, params, ok_type, None)
+    }
+
+    fn generate_result_return_function_with_err(
+        ffi_name: &str,
+        params: &[(String, String)],
+        ok_type: &Type,
+        err_type: Option<&Type>,
+    ) -> String {
+        let has_structured_error = err_type
+            .map(|e| matches!(e, Type::Record(_) | Type::Enum(_)))
+            .unwrap_or(false);
+
         match ok_type {
             Type::Void => {
-                let params_str = Self::format_params(params);
+                let mut new_params = params.to_vec();
+                if has_structured_error {
+                    if let Some(err) = err_type {
+                        new_params.push(("out_err".to_string(), format!("{} *", Self::type_to_c(err))));
+                    }
+                }
+                let params_str = Self::format_params(&new_params);
                 format!("FfiStatus {}({});\n", ffi_name, params_str)
             }
-            Type::String => Self::generate_string_return_function(ffi_name, params),
+            Type::String => {
+                let mut new_params = params.to_vec();
+                let out_name = if has_structured_error { "out_ok" } else { "out" };
+                new_params.push((out_name.to_string(), "FfiString *".to_string()));
+                if has_structured_error {
+                    if let Some(err) = err_type {
+                        new_params.push(("out_err".to_string(), format!("{} *", Self::type_to_c(err))));
+                    }
+                }
+                let params_str = Self::format_params(&new_params);
+                format!("FfiStatus {}({});\n", ffi_name, params_str)
+            }
             _ => {
                 let mut new_params = params.to_vec();
-                new_params.push(("out".to_string(), format!("{} *", Self::type_to_c(ok_type))));
+                let out_name = if has_structured_error { "out_ok" } else { "out" };
+                new_params.push((out_name.to_string(), format!("{} *", Self::type_to_c(ok_type))));
+                if has_structured_error {
+                    if let Some(err) = err_type {
+                        new_params.push(("out_err".to_string(), format!("{} *", Self::type_to_c(err))));
+                    }
+                }
                 let params_str = Self::format_params(&new_params);
                 format!("FfiStatus {}({});\n", ffi_name, params_str)
             }

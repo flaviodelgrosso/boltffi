@@ -5,8 +5,9 @@ pub enum ReturnKind {
     Unit,
     Primitive,
     String,
-    ResultPrimitive(syn::Type),
-    ResultString,
+    ResultPrimitive { ok: syn::Type, err: syn::Type },
+    ResultString { err: syn::Type },
+    ResultUnit { err: syn::Type },
     Vec(syn::Type),
     OptionPrimitive(syn::Type),
 }
@@ -86,15 +87,17 @@ pub fn classify_return(output: &ReturnType) -> ReturnKind {
             {
                 if segment.ident == "Result"
                     && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                    && args.args.len() >= 2
+                    && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
+                    && let Some(syn::GenericArgument::Type(err_ty)) = args.args.iter().nth(1)
                 {
-                    let inner_str = quote!(#inner_ty).to_string().replace(' ', "");
-                    if inner_str == "String" || inner_str == "std::string::String" {
-                        return ReturnKind::ResultString;
-                    } else if inner_str == "()" {
-                        return ReturnKind::Unit;
+                    let ok_str = quote!(#ok_ty).to_string().replace(' ', "");
+                    if ok_str == "String" || ok_str == "std::string::String" {
+                        return ReturnKind::ResultString { err: err_ty.clone() };
+                    } else if ok_str == "()" {
+                        return ReturnKind::ResultUnit { err: err_ty.clone() };
                     } else {
-                        return ReturnKind::ResultPrimitive(inner_ty.clone());
+                        return ReturnKind::ResultPrimitive { ok: ok_ty.clone(), err: err_ty.clone() };
                     }
                 }
                 if segment.ident == "Option"

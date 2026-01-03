@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    AndroidConfig, Config, IosConfig, KotlinConfig, PackConfig, PackageConfig, SwiftConfig,
+    AndroidConfig, Config, ErrorStyle, IosConfig, KotlinConfig, PackConfig, PackageConfig, SwiftConfig,
 };
 use crate::error::Result;
 
@@ -69,10 +69,12 @@ fn create_default_config(package_name: &str) -> Config {
             module_name: Some(module_name.clone()),
             output: PathBuf::from("bindings/swift"),
             tools_version: Some("5.9".to_string()),
+            error_style: ErrorStyle::default(),
         },
         kotlin: KotlinConfig {
             package: format!("com.example.{}", package_name.replace('-', "_")),
             output: PathBuf::from("bindings/kotlin"),
+            error_style: ErrorStyle::default(),
         },
         ios: IosConfig {
             deployment_target: "16.0".to_string(),

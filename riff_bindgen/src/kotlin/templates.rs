@@ -5,7 +5,7 @@ use riff_ffi_rules::naming;
 use crate::model::{Class, DataEnumLayout, Enumeration, Function, Module, Record, Type};
 
 use super::layout::{KotlinBufferRead, KotlinBufferWrite};
-use super::marshal::{OptionView, ParamConversion, ReturnKind};
+use super::marshal::{OptionView, ParamConversion, ResultView, ReturnKind};
 use super::{NamingConvention, TypeMapper};
 
 #[derive(Template)]
@@ -394,6 +394,7 @@ pub struct FunctionTemplate {
     pub reader_name: Option<String>,
     pub is_async: bool,
     pub option: Option<OptionView>,
+    pub result: Option<ResultView>,
 }
 
 pub struct ParamView {
@@ -465,7 +466,10 @@ impl FunctionTemplate {
             })
             .collect();
 
-        let return_type = function.output.as_ref().map(TypeMapper::map_type);
+        let return_type = function.output.as_ref().map(|ty| match ty {
+            Type::Result { ok, .. } => TypeMapper::map_type(ok),
+            other => TypeMapper::map_type(other),
+        });
         let inner_type = return_kind.inner_type().map(String::from);
         let len_fn = return_kind.len_fn().map(String::from);
         let copy_fn = return_kind.copy_fn().map(String::from);
@@ -473,6 +477,13 @@ impl FunctionTemplate {
 
         let option = function.output.as_ref().and_then(|ty| match ty {
             Type::Option(inner) => Some(OptionView::from_inner(inner, _module)),
+            _ => None,
+        });
+
+        let result = function.output.as_ref().and_then(|ty| match ty {
+            Type::Result { ok, err } => {
+                Some(ResultView::from_result(ok, err, _module, &function.name))
+            }
             _ => None,
         });
 
@@ -492,6 +503,7 @@ impl FunctionTemplate {
             reader_name,
             is_async: function.is_async,
             option,
+            result,
         }
     }
 }
@@ -806,6 +818,7 @@ impl NativeTemplate {
                     Type::Record(_) => (false, String::new(), "ByteBuffer".to_string()),
                     _ => (false, String::new(), "Long".to_string()),
                 },
+                Type::Result { ok, .. } => Self::analyze_result_return(ok, module),
                 Type::Enum(enum_name)
                     if module
                         .enums
@@ -818,6 +831,29 @@ impl NativeTemplate {
                 }
                 _ => (false, String::new(), TypeMapper::jni_type(ty)),
             },
+        }
+    }
+
+    fn analyze_result_return(ok: &Type, module: &Module) -> (bool, String, String) {
+        match ok {
+            Type::Void => (false, String::new(), "Unit".to_string()),
+            Type::Primitive(_) => (false, String::new(), TypeMapper::jni_type(ok)),
+            Type::String => (false, String::new(), "String?".to_string()),
+            Type::Record(_) => (false, String::new(), "ByteBuffer?".to_string()),
+            Type::Enum(enum_name) => {
+                let is_data_enum = module
+                    .enums
+                    .iter()
+                    .find(|e| &e.name == enum_name)
+                    .map(|e| e.is_data_enum())
+                    .unwrap_or(false);
+                if is_data_enum {
+                    (false, String::new(), "ByteBuffer?".to_string())
+                } else {
+                    (false, String::new(), "Int".to_string())
+                }
+            }
+            _ => (false, String::new(), TypeMapper::jni_type(ok)),
         }
     }
 }
