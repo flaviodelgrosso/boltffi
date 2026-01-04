@@ -257,13 +257,9 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     return _result;
 {%- else if let Some(res) = func.result %}
 {%- if res.is_void() %}
-{%- if res.has_structured_error() %}
     uint8_t _out_err[{{ res.err_struct_size() }}];
     memset(_out_err, 0, {{ res.err_struct_size() }});
     FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}(void*)_out_err);
-{%- else %}
-    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- endif %}
 {%- for param in func.params %}
 {%- if param.is_primitive_array() %}
     (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
@@ -279,7 +275,20 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endif %}
 {%- endfor %}
     if (_status.code != 0) {
-{%- if res.has_structured_error() %}
+{%- if res.err_is_ffi_error() %}
+        FfiString* _err_str = (FfiString*)_out_err;
+        jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
+        char* _err_tmp = (char*)malloc(_err_str->len + 1);
+        if (_err_tmp) {
+            memcpy(_err_tmp, _err_str->ptr, _err_str->len);
+            _err_tmp[_err_str->len] = '\0';
+            (*env)->ThrowNew(env, _exc_cls, _err_tmp);
+            free(_err_tmp);
+        } else {
+            (*env)->ThrowNew(env, _exc_cls, "FFI error");
+        }
+        {{ prefix }}_free_string(*_err_str);
+{%- else %}
         void* _err_buf = malloc({{ res.err_struct_size() }});
         if (_err_buf) {
             memcpy(_err_buf, _out_err, {{ res.err_struct_size() }});
@@ -297,25 +306,13 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
                 free(_err_buf);
             }
         }
-{%- else %}
-        FfiString _err_msg = {0, 0, 0};
-        {{ prefix }}_last_error_message(&_err_msg);
-        jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        char* _err_tmp = (char*)malloc(_err_msg.len + 1);
-        if (_err_tmp) {
-            memcpy(_err_tmp, _err_msg.ptr, _err_msg.len);
-            _err_tmp[_err_msg.len] = '\0';
-            (*env)->ThrowNew(env, _exc_cls, _err_tmp);
-            free(_err_tmp);
-        } else {
-            (*env)->ThrowNew(env, _exc_cls, "FFI error");
-        }
-        {{ prefix }}_free_string(_err_msg);
 {%- endif %}
     }
 {%- else if res.is_string() %}
     FfiString _out = {0, 0, 0};
-    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}&_out);
+    uint8_t _out_err[{{ res.err_struct_size() }}];
+    memset(_out_err, 0, {{ res.err_struct_size() }});
+    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}&_out, (void*)_out_err);
 {%- for param in func.params %}
 {%- if param.is_primitive_array() %}
     (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
@@ -331,19 +328,38 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endif %}
 {%- endfor %}
     if (_status.code != 0) {
-        FfiString _err_msg = {0, 0, 0};
-        {{ prefix }}_last_error_message(&_err_msg);
+{%- if res.err_is_ffi_error() %}
+        FfiString* _err_str = (FfiString*)_out_err;
         jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        char* _err_tmp = (char*)malloc(_err_msg.len + 1);
+        char* _err_tmp = (char*)malloc(_err_str->len + 1);
         if (_err_tmp) {
-            memcpy(_err_tmp, _err_msg.ptr, _err_msg.len);
-            _err_tmp[_err_msg.len] = '\0';
+            memcpy(_err_tmp, _err_str->ptr, _err_str->len);
+            _err_tmp[_err_str->len] = '\0';
             (*env)->ThrowNew(env, _exc_cls, _err_tmp);
             free(_err_tmp);
         } else {
             (*env)->ThrowNew(env, _exc_cls, "FFI error");
         }
-        {{ prefix }}_free_string(_err_msg);
+        {{ prefix }}_free_string(*_err_str);
+{%- else %}
+        void* _err_buf = malloc({{ res.err_struct_size() }});
+        if (_err_buf) {
+            memcpy(_err_buf, _out_err, {{ res.err_struct_size() }});
+            jclass _exc_cls = (*env)->FindClass(env, "{{ package_path }}/RiffException");
+            if (_exc_cls) {
+                jmethodID _exc_ctor = (*env)->GetMethodID(env, _exc_cls, "<init>", "(Ljava/nio/ByteBuffer;)V");
+                if (_exc_ctor) {
+                    jobject _err_bb = (*env)->NewDirectByteBuffer(env, _err_buf, (jlong){{ res.err_struct_size() }});
+                    jobject _exc = (*env)->NewObject(env, _exc_cls, _exc_ctor, _err_bb);
+                    if (_exc) (*env)->Throw(env, (jthrowable)_exc);
+                } else {
+                    free(_err_buf);
+                }
+            } else {
+                free(_err_buf);
+            }
+        }
+{%- endif %}
         return NULL;
     }
     char* _tmp = (char*)malloc(_out.len + 1);
@@ -356,13 +372,9 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     return _result;
 {%- else if res.is_primitive() %}
     {{ res.primitive_c_type() }} _out = 0;
-{%- if res.has_structured_error() %}
     uint8_t _out_err[{{ res.err_struct_size() }}];
     memset(_out_err, 0, {{ res.err_struct_size() }});
     FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}&_out, (void*)_out_err);
-{%- else %}
-    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}&_out);
-{%- endif %}
 {%- for param in func.params %}
 {%- if param.is_primitive_array() %}
     (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
@@ -378,7 +390,20 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endif %}
 {%- endfor %}
     if (_status.code != 0) {
-{%- if res.has_structured_error() %}
+{%- if res.err_is_ffi_error() %}
+        FfiString* _err_str = (FfiString*)_out_err;
+        jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
+        char* _err_tmp = (char*)malloc(_err_str->len + 1);
+        if (_err_tmp) {
+            memcpy(_err_tmp, _err_str->ptr, _err_str->len);
+            _err_tmp[_err_str->len] = '\0';
+            (*env)->ThrowNew(env, _exc_cls, _err_tmp);
+            free(_err_tmp);
+        } else {
+            (*env)->ThrowNew(env, _exc_cls, "FFI error");
+        }
+        {{ prefix }}_free_string(*_err_str);
+{%- else %}
         void* _err_buf = malloc({{ res.err_struct_size() }});
         if (_err_buf) {
             memcpy(_err_buf, _out_err, {{ res.err_struct_size() }});
@@ -396,20 +421,6 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
                 free(_err_buf);
             }
         }
-{%- else %}
-        FfiString _err_msg = {0, 0, 0};
-        {{ prefix }}_last_error_message(&_err_msg);
-        jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        char* _err_tmp = (char*)malloc(_err_msg.len + 1);
-        if (_err_tmp) {
-            memcpy(_err_tmp, _err_msg.ptr, _err_msg.len);
-            _err_tmp[_err_msg.len] = '\0';
-            (*env)->ThrowNew(env, _exc_cls, _err_tmp);
-            free(_err_tmp);
-        } else {
-            (*env)->ThrowNew(env, _exc_cls, "FFI error");
-        }
-        {{ prefix }}_free_string(_err_msg);
 {%- endif %}
         return 0;
     }
@@ -417,7 +428,9 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- else if res.is_record() %}
     uint8_t _out[{{ res.record_struct_size() }}];
     memset(_out, 0, {{ res.record_struct_size() }});
-    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}(void*)_out);
+    uint8_t _out_err[{{ res.err_struct_size() }}];
+    memset(_out_err, 0, {{ res.err_struct_size() }});
+    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}(void*)_out, (void*)_out_err);
 {%- for param in func.params %}
 {%- if param.is_primitive_array() %}
     (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
@@ -433,19 +446,38 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endif %}
 {%- endfor %}
     if (_status.code != 0) {
-        FfiString _err_msg = {0, 0, 0};
-        {{ prefix }}_last_error_message(&_err_msg);
+{%- if res.err_is_ffi_error() %}
+        FfiString* _err_str = (FfiString*)_out_err;
         jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        char* _err_tmp = (char*)malloc(_err_msg.len + 1);
+        char* _err_tmp = (char*)malloc(_err_str->len + 1);
         if (_err_tmp) {
-            memcpy(_err_tmp, _err_msg.ptr, _err_msg.len);
-            _err_tmp[_err_msg.len] = '\0';
+            memcpy(_err_tmp, _err_str->ptr, _err_str->len);
+            _err_tmp[_err_str->len] = '\0';
             (*env)->ThrowNew(env, _exc_cls, _err_tmp);
             free(_err_tmp);
         } else {
             (*env)->ThrowNew(env, _exc_cls, "FFI error");
         }
-        {{ prefix }}_free_string(_err_msg);
+        {{ prefix }}_free_string(*_err_str);
+{%- else %}
+        void* _err_buf = malloc({{ res.err_struct_size() }});
+        if (_err_buf) {
+            memcpy(_err_buf, _out_err, {{ res.err_struct_size() }});
+            jclass _exc_cls = (*env)->FindClass(env, "{{ package_path }}/RiffException");
+            if (_exc_cls) {
+                jmethodID _exc_ctor = (*env)->GetMethodID(env, _exc_cls, "<init>", "(Ljava/nio/ByteBuffer;)V");
+                if (_exc_ctor) {
+                    jobject _err_bb = (*env)->NewDirectByteBuffer(env, _err_buf, (jlong){{ res.err_struct_size() }});
+                    jobject _exc = (*env)->NewObject(env, _exc_cls, _exc_ctor, _err_bb);
+                    if (_exc) (*env)->Throw(env, (jthrowable)_exc);
+                } else {
+                    free(_err_buf);
+                }
+            } else {
+                free(_err_buf);
+            }
+        }
+{%- endif %}
         return NULL;
     }
     void* _buf = malloc({{ res.record_struct_size() }});
@@ -454,7 +486,9 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     return (*env)->NewDirectByteBuffer(env, _buf, (jlong){{ res.record_struct_size() }});
 {%- else if res.is_enum() %}
     int32_t _out = 0;
-    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}&_out);
+    uint8_t _out_err[{{ res.err_struct_size() }}];
+    memset(_out_err, 0, {{ res.err_struct_size() }});
+    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}&_out, (void*)_out_err);
 {%- for param in func.params %}
 {%- if param.is_primitive_array() %}
     (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
@@ -470,26 +504,47 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endif %}
 {%- endfor %}
     if (_status.code != 0) {
-        FfiString _err_msg = {0, 0, 0};
-        {{ prefix }}_last_error_message(&_err_msg);
+{%- if res.err_is_ffi_error() %}
+        FfiString* _err_str = (FfiString*)_out_err;
         jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        char* _err_tmp = (char*)malloc(_err_msg.len + 1);
+        char* _err_tmp = (char*)malloc(_err_str->len + 1);
         if (_err_tmp) {
-            memcpy(_err_tmp, _err_msg.ptr, _err_msg.len);
-            _err_tmp[_err_msg.len] = '\0';
+            memcpy(_err_tmp, _err_str->ptr, _err_str->len);
+            _err_tmp[_err_str->len] = '\0';
             (*env)->ThrowNew(env, _exc_cls, _err_tmp);
             free(_err_tmp);
         } else {
             (*env)->ThrowNew(env, _exc_cls, "FFI error");
         }
-        {{ prefix }}_free_string(_err_msg);
+        {{ prefix }}_free_string(*_err_str);
+{%- else %}
+        void* _err_buf = malloc({{ res.err_struct_size() }});
+        if (_err_buf) {
+            memcpy(_err_buf, _out_err, {{ res.err_struct_size() }});
+            jclass _exc_cls = (*env)->FindClass(env, "{{ package_path }}/RiffException");
+            if (_exc_cls) {
+                jmethodID _exc_ctor = (*env)->GetMethodID(env, _exc_cls, "<init>", "(Ljava/nio/ByteBuffer;)V");
+                if (_exc_ctor) {
+                    jobject _err_bb = (*env)->NewDirectByteBuffer(env, _err_buf, (jlong){{ res.err_struct_size() }});
+                    jobject _exc = (*env)->NewObject(env, _exc_cls, _exc_ctor, _err_bb);
+                    if (_exc) (*env)->Throw(env, (jthrowable)_exc);
+                } else {
+                    free(_err_buf);
+                }
+            } else {
+                free(_err_buf);
+            }
+        }
+{%- endif %}
         return 0;
     }
     return _out;
 {%- else if res.is_data_enum() %}
     uint8_t _out[{{ res.data_enum_struct_size() }}];
     memset(_out, 0, {{ res.data_enum_struct_size() }});
-    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}(void*)_out);
+    uint8_t _out_err[{{ res.err_struct_size() }}];
+    memset(_out_err, 0, {{ res.err_struct_size() }});
+    FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}(void*)_out, (void*)_out_err);
 {%- for param in func.params %}
 {%- if param.is_primitive_array() %}
     (*env)->ReleasePrimitiveArrayCritical(env, {{ param.name }}, _{{ param.name }}_ptr, {{ param.array_release_mode() }});
@@ -505,19 +560,38 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endif %}
 {%- endfor %}
     if (_status.code != 0) {
-        FfiString _err_msg = {0, 0, 0};
-        {{ prefix }}_last_error_message(&_err_msg);
+{%- if res.err_is_ffi_error() %}
+        FfiString* _err_str = (FfiString*)_out_err;
         jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        char* _err_tmp = (char*)malloc(_err_msg.len + 1);
+        char* _err_tmp = (char*)malloc(_err_str->len + 1);
         if (_err_tmp) {
-            memcpy(_err_tmp, _err_msg.ptr, _err_msg.len);
-            _err_tmp[_err_msg.len] = '\0';
+            memcpy(_err_tmp, _err_str->ptr, _err_str->len);
+            _err_tmp[_err_str->len] = '\0';
             (*env)->ThrowNew(env, _exc_cls, _err_tmp);
             free(_err_tmp);
         } else {
             (*env)->ThrowNew(env, _exc_cls, "FFI error");
         }
-        {{ prefix }}_free_string(_err_msg);
+        {{ prefix }}_free_string(*_err_str);
+{%- else %}
+        void* _err_buf = malloc({{ res.err_struct_size() }});
+        if (_err_buf) {
+            memcpy(_err_buf, _out_err, {{ res.err_struct_size() }});
+            jclass _exc_cls = (*env)->FindClass(env, "{{ package_path }}/RiffException");
+            if (_exc_cls) {
+                jmethodID _exc_ctor = (*env)->GetMethodID(env, _exc_cls, "<init>", "(Ljava/nio/ByteBuffer;)V");
+                if (_exc_ctor) {
+                    jobject _err_bb = (*env)->NewDirectByteBuffer(env, _err_buf, (jlong){{ res.err_struct_size() }});
+                    jobject _exc = (*env)->NewObject(env, _exc_cls, _exc_ctor, _err_bb);
+                    if (_exc) (*env)->Throw(env, (jthrowable)_exc);
+                } else {
+                    free(_err_buf);
+                }
+            } else {
+                free(_err_buf);
+            }
+        }
+{%- endif %}
         return NULL;
     }
     void* _buf = malloc({{ res.data_enum_struct_size() }});
@@ -561,19 +635,8 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endif %}
 {%- endfor %}
     if (_status.code != 0) {
-        FfiString _err_msg = {0, 0, 0};
-        {{ prefix }}_last_error_message(&_err_msg);
         jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        char* _err_tmp = (char*)malloc(_err_msg.len + 1);
-        if (_err_tmp) {
-            memcpy(_err_tmp, _err_msg.ptr, _err_msg.len);
-            _err_tmp[_err_msg.len] = '\0';
-            (*env)->ThrowNew(env, _exc_cls, _err_tmp);
-            free(_err_tmp);
-        } else {
-            (*env)->ThrowNew(env, _exc_cls, "FFI error");
-        }
-        {{ prefix }}_free_string(_err_msg);
+        (*env)->ThrowNew(env, _exc_cls, "FFI error");
         return NULL;
     }
     return _result;
@@ -600,19 +663,8 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endfor %}
     if (_status.code != 0) {
         free(_buf);
-        FfiString _err_msg = {0, 0, 0};
-        {{ prefix }}_last_error_message(&_err_msg);
         jclass _exc_cls = (*env)->FindClass(env, "java/lang/Exception");
-        char* _err_tmp = (char*)malloc(_err_msg.len + 1);
-        if (_err_tmp) {
-            memcpy(_err_tmp, _err_msg.ptr, _err_msg.len);
-            _err_tmp[_err_msg.len] = '\0';
-            (*env)->ThrowNew(env, _exc_cls, _err_tmp);
-            free(_err_tmp);
-        } else {
-            (*env)->ThrowNew(env, _exc_cls, "FFI error");
-        }
-        {{ prefix }}_free_string(_err_msg);
+        (*env)->ThrowNew(env, _exc_cls, "FFI error");
         return NULL;
     }
     return (*env)->NewDirectByteBuffer(env, _buf, (jlong)_byte_size);
@@ -694,19 +746,6 @@ JNIEXPORT {{ method.jni_return }} JNICALL {{ method.jni_name }}(JNIEnv *env, jcl
 }
 {%- endfor %}
 {%- endfor %}
-
-JNIEXPORT jstring JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1last_1error_1message(JNIEnv *env, jclass cls) {
-    FfiString out;
-    FfiStatus status = {{ prefix }}_last_error_message(&out);
-    if (status.code != 0) return NULL;
-    jstring result = (*env)->NewStringUTF(env, (char*)out.ptr);
-    {{ prefix }}_free_string(out);
-    return result;
-}
-
-JNIEXPORT void JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1clear_1last_1error(JNIEnv *env, jclass cls) {
-    {{ prefix }}_clear_last_error();
-}
 
 JNIEXPORT void JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1free_1native_1buffer(JNIEnv *env, jclass cls, jobject buffer) {
     if (buffer) {

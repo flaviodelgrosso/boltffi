@@ -110,7 +110,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                                 *out_ok = crate::FfiString::from(value);
                                 crate::FfiStatus::OK
                             }
-                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                            Err(e) => {
+                                *out_err = crate::FfiError::from(e.to_string());
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
                         }
                     }
                 } else {
@@ -120,7 +123,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                                 *out_ok = crate::FfiString::from(value);
                                 crate::FfiStatus::OK
                             }
-                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                            Err(e) => {
+                                *out_err = crate::FfiError::from(e.to_string());
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
                         }
                     }
                 }
@@ -163,9 +169,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                         #[unsafe(no_mangle)]
                         #fn_vis unsafe extern "C" fn #export_ident(
                             #(#ffi_params),*,
-                            out_ok: *mut crate::FfiString
+                            out_ok: *mut crate::FfiString,
+                            out_err: *mut crate::FfiError
                         ) -> crate::FfiStatus {
-                            if out_ok.is_null() {
+                            if out_ok.is_null() || out_err.is_null() {
                                 return crate::FfiStatus::NULL_POINTER;
                             }
                             #body
@@ -177,9 +184,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
 
                         #[unsafe(no_mangle)]
                         #fn_vis unsafe extern "C" fn #export_ident(
-                            out_ok: *mut crate::FfiString
+                            out_ok: *mut crate::FfiString,
+                            out_err: *mut crate::FfiError
                         ) -> crate::FfiStatus {
-                            if out_ok.is_null() {
+                            if out_ok.is_null() || out_err.is_null() {
                                 return crate::FfiStatus::NULL_POINTER;
                             }
                             #body
@@ -232,7 +240,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                                 *out_ok = value;
                                 crate::FfiStatus::OK
                             }
-                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                            Err(e) => {
+                                *out_err = crate::FfiError::from(e.to_string());
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
                         }
                     }
                 } else {
@@ -242,7 +253,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                                 *out_ok = value;
                                 crate::FfiStatus::OK
                             }
-                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                            Err(e) => {
+                                *out_err = crate::FfiError::from(e.to_string());
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
                         }
                     }
                 }
@@ -285,9 +299,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                         #[unsafe(no_mangle)]
                         #fn_vis unsafe extern "C" fn #export_ident(
                             #(#ffi_params),*,
-                            out_ok: *mut #ok
+                            out_ok: *mut #ok,
+                            out_err: *mut crate::FfiError
                         ) -> crate::FfiStatus {
-                            if out_ok.is_null() {
+                            if out_ok.is_null() || out_err.is_null() {
                                 return crate::FfiStatus::NULL_POINTER;
                             }
                             #body
@@ -299,9 +314,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
 
                         #[unsafe(no_mangle)]
                         #fn_vis unsafe extern "C" fn #export_ident(
-                            out_ok: *mut #ok
+                            out_ok: *mut #ok,
+                            out_err: *mut crate::FfiError
                         ) -> crate::FfiStatus {
-                            if out_ok.is_null() {
+                            if out_ok.is_null() || out_err.is_null() {
                                 return crate::FfiStatus::NULL_POINTER;
                             }
                             #body
@@ -351,14 +367,20 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                         #(#conversions)*
                         match #fn_name(#(#call_args),*) {
                             Ok(()) => crate::FfiStatus::OK,
-                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                            Err(e) => {
+                                *out_err = crate::FfiError::from(e.to_string());
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
                         }
                     }
                 } else {
                     quote! {
                         match #fn_name(#(#call_args),*) {
                             Ok(()) => crate::FfiStatus::OK,
-                            Err(e) => crate::fail_with_error(crate::FfiStatus::INTERNAL_ERROR, &e.to_string())
+                            Err(e) => {
+                                *out_err = crate::FfiError::from(e.to_string());
+                                crate::FfiStatus::INTERNAL_ERROR
+                            }
                         }
                     }
                 }
@@ -394,8 +416,12 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
 
                         #[unsafe(no_mangle)]
                         #fn_vis unsafe extern "C" fn #export_ident(
-                            #(#ffi_params),*
+                            #(#ffi_params),*,
+                            out_err: *mut crate::FfiError
                         ) -> crate::FfiStatus {
+                            if out_err.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
                             #body
                         }
                     }
@@ -404,7 +430,12 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                         #input
 
                         #[unsafe(no_mangle)]
-                        #fn_vis unsafe extern "C" fn #export_ident() -> crate::FfiStatus {
+                        #fn_vis unsafe extern "C" fn #export_ident(
+                            out_err: *mut crate::FfiError
+                        ) -> crate::FfiStatus {
+                            if out_err.is_null() {
+                                return crate::FfiStatus::NULL_POINTER;
+                            }
                             #body
                         }
                     }

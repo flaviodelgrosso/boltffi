@@ -13,3 +13,9 @@ impl FfiError {
         }
     }
 }
+
+impl From<String> for FfiError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}

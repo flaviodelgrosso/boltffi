@@ -12,14 +12,6 @@ class RiffException(val errorBuffer: ByteBuffer) : Exception("Structured error")
     }
 }
 
-private fun checkStatus(code: Int) {
-    if (code != 0) {
-        val message = Native.{{ prefix }}_last_error_message() ?: "FFI error"
-        Native.{{ prefix }}_clear_last_error()
-        throw FfiException(code, message)
-    }
-}
-
 private inline fun <T> useNativeBuffer(buffer: ByteBuffer, block: (ByteBuffer) -> T): T {
     return try {
         block(buffer)

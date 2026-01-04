@@ -486,11 +486,15 @@ impl ResultView {
     }
 
     pub fn has_structured_error(&self) -> bool {
-        matches!(self.err_kind, ResultErrKind::Enum { .. } | ResultErrKind::DataEnum { .. })
+        true
     }
 
     pub fn err_is_data_enum(&self) -> bool {
         matches!(self.err_kind, ResultErrKind::DataEnum { .. })
+    }
+
+    pub fn err_is_ffi_error(&self) -> bool {
+        matches!(self.err_kind, ResultErrKind::String)
     }
 
     pub fn err_enum_name(&self) -> &str {
@@ -503,6 +507,7 @@ impl ResultView {
     pub fn err_struct_size(&self) -> usize {
         match &self.err_kind {
             ResultErrKind::DataEnum { struct_size, .. } => *struct_size,
+            ResultErrKind::String => 24,
             _ => 0,
         }
     }
