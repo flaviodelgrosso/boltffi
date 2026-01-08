@@ -11,8 +11,30 @@ pub struct JniGlueTemplate {
     pub jni_prefix: String,
     pub package_path: String,
     pub module_name: String,
+    pub class_name: String,
+    pub has_async: bool,
     pub functions: Vec<JniFunctionView>,
+    pub async_functions: Vec<JniAsyncFunctionView>,
     pub classes: Vec<JniClassView>,
+}
+
+pub struct JniAsyncFunctionView {
+    pub ffi_name: String,
+    pub ffi_poll: String,
+    pub ffi_complete: String,
+    pub ffi_cancel: String,
+    pub ffi_free: String,
+    pub jni_create_name: String,
+    pub jni_poll_name: String,
+    pub jni_complete_name: String,
+    pub jni_cancel_name: String,
+    pub jni_free_name: String,
+    pub jni_params: String,
+    pub jni_complete_return: String,
+    pub jni_complete_c_type: String,
+    pub complete_is_void: bool,
+    pub complete_is_string: bool,
+    pub params: Vec<JniParamInfo>,
 }
 
 enum VecReturnKind {
@@ -245,19 +267,106 @@ impl JniGlueTemplate {
             .map(|func| Self::map_function(func, &prefix, &jni_prefix, module))
             .collect();
 
+        let async_functions: Vec<JniAsyncFunctionView> = module
+            .functions
+            .iter()
+            .filter(|func| func.is_async && Self::is_supported_async_function(func))
+            .map(|func| Self::map_async_function(func, &jni_prefix))
+            .collect();
+
+        let has_async = !async_functions.is_empty();
+
         let classes: Vec<JniClassView> = module
             .classes
             .iter()
             .map(|c| Self::map_class(c, &prefix, &jni_prefix))
             .collect();
 
+        let class_name = super::NamingConvention::class_name(&module.name);
+
         Self {
             prefix,
             jni_prefix,
             package_path,
             module_name: module.name.clone(),
+            class_name,
+            has_async,
             functions,
+            async_functions,
             classes,
+        }
+    }
+
+    fn is_supported_async_function(func: &Function) -> bool {
+        let supported_output = match &func.output {
+            None => true,
+            Some(Type::Primitive(_)) => true,
+            Some(Type::String) => true,
+            Some(Type::Void) => true,
+            _ => false,
+        };
+
+        let supported_inputs = func
+            .inputs
+            .iter()
+            .all(|param| matches!(&param.param_type, Type::Primitive(_) | Type::String));
+
+        supported_output && supported_inputs
+    }
+
+    fn map_async_function(func: &Function, jni_prefix: &str) -> JniAsyncFunctionView {
+        let ffi_name = naming::function_ffi_name(&func.name);
+        let jni_func_name = ffi_name.replace('_', "_1");
+
+        let params: Vec<JniParamInfo> = func
+            .inputs
+            .iter()
+            .map(|param| JniParamInfo::from_param(&param.name, &param.param_type))
+            .collect();
+
+        let jni_params = if params.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", {}",
+                params
+                    .iter()
+                    .map(|p| format!("{} {}", p.jni_type, p.name.clone()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+
+        let (jni_complete_return, jni_complete_c_type, complete_is_void, complete_is_string) =
+            match &func.output {
+                None | Some(Type::Void) => ("void".to_string(), "void".to_string(), true, false),
+                Some(Type::String) => ("jstring".to_string(), "FfiString".to_string(), false, true),
+                Some(Type::Primitive(p)) => (
+                    super::TypeMapper::c_jni_type(&Type::Primitive(*p)),
+                    p.c_type_name().to_string(),
+                    false,
+                    false,
+                ),
+                _ => ("jlong".to_string(), "int64_t".to_string(), false, false),
+            };
+
+        JniAsyncFunctionView {
+            ffi_name: ffi_name.clone(),
+            ffi_poll: naming::function_ffi_poll(&func.name),
+            ffi_complete: naming::function_ffi_complete(&func.name),
+            ffi_cancel: naming::function_ffi_cancel(&func.name),
+            ffi_free: naming::function_ffi_free(&func.name),
+            jni_create_name: format!("Java_{}_Native_{}", jni_prefix, jni_func_name),
+            jni_poll_name: format!("Java_{}_Native_{}_1poll", jni_prefix, jni_func_name),
+            jni_complete_name: format!("Java_{}_Native_{}_1complete", jni_prefix, jni_func_name),
+            jni_cancel_name: format!("Java_{}_Native_{}_1cancel", jni_prefix, jni_func_name),
+            jni_free_name: format!("Java_{}_Native_{}_1free", jni_prefix, jni_func_name),
+            jni_params,
+            jni_complete_return,
+            jni_complete_c_type,
+            complete_is_void,
+            complete_is_string,
+            params,
         }
     }
 

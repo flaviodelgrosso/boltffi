@@ -5,6 +5,48 @@
 #include <string.h>
 #include "{{ module_name }}.h"
 
+{%- if has_async %}
+static JavaVM* g_jvm = NULL;
+static jclass g_callback_class = NULL;
+static jmethodID g_callback_method = NULL;
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+    g_jvm = vm;
+    JNIEnv* env;
+    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_ERR;
+    }
+    jclass local_class = (*env)->FindClass(env, "{{ package_path }}/{{ class_name }}Kt");
+    if (local_class == NULL) {
+        return JNI_ERR;
+    }
+    g_callback_class = (*env)->NewGlobalRef(env, local_class);
+    g_callback_method = (*env)->GetStaticMethodID(env, g_callback_class, "riffFutureContinuationCallback", "(JB)V");
+    if (g_callback_method == NULL) {
+        return JNI_ERR;
+    }
+    return JNI_VERSION_1_6;
+}
+
+static void riff_jni_continuation_callback(uint64_t handle, int8_t poll_result) {
+    JNIEnv* env;
+    int attached = 0;
+    jint get_env_result = (*g_jvm)->GetEnv(g_jvm, (void**)&env, JNI_VERSION_1_6);
+    if (get_env_result == JNI_EDETACHED) {
+        if ((*g_jvm)->AttachCurrentThread(g_jvm, (void**)&env, NULL) != JNI_OK) {
+            return;
+        }
+        attached = 1;
+    } else if (get_env_result != JNI_OK) {
+        return;
+    }
+    (*env)->CallStaticVoidMethod(env, g_callback_class, g_callback_method, (jlong)handle, (jbyte)poll_result);
+    if (attached) {
+        (*g_jvm)->DetachCurrentThread(g_jvm);
+    }
+}
+{%- endif %}
+
 {%- for func in functions %}
 {%- if func.is_data_enum_return %}
 
@@ -1015,6 +1057,59 @@ JNIEXPORT {{ method.jni_return }} JNICALL {{ method.jni_name }}(JNIEnv *env, jcl
 {%- endif %}
 }
 {%- endfor %}
+{%- endfor %}
+
+{%- for func in async_functions %}
+
+JNIEXPORT jlong JNICALL {{ func.jni_create_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
+{%- for param in func.params %}
+{%- if param.is_string %}
+    const char* _{{ param.name }}_c = {{ param.name }} ? (*env)->GetStringUTFChars(env, {{ param.name }}, NULL) : NULL;
+{%- endif %}
+{%- endfor %}
+    RustFutureHandle _handle = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- for param in func.params %}
+{%- if param.is_string %}
+    if ({{ param.name }}) (*env)->ReleaseStringUTFChars(env, {{ param.name }}, _{{ param.name }}_c);
+{%- endif %}
+{%- endfor %}
+    return (jlong)_handle;
+}
+
+JNIEXPORT void JNICALL {{ func.jni_poll_name }}(JNIEnv *env, jclass cls, jlong future, jlong contHandle) {
+    {{ func.ffi_poll }}((RustFutureHandle)future, (uint64_t)contHandle, riff_jni_continuation_callback);
+}
+
+JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JNIEnv *env, jclass cls, jlong future) {
+{%- if func.complete_is_void %}
+    FfiStatus _status;
+    {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+{%- else if func.complete_is_string %}
+    FfiStatus _status;
+    FfiString _out = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0 || _out.ptr == NULL) return NULL;
+    char* _tmp = (char*)malloc(_out.len + 1);
+    if (!_tmp) { {{ prefix }}_free_string(_out); return NULL; }
+    memcpy(_tmp, _out.ptr, _out.len);
+    _tmp[_out.len] = '\0';
+    jstring _result = (*env)->NewStringUTF(env, _tmp);
+    free(_tmp);
+    {{ prefix }}_free_string(_out);
+    return _result;
+{%- else %}
+    FfiStatus _status;
+    {{ func.jni_complete_c_type }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    return ({{ func.jni_complete_return }})_result;
+{%- endif %}
+}
+
+JNIEXPORT void JNICALL {{ func.jni_cancel_name }}(JNIEnv *env, jclass cls, jlong future) {
+    {{ func.ffi_cancel }}((RustFutureHandle)future);
+}
+
+JNIEXPORT void JNICALL {{ func.jni_free_name }}(JNIEnv *env, jclass cls, jlong future) {
+    {{ func.ffi_free }}((RustFutureHandle)future);
+}
 {%- endfor %}
 
 JNIEXPORT void JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1free_1native_1buffer(JNIEnv *env, jclass cls, jobject buffer) {
