@@ -1,5 +1,76 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ReturnType {
+    #[default]
+    Void,
+    Value(Type),
+    Fallible { ok: Type, err: Type },
+}
+
+impl ReturnType {
+    pub fn value(ty: Type) -> Self {
+        if ty.is_void() {
+            Self::Void
+        } else {
+            Self::Value(ty)
+        }
+    }
+
+    pub fn fallible(ok: Type, err: Type) -> Self {
+        Self::Fallible { ok, err }
+    }
+
+    pub fn is_void(&self) -> bool {
+        matches!(self, Self::Void)
+    }
+
+    pub fn is_fallible(&self) -> bool {
+        matches!(self, Self::Fallible { .. })
+    }
+
+    pub fn throws(&self) -> bool {
+        self.is_fallible()
+    }
+
+    pub fn ok_type(&self) -> Option<&Type> {
+        match self {
+            Self::Void => None,
+            Self::Value(ty) => Some(ty),
+            Self::Fallible { ok, .. } => Some(ok),
+        }
+    }
+
+    pub fn err_type(&self) -> Option<&Type> {
+        match self {
+            Self::Fallible { err, .. } => Some(err),
+            _ => None,
+        }
+    }
+
+    pub fn has_return_value(&self) -> bool {
+        match self {
+            Self::Void => false,
+            Self::Value(ty) => !ty.is_void(),
+            Self::Fallible { ok, .. } => !ok.is_void(),
+        }
+    }
+
+    pub fn value_type(&self) -> Option<&Type> {
+        match self {
+            Self::Value(ty) => Some(ty),
+            _ => None,
+        }
+    }
+
+    pub fn as_result_types(&self) -> Option<(&Type, &Type)> {
+        match self {
+            Self::Fallible { ok, err } => Some((ok, err)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Primitive {
     Bool,

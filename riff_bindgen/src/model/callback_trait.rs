@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::types::{Deprecation, Type};
+use super::types::{Deprecation, ReturnType, Type};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallbackTrait {
@@ -43,8 +43,7 @@ impl CallbackTrait {
 pub struct TraitMethod {
     pub name: String,
     pub inputs: Vec<TraitMethodParam>,
-    pub output: Option<Type>,
-    pub error: Option<Type>,
+    pub returns: ReturnType,
     pub is_async: bool,
     pub doc: Option<String>,
 }
@@ -54,8 +53,7 @@ impl TraitMethod {
         Self {
             name: name.into(),
             inputs: Vec::new(),
-            output: None,
-            error: None,
+            returns: ReturnType::Void,
             is_async: false,
             doc: None,
         }
@@ -66,13 +64,8 @@ impl TraitMethod {
         self
     }
 
-    pub fn with_output(mut self, output: Type) -> Self {
-        self.output = Some(output);
-        self
-    }
-
-    pub fn with_error(mut self, error: Type) -> Self {
-        self.error = Some(error);
+    pub fn with_return(mut self, returns: ReturnType) -> Self {
+        self.returns = returns;
         self
     }
 
@@ -82,11 +75,11 @@ impl TraitMethod {
     }
 
     pub fn throws(&self) -> bool {
-        self.error.is_some()
+        self.returns.throws()
     }
 
     pub fn has_return(&self) -> bool {
-        self.output.as_ref().is_some_and(|t| !t.is_void())
+        self.returns.has_return_value()
     }
 }
 

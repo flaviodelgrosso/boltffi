@@ -8,8 +8,8 @@ use walkdir::WalkDir;
 
 use crate::model::{
     CallbackTrait, Class, Constructor, Enumeration, Function, Method, Module, Parameter, Primitive,
-    Receiver, Record, RecordField, StreamMethod, StreamMode, TraitMethod, TraitMethodParam,
-    Type as MType, Variant,
+    Receiver, Record, RecordField, ReturnType, StreamMethod, StreamMode, TraitMethod,
+    TraitMethodParam, Type as MType, Variant,
 };
 
 #[derive(Default)]
@@ -555,7 +555,11 @@ impl SourceScanner {
                 f = f.with_param(Parameter::new(&name, ty));
             }
             if let Some(output) = function.output {
-                f = f.with_output(output);
+                let returns = match output.result_types() {
+                    Some((ok, err)) => ReturnType::fallible(ok.clone(), err.clone()),
+                    None => ReturnType::value(output),
+                };
+                f = f.with_return(returns);
             }
             if function.is_async {
                 f = f.make_async();
@@ -576,12 +580,11 @@ impl SourceScanner {
                     m = m.with_param(Parameter::new(&name, ty));
                 }
                 if let Some(output) = method.output {
-                    if let Some((ok, err)) = output.result_types() {
-                        m = m.with_output(ok.clone());
-                        m = m.with_error(err.clone());
-                    } else {
-                        m = m.with_output(output);
-                    }
+                    let returns = match output.result_types() {
+                        Some((ok, err)) => ReturnType::fallible(ok.clone(), err.clone()),
+                        None => ReturnType::value(output),
+                    };
+                    m = m.with_return(returns);
                 }
                 if method.is_async {
                     m = m.make_async();
@@ -606,7 +609,11 @@ impl SourceScanner {
                     tm = tm.with_param(TraitMethodParam::new(&name, ty));
                 }
                 if let Some(output) = method.output {
-                    tm = tm.with_output(output);
+                    let returns = match output.result_types() {
+                        Some((ok, err)) => ReturnType::fallible(ok.clone(), err.clone()),
+                        None => ReturnType::value(output),
+                    };
+                    tm = tm.with_return(returns);
                 }
                 if method.is_async {
                     tm = tm.make_async();

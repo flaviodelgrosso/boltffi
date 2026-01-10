@@ -22,4 +22,4 @@ pub use module::Module;
 pub use option_info::OptionInfo;
 pub use record::{Record, RecordField};
 pub use stream::{StreamMethod, StreamMode};
-pub use types::{Deprecation, Primitive, Receiver, Type};
+pub use types::{Deprecation, Primitive, Receiver, ReturnType, Type};

@@ -1,14 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use super::method::Parameter;
-use super::types::{Deprecation, Type};
+use super::types::{Deprecation, ReturnType, Type};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Function {
     pub name: String,
     pub inputs: Vec<Parameter>,
-    pub output: Option<Type>,
-    pub error: Option<Type>,
+    pub returns: ReturnType,
     pub is_async: bool,
     pub doc: Option<String>,
     pub deprecated: Option<Deprecation>,
@@ -19,8 +18,7 @@ impl Function {
         Self {
             name: name.into(),
             inputs: Vec::new(),
-            output: None,
-            error: None,
+            returns: ReturnType::Void,
             is_async: false,
             doc: None,
             deprecated: None,
@@ -32,13 +30,13 @@ impl Function {
         self
     }
 
-    pub fn with_output(mut self, output: Type) -> Self {
-        self.output = Some(output);
+    pub fn with_return(mut self, returns: ReturnType) -> Self {
+        self.returns = returns;
         self
     }
 
-    pub fn with_error(mut self, error: Type) -> Self {
-        self.error = Some(error);
+    pub fn with_output(mut self, ty: Type) -> Self {
+        self.returns = ReturnType::value(ty);
         self
     }
 
@@ -58,7 +56,7 @@ impl Function {
     }
 
     pub fn throws(&self) -> bool {
-        self.error.is_some()
+        self.returns.throws()
     }
 
     pub fn is_deprecated(&self) -> bool {
@@ -66,7 +64,7 @@ impl Function {
     }
 
     pub fn has_return_value(&self) -> bool {
-        self.output.as_ref().is_some_and(|output| !output.is_void())
+        self.returns.has_return_value()
     }
 
     pub fn has_callbacks(&self) -> bool {
