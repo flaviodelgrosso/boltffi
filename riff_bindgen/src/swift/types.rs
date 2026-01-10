@@ -1,5 +1,6 @@
 use crate::model::Type;
 
+use super::primitives;
 use super::NamingConvention;
 
 pub struct TypeMapper;
@@ -7,7 +8,7 @@ pub struct TypeMapper;
 impl TypeMapper {
     pub fn map_type(ty: &Type) -> String {
         match ty {
-            Type::Primitive(p) => p.swift_type().into(),
+            Type::Primitive(p) => primitives::info(*p).swift_type.into(),
             Type::String => "String".into(),
             Type::Bytes => "Data".into(),
             Type::Slice(inner) => format!("[{}]", Self::map_type(inner)),
@@ -26,7 +27,7 @@ impl TypeMapper {
 
     pub fn ffi_type(ty: &Type) -> String {
         match ty {
-            Type::Primitive(p) => p.swift_type().into(),
+            Type::Primitive(p) => primitives::info(*p).swift_type.into(),
             Type::String => "UnsafePointer<CChar>".into(),
             Type::Bytes => "UnsafePointer<UInt8>".into(),
             Type::Slice(inner) => format!("UnsafePointer<{}>", Self::ffi_type(inner)),
@@ -59,7 +60,7 @@ impl TypeMapper {
 
     pub fn default_value(ty: &Type) -> String {
         match ty {
-            Type::Primitive(p) => p.default_value().into(),
+            Type::Primitive(p) => primitives::info(*p).default_value.into(),
             Type::String => "\"\"".into(),
             Type::Bytes => "Data()".into(),
             Type::Vec(_) => "[]".into(),

@@ -1,5 +1,6 @@
 use crate::model::{Primitive, Type};
 
+use super::primitives;
 use super::NamingConvention;
 
 pub struct TypeMapper;
@@ -25,22 +26,7 @@ impl TypeMapper {
     }
 
     fn map_primitive(primitive: &Primitive) -> String {
-        match primitive {
-            Primitive::I8 => "Byte",
-            Primitive::I16 => "Short",
-            Primitive::I32 => "Int",
-            Primitive::I64 => "Long",
-            Primitive::U8 => "UByte",
-            Primitive::U16 => "UShort",
-            Primitive::U32 => "UInt",
-            Primitive::U64 => "ULong",
-            Primitive::F32 => "Float",
-            Primitive::F64 => "Double",
-            Primitive::Bool => "Boolean",
-            Primitive::Usize => "Long",
-            Primitive::Isize => "Long",
-        }
-        .into()
+        primitives::info(*primitive).kotlin_type.into()
     }
 
     pub fn jni_type(ty: &Type) -> String {
@@ -77,22 +63,7 @@ impl TypeMapper {
     }
 
     fn jni_primitive(primitive: &Primitive) -> String {
-        match primitive {
-            Primitive::I8 => "Byte",
-            Primitive::I16 => "Short",
-            Primitive::I32 => "Int",
-            Primitive::I64 => "Long",
-            Primitive::U8 => "Byte",
-            Primitive::U16 => "Short",
-            Primitive::U32 => "Int",
-            Primitive::U64 => "Long",
-            Primitive::F32 => "Float",
-            Primitive::F64 => "Double",
-            Primitive::Bool => "Boolean",
-            Primitive::Usize => "Long",
-            Primitive::Isize => "Long",
-        }
-        .into()
+        primitives::info(*primitive).call_suffix.into()
     }
 
     pub fn c_jni_type(ty: &Type) -> String {
@@ -104,20 +75,7 @@ impl TypeMapper {
             Type::Record(_) => "jlong".into(),
             Type::Enum(_) => "jint".into(),
             Type::Vec(inner) | Type::Slice(inner) | Type::MutSlice(inner) => match inner.as_ref() {
-                Type::Primitive(Primitive::I32) => "jintArray".into(),
-                Type::Primitive(Primitive::U32) => "jintArray".into(),
-                Type::Primitive(Primitive::I16) => "jshortArray".into(),
-                Type::Primitive(Primitive::U16) => "jshortArray".into(),
-                Type::Primitive(Primitive::I64) => "jlongArray".into(),
-                Type::Primitive(Primitive::U64) => "jlongArray".into(),
-                Type::Primitive(Primitive::Isize) => "jlongArray".into(),
-                Type::Primitive(Primitive::Usize) => "jlongArray".into(),
-                Type::Primitive(Primitive::F32) => "jfloatArray".into(),
-                Type::Primitive(Primitive::F64) => "jdoubleArray".into(),
-                Type::Primitive(Primitive::U8) | Type::Primitive(Primitive::I8) => {
-                    "jbyteArray".into()
-                }
-                Type::Primitive(Primitive::Bool) => "jbooleanArray".into(),
+                Type::Primitive(p) => primitives::info(*p).array_type.into(),
                 Type::Record(_) => "jobject".into(),
                 _ => "jlong".into(),
             },
@@ -129,16 +87,7 @@ impl TypeMapper {
     }
 
     fn c_jni_primitive(primitive: &Primitive) -> String {
-        match primitive {
-            Primitive::I8 | Primitive::U8 => "jbyte",
-            Primitive::I16 | Primitive::U16 => "jshort",
-            Primitive::I32 | Primitive::U32 => "jint",
-            Primitive::I64 | Primitive::U64 | Primitive::Usize | Primitive::Isize => "jlong",
-            Primitive::F32 => "jfloat",
-            Primitive::F64 => "jdouble",
-            Primitive::Bool => "jboolean",
-        }
-        .into()
+        primitives::info(*primitive).jni_type.into()
     }
 
     pub fn default_value(ty: &Type) -> String {
@@ -159,18 +108,7 @@ impl TypeMapper {
     }
 
     fn primitive_default(primitive: &Primitive) -> String {
-        match primitive {
-            Primitive::Bool => "false",
-            Primitive::F32 => "0.0f",
-            Primitive::F64 => "0.0",
-            Primitive::U8 | Primitive::U16 | Primitive::U32 | Primitive::U64 | Primitive::Usize => {
-                "0u"
-            }
-            Primitive::I8 | Primitive::I16 | Primitive::I32 | Primitive::I64 | Primitive::Isize => {
-                "0"
-            }
-        }
-        .into()
+        primitives::info(*primitive).default_value.into()
     }
 }
 

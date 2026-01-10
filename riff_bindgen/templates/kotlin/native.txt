@@ -32,4 +32,7 @@ private object Native {
 {%- endif %}
 {%- endfor %}
 {%- endfor %}
+{%- for invoker in async_callback_invokers %}
+    @JvmStatic external fun {{ invoker.name }}(callbackPtr: Long, callbackData: Long{% if invoker.has_result %}, result: {{ invoker.jni_type }}{% endif %})
+{%- endfor %}
 }

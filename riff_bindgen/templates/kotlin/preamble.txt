@@ -10,6 +10,9 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
+{%- for import in extra_imports %}
+import {{ import }}
+{%- endfor %}
 
 class FfiException(val code: Int, message: String) : Exception(message)
 

@@ -2,7 +2,7 @@ use riff_ffi_rules::naming;
 
 use crate::model::{
     CallbackTrait, Class, Enumeration, Function, Method, Module, Parameter, Primitive, Record,
-    StreamMethod, TraitMethod, Type,
+    ReturnType, StreamMethod, TraitMethod, Type,
 };
 
 pub struct CHeaderGenerator;
@@ -175,7 +175,7 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         }
 
         for func in &module.functions {
-            if let Some(ref ty) = func.output {
+            if let Some(ty) = func.returns.ok_type() {
                 collect_from_type(
                     ty,
                     &mut primitive_buf_types,
@@ -190,7 +190,7 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
 
         for class in &module.classes {
             for method in &class.methods {
-                if let Some(ref ty) = method.output {
+                if let Some(ty) = method.returns.ok_type() {
                     collect_from_type(
                         ty,
                         &mut primitive_buf_types,
@@ -524,8 +524,8 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
 
         if method.is_async {
             let callback_return = method
-                .output
-                .as_ref()
+                .returns
+                .ok_type()
                 .map(|t| format!(", {}", Self::type_to_c(t)))
                 .unwrap_or_default();
             params.push(format!(
@@ -534,7 +534,7 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
             ));
             params.push("uint64_t callback_data".to_string());
         } else {
-            if let Some(ref ret_ty) = method.output {
+            if let Some(ret_ty) = method.returns.ok_type() {
                 params.push(format!("{} *out", Self::type_to_c(ret_ty)));
             }
             params.push("FfiStatus *status".to_string());
@@ -555,38 +555,44 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         let params = Self::build_params(&func.inputs);
 
         if func.is_async {
-            Self::generate_async_function(&ffi_name, &params, &func.output)
+            Self::generate_async_function(&ffi_name, &params, &func.returns)
         } else {
-            Self::generate_sync_function(&ffi_name, &params, &func.output)
+            Self::generate_sync_function(&ffi_name, &params, &func.returns)
         }
     }
 
     fn generate_sync_function(
         ffi_name: &str,
         params: &[(String, String)],
-        output: &Option<Type>,
+        returns: &ReturnType,
     ) -> String {
-        match output {
-            Some(Type::Vec(inner)) => {
-                Self::generate_vec_return_function(ffi_name, params, inner)
-            }
-            Some(Type::String) => Self::generate_string_return_function(ffi_name, params),
-            Some(Type::Result { ok, err }) => {
+        match returns {
+            ReturnType::Fallible { ok, err } => {
                 Self::generate_result_return_function_with_err(ffi_name, params, ok, Some(err))
             }
-            Some(Type::Option(inner)) => match inner.as_ref() {
-                Type::Vec(vec_inner) => {
-                    Self::generate_option_vec_return_function(ffi_name, params, vec_inner)
+            ReturnType::Value(ty) => match ty {
+                Type::Vec(inner) => {
+                    Self::generate_vec_return_function(ffi_name, params, inner)
                 }
-                Type::String => {
-                    Self::generate_option_string_return_function(ffi_name, params)
+                Type::String => Self::generate_string_return_function(ffi_name, params),
+                Type::Option(inner) => match inner.as_ref() {
+                    Type::Vec(vec_inner) => {
+                        Self::generate_option_vec_return_function(ffi_name, params, vec_inner)
+                    }
+                    Type::String => {
+                        Self::generate_option_string_return_function(ffi_name, params)
+                    }
+                    _ => Self::generate_option_return_function(ffi_name, params, inner),
+                },
+                _ => {
+                    let ret_type = Self::type_to_c(ty);
+                    let params_str = Self::format_params(params);
+                    format!("{} {}({});\n", ret_type, ffi_name, params_str)
                 }
-                _ => Self::generate_option_return_function(ffi_name, params, inner),
             },
-            _ => {
-                let ret_type = Self::return_type_to_c(output);
+            ReturnType::Void => {
                 let params_str = Self::format_params(params);
-                format!("{} {}({});\n", ret_type, ffi_name, params_str)
+                format!("void {}({});\n", ffi_name, params_str)
             }
         }
     }
@@ -594,11 +600,11 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
     fn generate_async_function(
         ffi_name: &str,
         params: &[(String, String)],
-        output: &Option<Type>,
+        returns: &ReturnType,
     ) -> String {
         let params_str = Self::format_params(params);
-        let result_type = Self::async_result_type(output);
-        let err_out_param = Self::async_error_out_param(output);
+        let result_type = Self::async_result_type(returns);
+        let err_out_param = Self::async_error_out_param(returns);
 
         format!(
             "RustFutureHandle {}({});\n\
@@ -610,11 +616,11 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         )
     }
 
-    fn async_error_out_param(output: &Option<Type>) -> String {
-        let Some(Type::Result { err, .. }) = output else {
+    fn async_error_out_param(returns: &ReturnType) -> String {
+        let ReturnType::Fallible { err, .. } = returns else {
             return String::new();
         };
-        match err.as_ref() {
+        match err {
             Type::Enum(name) | Type::Record(name) => format!(", {}* out_err", name),
             Type::String => ", FfiError* out_err".to_string(),
             _ => String::new(),
@@ -763,9 +769,9 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         }
 
         if method.is_async {
-            Self::generate_async_function(&ffi_name, &params, &method.output)
+            Self::generate_async_function(&ffi_name, &params, &method.returns)
         } else {
-            Self::generate_sync_function(&ffi_name, &params, &method.output)
+            Self::generate_sync_function(&ffi_name, &params, &method.returns)
         }
     }
 
@@ -856,30 +862,27 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         }
     }
 
-    fn return_type_to_c(output: &Option<Type>) -> String {
-        match output {
-            None | Some(Type::Void) => "FfiStatus".to_string(),
-            Some(Type::Primitive(p)) => p.c_type_name().to_string(),
-            Some(Type::Record(name)) => name.clone(),
-            Some(Type::Enum(name)) => name.clone(),
-            _ => "FfiStatus".to_string(),
+    fn async_result_type(returns: &ReturnType) -> String {
+        match returns {
+            ReturnType::Void => "void".to_string(),
+            ReturnType::Value(ty) => Self::async_result_type_from_type(ty),
+            ReturnType::Fallible { ok, .. } => Self::async_result_type_from_type(ok),
         }
     }
 
-    fn async_result_type(output: &Option<Type>) -> String {
-        match output {
-            None | Some(Type::Void) => "void".to_string(),
-            Some(Type::String) => "FfiString".to_string(),
-            Some(Type::Vec(inner)) => {
+    fn async_result_type_from_type(ty: &Type) -> String {
+        match ty {
+            Type::Void => "void".to_string(),
+            Type::String => "FfiString".to_string(),
+            Type::Vec(inner) => {
                 let inner_c = Self::primitive_to_cbindgen_name(inner);
                 format!("FfiBuf_{}", inner_c)
             }
-            Some(Type::Option(inner)) => {
+            Type::Option(inner) => {
                 let inner_c = Self::primitive_to_cbindgen_name(inner);
                 format!("FfiOption_{}", inner_c)
             }
-            Some(Type::Result { ok, .. }) => Self::async_result_type(&Some(*ok.clone())),
-            Some(ty) => Self::type_to_c(ty),
+            _ => Self::type_to_c(ty),
         }
     }
 

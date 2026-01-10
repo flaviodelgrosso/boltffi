@@ -1,6 +1,6 @@
 use super::names::NamingConvention;
 use super::types::TypeMapper;
-use crate::model::Type;
+use crate::model::{ReturnType, Type};
 
 #[derive(Debug, Clone, Default)]
 pub struct ReturnInfo {
@@ -11,29 +11,34 @@ pub struct ReturnInfo {
 }
 
 impl ReturnInfo {
-    pub fn from_type(ty: Option<&Type>) -> Self {
-        let Some(ty) = ty else {
-            return Self {
-                is_void: true,
-                ..Default::default()
-            };
-        };
-
-        match ty {
-            Type::Void => Self {
+    pub fn from_return_type(returns: &ReturnType) -> Self {
+        match returns {
+            ReturnType::Void => Self {
                 is_void: true,
                 ..Default::default()
             },
-            Type::Result { ok, .. } => Self {
-                swift_type: Some(TypeMapper::map_type(ok)),
-                is_result: true,
-                result_ok_type: Some(TypeMapper::map_type(ok)),
-                ..Default::default()
+            ReturnType::Value(ty) => match ty {
+                Type::Void => Self {
+                    is_void: true,
+                    ..Default::default()
+                },
+                _ => Self {
+                    swift_type: Some(TypeMapper::map_type(ty)),
+                    ..Default::default()
+                },
             },
-            _ => Self {
-                swift_type: Some(TypeMapper::map_type(ty)),
-                ..Default::default()
-            },
+            ReturnType::Fallible { ok, .. } => {
+                let ok_type = match ok {
+                    Type::Void => None,
+                    _ => Some(TypeMapper::map_type(ok)),
+                };
+                Self {
+                    swift_type: ok_type.clone(),
+                    is_result: true,
+                    result_ok_type: ok_type,
+                    is_void: matches!(ok, Type::Void),
+                }
+            }
         }
     }
 

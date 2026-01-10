@@ -2,7 +2,8 @@ use askama::Template;
 use riff_ffi_rules::naming;
 
 use crate::model::{
-    CallbackTrait, Class, Enumeration, Function, Method, Module, Record, StreamMethod, StreamMode,
+    CallbackTrait, Class, Enumeration, Function, Method, Module, Record, ReturnType, StreamMethod,
+    StreamMode, Type,
 };
 
 use super::body::BodyRenderer;
@@ -119,9 +120,8 @@ pub struct FunctionTemplate {
 impl FunctionTemplate {
     pub fn from_function(function: &Function, module: &Module) -> Self {
         use super::conversion::{ParamsInfo, ReturnInfo};
-        use crate::model::Type;
 
-        let ret = ReturnInfo::from_type(function.output.as_ref());
+        let ret = ReturnInfo::from_return_type(&function.returns);
         let func_name_pascal = NamingConvention::class_name(&function.name);
         let params_info = ParamsInfo::from_inputs(
             function
@@ -155,17 +155,7 @@ impl FunctionTemplate {
             ret.swift_type.clone()
         };
 
-        let ffi_free_vec = function
-            .output
-            .as_ref()
-            .and_then(|output_type| match output_type {
-                Type::Vec(inner) => Some(inner.as_ref()),
-                Type::Result { ok, .. } => match ok.as_ref() {
-                    Type::Vec(inner) => Some(inner.as_ref()),
-                    _ => None,
-                },
-                _ => None,
-            })
+        let ffi_free_vec = Self::extract_vec_inner(&function.returns)
             .map(|inner_type| {
                 let inner_ffi = TypeMapper::ffi_type_name(inner_type);
                 format!("{}_free_buf_{}", ffi_prefix, inner_ffi)
@@ -173,10 +163,10 @@ impl FunctionTemplate {
             .unwrap_or_default();
 
         let return_kind =
-            super::marshal::ReturnKind::from_function(function.output.as_ref(), &function.name, module);
+            super::marshal::ReturnKind::from_returns(&function.returns, &function.name, module);
 
-        let structured_error = Self::extract_structured_error(&function.output, module);
-        let result_ok_ffi_type = Self::extract_result_ok_ffi_type(&function.output, module);
+        let structured_error = Self::extract_structured_error(&function.returns, module);
+        let result_ok_ffi_type = Self::extract_result_ok_ffi_type(&function.returns, module);
 
         let ffi_module_name = Some(NamingConvention::ffi_module_name(&module.name));
 
@@ -207,16 +197,25 @@ impl FunctionTemplate {
         }
     }
 
-    fn extract_structured_error(
-        output: &Option<crate::model::Type>,
-        module: &Module,
-    ) -> Option<StructuredError> {
-        use crate::model::Type;
-        let Type::Result { err, .. } = output.as_ref()? else {
-            return None;
+    fn extract_vec_inner(returns: &ReturnType) -> Option<&Type> {
+        let ok_type = match returns {
+            ReturnType::Void => return None,
+            ReturnType::Value(ty) => ty,
+            ReturnType::Fallible { ok, .. } => ok,
+        };
+        match ok_type {
+            Type::Vec(inner) => Some(inner.as_ref()),
+            _ => None,
+        }
+    }
+
+    fn extract_structured_error(returns: &ReturnType, module: &Module) -> Option<StructuredError> {
+        let err = match returns {
+            ReturnType::Fallible { err, .. } => err,
+            _ => return None,
         };
         let ffi_module = NamingConvention::ffi_module_name(&module.name);
-        match err.as_ref() {
+        match err {
             Type::Enum(err_name) => {
                 let enum_def = module.enums.iter().find(|e| &e.name == err_name)?;
                 if !enum_def.is_error {
@@ -237,16 +236,13 @@ impl FunctionTemplate {
         }
     }
 
-    fn extract_result_ok_ffi_type(
-        output: &Option<crate::model::Type>,
-        module: &Module,
-    ) -> Option<String> {
-        use crate::model::Type;
-        let Type::Result { ok, .. } = output.as_ref()? else {
-            return None;
+    fn extract_result_ok_ffi_type(returns: &ReturnType, module: &Module) -> Option<String> {
+        let ok = match returns {
+            ReturnType::Fallible { ok, .. } => ok,
+            _ => return None,
         };
         let ffi_module = NamingConvention::ffi_module_name(&module.name);
-        match ok.as_ref() {
+        match ok {
             Type::Void => None,
             Type::String => Some(format!("{}.FfiString", ffi_module)),
             Type::Record(name) => Some(NamingConvention::class_name(name)),
@@ -397,8 +393,8 @@ impl ClassTemplate {
                         is_async: method.is_async,
                         throws: method.throws(),
                         return_type: method
-                            .output
-                            .as_ref()
+                            .returns
+                            .ok_type()
                             .filter(|ty| !ty.is_void())
                             .map(TypeMapper::map_type),
                         params: params_info.params,
@@ -578,7 +574,7 @@ impl SyncMethodBodyTemplate {
 
         Self {
             ffi_name,
-            has_return: method.output.as_ref().is_some_and(|t| !t.is_void()),
+            has_return: method.returns.has_return_value(),
             has_wrappers: call_builder.has_wrappers(),
             wrappers_open: call_builder.build_wrappers_open(),
             wrappers_close: call_builder.build_wrappers_close(),
@@ -626,7 +622,7 @@ impl CallbackMethodBodyTemplate {
 
         Self {
             ffi_name,
-            has_return: method.output.as_ref().is_some_and(|t| !t.is_void()),
+            has_return: method.returns.has_return_value(),
             callbacks: params_info.callbacks,
             has_wrappers: call_builder.has_wrappers(),
             wrappers_open: call_builder.build_wrappers_open(),
@@ -661,8 +657,8 @@ impl ThrowingMethodBodyTemplate {
         Self {
             ffi_name,
             return_type: method
-                .output
-                .as_ref()
+                .returns
+                .ok_type()
                 .map(TypeMapper::map_type)
                 .unwrap_or_else(|| "Void".into()),
             has_wrappers: call_builder.has_wrappers(),
@@ -699,8 +695,8 @@ impl AsyncMethodBodyTemplate {
                 .map(|p| NamingConvention::param_name(&p.name))
                 .collect(),
             return_type: method
-                .output
-                .as_ref()
+                .returns
+                .ok_type()
                 .map(TypeMapper::map_type)
                 .unwrap_or_else(|| "Void".into()),
         }
@@ -735,8 +731,8 @@ impl AsyncThrowingMethodBodyTemplate {
                 .map(|p| NamingConvention::param_name(&p.name))
                 .collect(),
             return_type: method
-                .output
-                .as_ref()
+                .returns
+                .ok_type()
                 .map(TypeMapper::map_type)
                 .unwrap_or_else(|| "Void".into()),
         }
@@ -853,7 +849,7 @@ impl CallbackTraitTemplate {
                                 }
                             })
                             .collect(),
-                        return_type: method.output.as_ref().map(TypeMapper::map_type),
+                        return_type: method.returns.ok_type().map(TypeMapper::map_type),
                         is_async: method.is_async,
                         throws: method.throws(),
                         has_return,

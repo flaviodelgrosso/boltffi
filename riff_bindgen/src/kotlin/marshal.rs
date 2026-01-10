@@ -1,5 +1,6 @@
+use super::primitives;
 use super::{NamingConvention, TypeMapper};
-use crate::model::{DataEnumLayout, Module, OptionInfo, Primitive, Type};
+use crate::model::{DataEnumLayout, Module, OptionInfo, Primitive, ReturnType, Type};
 
 #[derive(Debug, Clone)]
 pub struct OptionView {
@@ -147,7 +148,7 @@ impl OptionView {
         } else if self.is_enum() {
             "jint"
         } else if self.is_vec_primitive() {
-            self.info.inner.vec_inner().and_then(|t| t.primitive()).map(|p| p.jni_array_type()).unwrap_or("jobject")
+            self.info.inner.vec_inner().and_then(|t| t.primitive()).map(|p| primitives::info(p).array_type).unwrap_or("jobject")
         } else if self.is_vec_string() {
             "jobjectArray"
         } else if self.is_vec_enum() {
@@ -467,7 +468,7 @@ impl ResultView {
             ResultOkKind::Record { .. } => "jobject",
             ResultOkKind::Enum { .. } => "jint",
             ResultOkKind::DataEnum { .. } => "jobject",
-            ResultOkKind::VecPrimitive { primitive, .. } => primitive.jni_array_type(),
+            ResultOkKind::VecPrimitive { primitive, .. } => primitives::info(*primitive).array_type,
             ResultOkKind::VecRecord { .. } => "jobject",
             ResultOkKind::Option(s) => s.jni_return_type(),
         }
@@ -796,6 +797,16 @@ impl JniReturnKind {
         }
     }
 
+    pub fn from_returns(returns: &ReturnType, func_name: &str, module: &Module) -> Self {
+        match returns {
+            ReturnType::Void => Self::Void,
+            ReturnType::Fallible { ok, err } => {
+                Self::Result(ResultView::from_result(ok, err, module, func_name))
+            }
+            ReturnType::Value(ty) => Self::from_type_with_module(Some(ty), func_name, module),
+        }
+    }
+
     pub fn is_void(&self) -> bool {
         matches!(self, Self::Void)
     }
@@ -1101,7 +1112,7 @@ impl JniParamInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Primitive;
+    use crate::model::{Enumeration, Primitive, RecordField, Variant};
 
     #[test]
     fn test_return_kind_primitives() {
@@ -1163,8 +1174,6 @@ mod tests {
 
     #[test]
     fn test_jni_param_data_enum() {
-        use crate::model::{Enumeration, RecordField, Variant};
-
         let mut data_enum = Enumeration::new("Result");
         data_enum.variants.push(
             Variant::new("Ok").with_field(RecordField::new("value", Type::Primitive(Primitive::I32)))
@@ -1186,8 +1195,6 @@ mod tests {
 
     #[test]
     fn test_jni_param_c_style_enum() {
-        use crate::model::{Enumeration, Variant};
-
         let mut c_style_enum = Enumeration::new("Status");
         c_style_enum.variants.push(Variant::new("Ok"));
         c_style_enum.variants.push(Variant::new("Error"));
@@ -1204,8 +1211,6 @@ mod tests {
 
     #[test]
     fn test_jni_return_kind_data_enum() {
-        use crate::model::{Enumeration, RecordField, Variant};
-
         let mut data_enum = Enumeration::new("Response");
         data_enum.variants.push(
             Variant::new("Success").with_field(RecordField::new("data", Type::Primitive(Primitive::I64)))
@@ -1228,8 +1233,6 @@ mod tests {
 
     #[test]
     fn test_jni_return_kind_c_style_enum() {
-        use crate::model::{Enumeration, Variant};
-
         let mut c_style_enum = Enumeration::new("Status");
         c_style_enum.variants.push(Variant::new("Active"));
 

@@ -89,24 +89,6 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    pub fn swift_type(self) -> &'static str {
-        match self {
-            Self::Bool => "Bool",
-            Self::I8 => "Int8",
-            Self::U8 => "UInt8",
-            Self::I16 => "Int16",
-            Self::U16 => "UInt16",
-            Self::I32 => "Int32",
-            Self::U32 => "UInt32",
-            Self::I64 => "Int64",
-            Self::U64 => "UInt64",
-            Self::F32 => "Float",
-            Self::F64 => "Double",
-            Self::Usize => "UInt",
-            Self::Isize => "Int",
-        }
-    }
-
     pub fn rust_name(self) -> &'static str {
         match self {
             Self::Bool => "bool",
@@ -208,42 +190,6 @@ impl Primitive {
             Self::I64 | Self::U64 | Self::Isize | Self::Usize => "jlongArray",
             Self::F32 => "jfloatArray",
             Self::F64 => "jdoubleArray",
-        }
-    }
-
-    pub fn jni_new_array_fn(self) -> &'static str {
-        match self {
-            Self::Bool => "NewBooleanArray",
-            Self::I8 | Self::U8 => "NewByteArray",
-            Self::I16 | Self::U16 => "NewShortArray",
-            Self::I32 | Self::U32 => "NewIntArray",
-            Self::I64 | Self::U64 | Self::Isize | Self::Usize => "NewLongArray",
-            Self::F32 => "NewFloatArray",
-            Self::F64 => "NewDoubleArray",
-        }
-    }
-
-    pub fn jni_set_array_fn(self) -> &'static str {
-        match self {
-            Self::Bool => "SetBooleanArrayRegion",
-            Self::I8 | Self::U8 => "SetByteArrayRegion",
-            Self::I16 | Self::U16 => "SetShortArrayRegion",
-            Self::I32 | Self::U32 => "SetIntArrayRegion",
-            Self::I64 | Self::U64 | Self::Isize | Self::Usize => "SetLongArrayRegion",
-            Self::F32 => "SetFloatArrayRegion",
-            Self::F64 => "SetDoubleArrayRegion",
-        }
-    }
-
-    pub fn jni_element_type(self) -> &'static str {
-        match self {
-            Self::Bool => "jboolean",
-            Self::I8 | Self::U8 => "jbyte",
-            Self::I16 | Self::U16 => "jshort",
-            Self::I32 | Self::U32 => "jint",
-            Self::I64 | Self::U64 | Self::Isize | Self::Usize => "jlong",
-            Self::F32 => "jfloat",
-            Self::F64 => "jdouble",
         }
     }
 }

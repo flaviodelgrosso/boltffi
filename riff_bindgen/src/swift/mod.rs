@@ -2,6 +2,7 @@ mod body;
 mod conversion;
 mod marshal;
 mod names;
+mod primitives;
 mod templates;
 mod types;
 

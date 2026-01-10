@@ -1,11 +1,17 @@
+use std::collections::HashSet;
+
 use askama::Template;
 use heck::ToShoutySnakeCase;
 use riff_ffi_rules::naming;
 
-use crate::model::{CallbackTrait, Class, DataEnumLayout, Enumeration, Function, Module, Record, Type};
+use crate::model::{
+    CallbackTrait, Class, DataEnumLayout, Enumeration, Function, Method, Module, Primitive, Record,
+    ReturnType, TraitMethod, TraitMethodParam, Type,
+};
 
 use super::layout::{KotlinBufferRead, KotlinBufferWrite};
 use super::marshal::{OptionView, ParamConversion, ResultView, ReturnKind};
+use super::primitives;
 use super::{NamingConvention, TypeMapper};
 
 #[derive(Template)]
@@ -13,13 +19,16 @@ use super::{NamingConvention, TypeMapper};
 pub struct PreambleTemplate {
     pub package_name: String,
     pub prefix: String,
+    pub extra_imports: Vec<String>,
 }
 
 impl PreambleTemplate {
     pub fn from_module(module: &Module) -> Self {
+        let extra_imports = Self::collect_imports(module);
         Self {
             package_name: NamingConvention::class_name(&module.name).to_lowercase(),
             prefix: naming::ffi_prefix().to_string(),
+            extra_imports,
         }
     }
 
@@ -27,6 +36,33 @@ impl PreambleTemplate {
         Self {
             package_name: package_name.to_string(),
             prefix: naming::ffi_prefix().to_string(),
+            extra_imports: Vec::new(),
+        }
+    }
+
+    pub fn with_package_and_module(package_name: &str, module: &Module) -> Self {
+        let extra_imports = Self::collect_imports(module);
+        Self {
+            package_name: package_name.to_string(),
+            prefix: naming::ffi_prefix().to_string(),
+            extra_imports,
+        }
+    }
+
+    fn collect_imports(module: &Module) -> Vec<String> {
+        let has_async_callbacks = module
+            .callback_traits
+            .iter()
+            .any(|t| t.async_methods().count() > 0);
+
+        if has_async_callbacks {
+            vec![
+                "kotlinx.coroutines.DelicateCoroutinesApi".to_string(),
+                "kotlinx.coroutines.GlobalScope".to_string(),
+                "kotlinx.coroutines.launch".to_string(),
+            ]
+        } else {
+            Vec::new()
         }
     }
 }
@@ -411,12 +447,12 @@ impl FunctionTemplate {
     pub fn from_function(function: &Function, _module: &Module) -> Self {
         let ffi_name = format!("{}_{}", naming::ffi_prefix(), function.name);
 
-        let enum_output = function.output.as_ref().and_then(|ty| match ty {
-            Type::Enum(name) => _module.enums.iter().find(|e| &e.name == name),
+        let enum_output = function.returns.ok_type().and_then(|ty| match ty {
+            Type::Enum(name) => _module.enums.iter().find(|e| e.name == *name),
             _ => None,
         });
 
-        let enum_name = function.output.as_ref().and_then(|ty| match ty {
+        let enum_name = function.returns.ok_type().and_then(|ty| match ty {
             Type::Enum(name) => Some(NamingConvention::class_name(name)),
             _ => None,
         });
@@ -429,8 +465,8 @@ impl FunctionTemplate {
         };
 
         let return_kind = function
-            .output
-            .as_ref()
+            .returns
+            .ok_type()
             .map(|ty| ReturnKind::from_type(ty, &ffi_name))
             .unwrap_or(ReturnKind::Void);
 
@@ -470,25 +506,19 @@ impl FunctionTemplate {
             })
             .collect();
 
-        let return_type = function.output.as_ref().map(|ty| match ty {
-            Type::Result { ok, .. } => TypeMapper::map_type(ok),
-            other => TypeMapper::map_type(other),
-        });
+        let return_type = function.returns.ok_type().map(TypeMapper::map_type);
         let inner_type = return_kind.inner_type().map(String::from);
         let len_fn = return_kind.len_fn().map(String::from);
         let copy_fn = return_kind.copy_fn().map(String::from);
         let reader_name = return_kind.reader_name().map(String::from);
 
-        let option = function.output.as_ref().and_then(|ty| match ty {
+        let option = function.returns.ok_type().and_then(|ty| match ty {
             Type::Option(inner) => Some(OptionView::from_inner(inner, _module)),
             _ => None,
         });
 
-        let result = function.output.as_ref().and_then(|ty| match ty {
-            Type::Result { ok, err } => {
-                Some(ResultView::from_result(ok, err, _module, &function.name))
-            }
-            _ => None,
+        let result = function.returns.as_result_types().map(|(ok, err)| {
+            ResultView::from_result(ok, err, _module, &function.name)
         });
 
         Self {
@@ -546,68 +576,12 @@ impl AsyncFunctionTemplate {
             })
             .collect();
 
-        let return_type = function.output.as_ref().map(TypeMapper::map_type);
+        let return_type = function.returns.ok_type().map(TypeMapper::map_type);
 
-        let complete_expr = match &function.output {
-            Some(Type::Primitive(p)) => {
-                let call = format!("Native.{}(future)", naming::function_ffi_complete(&function.name));
-                match p {
-                    crate::model::Primitive::U8 => format!("{}.toUByte()", call),
-                    crate::model::Primitive::U16 => format!("{}.toUShort()", call),
-                    crate::model::Primitive::U32 => format!("{}.toUInt()", call),
-                    crate::model::Primitive::U64 => format!("{}.toULong()", call),
-                    _ => call,
-                }
-            }
-            Some(Type::String) => format!(
-                "Native.{}(future) ?: throw FfiException(-1, \"Null string\")",
-                naming::function_ffi_complete(&function.name)
-            ),
-            Some(Type::Vec(inner)) => {
-                let call = format!(
-                    "Native.{}(future) ?: throw FfiException(-1, \"Null array\")",
-                    naming::function_ffi_complete(&function.name)
-                );
-                match inner.as_ref() {
-                    Type::Primitive(p) => Self::vec_primitive_conversion(&call, p),
-                    _ => call,
-                }
-            }
-            Some(Type::Record(name)) => {
-                let reader_name = format!("{}Reader", NamingConvention::class_name(name));
-                format!(
-                    "useNativeBuffer(Native.{}(future) ?: throw FfiException(-1, \"Null record\")) {{ buf -> buf.order(ByteOrder.nativeOrder()); {}.read(buf, 0) }}",
-                    naming::function_ffi_complete(&function.name),
-                    reader_name
-                )
-            }
-            Some(Type::Result { ok, .. }) => {
-                let call = format!("Native.{}(future)", naming::function_ffi_complete(&function.name));
-                match ok.as_ref() {
-                    Type::Void => call,
-                    Type::String => format!("{} ?: throw FfiException(-1, \"Null string\")", call),
-                    Type::Primitive(p) => match p {
-                        crate::model::Primitive::U8 => format!("{}.toUByte()", call),
-                        crate::model::Primitive::U16 => format!("{}.toUShort()", call),
-                        crate::model::Primitive::U32 => format!("{}.toUInt()", call),
-                        crate::model::Primitive::U64 => format!("{}.toULong()", call),
-                        _ => call,
-                    },
-                    _ => call,
-                }
-            }
-            Some(Type::Void) | None => format!(
-                "Native.{}(future)",
-                naming::function_ffi_complete(&function.name)
-            ),
-            _ => format!(
-                "Native.{}(future)",
-                naming::function_ffi_complete(&function.name)
-            ),
-        };
+        let complete_expr = Self::generate_complete_expr_for_returns(&function.returns, &function.name, None);
 
-        let (has_structured_error, error_codec) = match &function.output {
-            Some(Type::Result { err, .. }) => match err.as_ref() {
+        let (has_structured_error, error_codec) = match &function.returns {
+            ReturnType::Fallible { err, .. } => match err {
                 Type::Enum(name) => (true, format!("{}Codec", NamingConvention::class_name(name))),
                 _ => (false, String::new()),
             },
@@ -629,16 +603,65 @@ impl AsyncFunctionTemplate {
         }
     }
 
-    fn vec_primitive_conversion(call: &str, primitive: &crate::model::Primitive) -> String {
-        use crate::model::Primitive;
-        match primitive {
-            Primitive::U8 => format!("({}).asUByteArray().toList()", call),
-            Primitive::U16 => format!("({}).map {{ it.toUShort() }}", call),
-            Primitive::U32 => format!("({}).asUIntArray().toList()", call),
-            Primitive::U64 => format!("({}).asULongArray().toList()", call),
-            Primitive::Usize => format!("({}).asULongArray().toList()", call),
-            _ => format!("({}).toList()", call),
+    pub fn vec_primitive_conversion(call: &str, primitive: &Primitive) -> String {
+        primitives::info(*primitive)
+            .vec_to_unsigned
+            .map(|conv| format!("({}).{}", call, conv))
+            .unwrap_or_else(|| format!("({}).toList()", call))
+    }
+
+    pub fn generate_complete_expr_for_returns(
+        returns: &ReturnType,
+        func_name: &str,
+        class_name: Option<&str>,
+    ) -> String {
+        let ffi_complete = match class_name {
+            Some(class) => naming::method_ffi_complete(class, func_name),
+            None => naming::function_ffi_complete(func_name),
+        };
+        let args = match class_name {
+            Some(_) => "handle, future",
+            None => "future",
+        };
+        let call = format!("Native.{}({})", ffi_complete, args);
+
+        let ok_type = match returns {
+            ReturnType::Void => return call,
+            ReturnType::Value(ty) => ty,
+            ReturnType::Fallible { ok, .. } => ok,
+        };
+
+        Self::apply_type_conversion(&call, ok_type)
+    }
+
+    fn apply_type_conversion(call: &str, ty: &Type) -> String {
+        match ty {
+            Type::Void => call.to_string(),
+            Type::Primitive(p) => Self::apply_unsigned_conversion(call, p),
+            Type::String => format!("{} ?: throw FfiException(-1, \"Null string\")", call),
+            Type::Vec(inner) => {
+                let null_check = format!("{} ?: throw FfiException(-1, \"Null array\")", call);
+                match inner.as_ref() {
+                    Type::Primitive(p) => Self::vec_primitive_conversion(&null_check, p),
+                    _ => null_check,
+                }
+            }
+            Type::Record(name) => {
+                let reader_name = format!("{}Reader", NamingConvention::class_name(name));
+                format!(
+                    "useNativeBuffer({} ?: throw FfiException(-1, \"Null record\")) {{ buf -> buf.order(ByteOrder.nativeOrder()); {}.read(buf, 0) }}",
+                    call, reader_name
+                )
+            }
+            _ => call.to_string(),
         }
+    }
+
+    fn apply_unsigned_conversion(call: &str, p: &Primitive) -> String {
+        primitives::info(*p)
+            .to_unsigned
+            .map(|conv| format!("{}.{}", call, conv))
+            .unwrap_or_else(|| call.to_string())
     }
 }
 
@@ -707,10 +730,10 @@ impl ClassTemplate {
             .filter(|method| Self::is_supported_method(method, module))
             .map(|method| {
                 let method_ffi = naming::method_ffi_name(&class.name, &method.name);
-                let return_type = method.output.as_ref().map(TypeMapper::map_type);
+                let return_type = method.returns.ok_type().map(TypeMapper::map_type);
                 let body = Self::generate_method_body(method, &method_ffi);
                 let complete_expr = if method.is_async {
-                    Self::generate_async_complete_expr(&method.output, &method.name, &class.name)
+                    AsyncFunctionTemplate::generate_complete_expr_for_returns(&method.returns, &method.name, Some(&class.name))
                 } else {
                     String::new()
                 };
@@ -751,12 +774,13 @@ impl ClassTemplate {
         }
     }
 
-    fn is_supported_method(method: &crate::model::Method, module: &Module) -> bool {
+    fn is_supported_method(method: &Method, module: &Module) -> bool {
         let supported_output = if method.is_async {
-            super::Kotlin::is_supported_async_output(&method.output, module)
+            super::Kotlin::is_supported_async_output(&method.returns, module)
         } else {
-            match &method.output {
+            match method.returns.ok_type() {
                 None => true,
+                Some(Type::Void) => true,
                 Some(Type::Primitive(_)) => true,
                 _ => false,
             }
@@ -770,7 +794,7 @@ impl ClassTemplate {
         supported_output && supported_inputs
     }
 
-    fn generate_method_body(method: &crate::model::Method, ffi_name: &str) -> String {
+    fn generate_method_body(method: &Method, ffi_name: &str) -> String {
         let args = std::iter::once("handle".to_string())
             .chain(method.inputs.iter().map(|p| {
                 ParamConversion::to_ffi(&NamingConvention::param_name(&p.name), &p.param_type)
@@ -778,48 +802,17 @@ impl ClassTemplate {
             .collect::<Vec<_>>()
             .join(", ");
 
-        match &method.output {
+        match method.returns.ok_type() {
             Some(Type::Primitive(primitive)) => {
                 let call = format!("Native.{}({})", ffi_name, args);
-                let converted = match primitive {
-                    crate::model::Primitive::U8 => format!("{}.toUByte()", call),
-                    crate::model::Primitive::U16 => format!("{}.toUShort()", call),
-                    crate::model::Primitive::U32 => format!("{}.toUInt()", call),
-                    crate::model::Primitive::U64 => format!("{}.toULong()", call),
-                    _ => call,
-                };
+                let converted = primitives::info(*primitive)
+                    .to_unsigned
+                    .map(|conv| format!("{}.{}", call, conv))
+                    .unwrap_or(call);
                 format!("return {}", converted)
             }
             Some(_) => format!("return Native.{}({})", ffi_name, args),
             None => format!("Native.{}({})", ffi_name, args),
-        }
-    }
-
-    fn generate_async_complete_expr(output: &Option<Type>, method_name: &str, class_name: &str) -> String {
-        let ffi_complete = naming::method_ffi_complete(class_name, method_name);
-        let call = format!("Native.{}(handle, future)", ffi_complete);
-
-        match output {
-            Some(Type::Result { ok, .. }) => match ok.as_ref() {
-                Type::Void => call,
-                Type::Primitive(p) => match p {
-                    crate::model::Primitive::U8 => format!("{}.toUByte()", call),
-                    crate::model::Primitive::U16 => format!("{}.toUShort()", call),
-                    crate::model::Primitive::U32 => format!("{}.toUInt()", call),
-                    crate::model::Primitive::U64 => format!("{}.toULong()", call),
-                    _ => call,
-                },
-                _ => call,
-            },
-            Some(Type::Primitive(p)) => match p {
-                crate::model::Primitive::U8 => format!("{}.toUByte()", call),
-                crate::model::Primitive::U16 => format!("{}.toUShort()", call),
-                crate::model::Primitive::U32 => format!("{}.toUInt()", call),
-                crate::model::Primitive::U64 => format!("{}.toULong()", call),
-                _ => call,
-            },
-            Some(Type::Void) | None => call,
-            _ => call,
         }
     }
 }
@@ -831,6 +824,13 @@ pub struct NativeTemplate {
     pub prefix: String,
     pub functions: Vec<NativeFunctionView>,
     pub classes: Vec<NativeClassView>,
+    pub async_callback_invokers: Vec<AsyncCallbackInvokerView>,
+}
+
+pub struct AsyncCallbackInvokerView {
+    pub name: String,
+    pub jni_type: String,
+    pub has_result: bool,
 }
 
 pub struct NativeFunctionView {
@@ -882,7 +882,7 @@ impl NativeTemplate {
             .map(|func| {
                 let ffi_name = naming::function_ffi_name(&func.name);
                 let (has_out_param, out_type, return_jni_type) =
-                    Self::analyze_return(&func.output, module);
+                    Self::analyze_return(&func.returns, module);
 
                 NativeFunctionView {
                     ffi_name: ffi_name.clone(),
@@ -919,7 +919,7 @@ impl NativeTemplate {
                     ffi_complete: naming::function_ffi_complete(&func.name),
                     ffi_cancel: naming::function_ffi_cancel(&func.name),
                     ffi_free: naming::function_ffi_free(&func.name),
-                    complete_return_jni_type: Self::async_complete_return_type(&func.output, &return_jni_type),
+                    complete_return_jni_type: Self::async_complete_return_type(&func.returns, &return_jni_type),
                 }
             })
             .collect();
@@ -950,10 +950,11 @@ impl NativeTemplate {
                     .iter()
                     .filter(|method| {
                         let supported_output = if method.is_async {
-                            super::Kotlin::is_supported_async_output(&method.output, module)
+                            super::Kotlin::is_supported_async_output(&method.returns, module)
                         } else {
-                            match &method.output {
+                            match method.returns.ok_type() {
                                 None => true,
+                                Some(Type::Void) => true,
                                 Some(Type::Primitive(_)) => true,
                                 _ => false,
                             }
@@ -969,7 +970,7 @@ impl NativeTemplate {
                     .map(|method| {
                         let method_ffi = naming::method_ffi_name(&class.name, &method.name);
                         let (has_out_param, out_type, return_jni_type) =
-                            Self::analyze_return(&method.output, module);
+                            Self::analyze_return(&method.returns, module);
 
                         NativeMethodView {
                             ffi_name: method_ffi.clone(),
@@ -1002,18 +1003,70 @@ impl NativeTemplate {
             })
             .collect();
 
+        let async_callback_invokers = Self::collect_async_callback_invokers(module);
+
         Self {
             lib_name: format!("{}_jni", module.name),
             prefix,
             functions,
             classes,
+            async_callback_invokers,
         }
     }
 
-    fn analyze_return(output: &Option<Type>, module: &Module) -> (bool, String, String) {
-        match output {
-            None => (false, String::new(), "Int".to_string()),
-            Some(ty) => match ty {
+    fn collect_async_callback_invokers(module: &Module) -> Vec<AsyncCallbackInvokerView> {
+        let mut seen = HashSet::new();
+        module
+            .callback_traits
+            .iter()
+            .flat_map(|t| t.async_methods())
+            .filter_map(|method| {
+                let suffix = Self::async_invoker_suffix_for_type(&method.returns);
+                if seen.insert(suffix.clone()) {
+                    Some(Self::build_invoker_view(&suffix, &method.returns))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn async_invoker_suffix_for_type(returns: &ReturnType) -> String {
+        match returns.ok_type() {
+            None => "Void".to_string(),
+            Some(Type::Void) => "Void".to_string(),
+            Some(Type::Primitive(p)) => primitives::info(*p).invoker_suffix.to_string(),
+            Some(Type::String) => "String".to_string(),
+            _ => "Object".to_string(),
+        }
+    }
+
+    fn build_invoker_view(suffix: &str, returns: &ReturnType) -> AsyncCallbackInvokerView {
+        let (jni_type, has_result) = match suffix {
+            "Void" => ("Unit".to_string(), false),
+            "Bool" => ("Boolean".to_string(), true),
+            "I8" => ("Byte".to_string(), true),
+            "I16" => ("Short".to_string(), true),
+            "I32" => ("Int".to_string(), true),
+            "I64" => ("Long".to_string(), true),
+            "F32" => ("Float".to_string(), true),
+            "F64" => ("Double".to_string(), true),
+            _ => ("Any".to_string(), true),
+        };
+
+        AsyncCallbackInvokerView {
+            name: format!("invokeAsyncCallback{}", suffix),
+            jni_type,
+            has_result,
+        }
+    }
+
+    fn analyze_return(returns: &ReturnType, module: &Module) -> (bool, String, String) {
+        match returns {
+            ReturnType::Void => (false, String::new(), "Unit".to_string()),
+            ReturnType::Fallible { ok, .. } => Self::analyze_result_return(ok, module),
+            ReturnType::Value(ty) => match ty {
+                Type::Void => (false, String::new(), "Unit".to_string()),
                 Type::Primitive(_) => (false, String::new(), TypeMapper::jni_type(ty)),
                 Type::String => (false, String::new(), "String?".to_string()),
                 Type::Bytes => (false, String::new(), "ByteArray?".to_string()),
@@ -1027,12 +1080,11 @@ impl NativeTemplate {
                     _ => (false, String::new(), "Long".to_string()),
                 },
                 Type::Record(_) => (false, String::new(), "ByteBuffer?".to_string()),
-                Type::Result { ok, .. } => Self::analyze_result_return(ok, module),
                 Type::Enum(enum_name)
                     if module
                         .enums
                         .iter()
-                        .find(|e| &e.name == enum_name)
+                        .find(|e| e.name == *enum_name)
                         .map(|e| e.is_data_enum())
                         .unwrap_or(false) =>
                 {
@@ -1066,8 +1118,8 @@ impl NativeTemplate {
         }
     }
 
-    fn async_complete_return_type(output: &Option<Type>, base_type: &str) -> String {
-        match output {
+    fn async_complete_return_type(returns: &ReturnType, base_type: &str) -> String {
+        match returns.ok_type() {
             Some(Type::Vec(inner)) => match inner.as_ref() {
                 Type::Primitive(_) => format!("{}?", base_type),
                 _ => base_type.to_string(),
@@ -1089,7 +1141,9 @@ pub struct CallbackTraitTemplate {
     pub vtable_type: String,
     pub register_fn: String,
     pub create_fn: String,
-    pub methods: Vec<TraitMethodView>,
+    pub sync_methods: Vec<SyncMethodView>,
+    pub async_methods: Vec<AsyncMethodView>,
+    pub has_async: bool,
 }
 
 pub struct CallbackReturnInfo {
@@ -1099,12 +1153,19 @@ pub struct CallbackReturnInfo {
     pub to_jni: String,
 }
 
-pub struct TraitMethodView {
+pub struct SyncMethodView {
     pub name: String,
     pub ffi_name: String,
     pub params: Vec<TraitParamView>,
     pub return_info: Option<CallbackReturnInfo>,
-    pub is_async: bool,
+}
+
+pub struct AsyncMethodView {
+    pub name: String,
+    pub ffi_name: String,
+    pub params: Vec<TraitParamView>,
+    pub return_info: Option<CallbackReturnInfo>,
+    pub invoker_name: String,
 }
 
 pub struct TraitParamView {
@@ -1120,6 +1181,20 @@ impl CallbackTraitTemplate {
         let trait_name = &callback_trait.name;
         let interface_name = NamingConvention::class_name(trait_name);
 
+        let sync_methods: Vec<SyncMethodView> = callback_trait
+            .sync_methods()
+            .filter(|method| Self::is_supported_callback_method(method))
+            .map(|method| Self::build_sync_method(method))
+            .collect();
+
+        let async_methods: Vec<AsyncMethodView> = callback_trait
+            .async_methods()
+            .filter(|method| Self::is_supported_callback_method(method))
+            .map(|method| Self::build_async_method(method))
+            .collect();
+
+        let has_async = !async_methods.is_empty();
+
         Self {
             doc: callback_trait.doc.clone(),
             interface_name: interface_name.clone(),
@@ -1130,84 +1205,97 @@ impl CallbackTraitTemplate {
             vtable_type: naming::callback_vtable_name(trait_name),
             register_fn: naming::callback_register_fn(trait_name),
             create_fn: naming::callback_create_fn(trait_name),
-            methods: callback_trait
-                .methods
-                .iter()
-                .filter(|method| Self::is_supported_callback_method(method))
-                .map(|method| {
-                    let return_info = method.output.as_ref().and_then(|ty| {
-                        if matches!(ty, Type::Void) {
-                            None
-                        } else {
-                            Some(CallbackReturnInfo {
-                                kotlin_type: TypeMapper::map_type(ty),
-                                jni_type: TypeMapper::jni_type(ty),
-                                default_value: Self::default_value(ty),
-                                to_jni: Self::jni_return_conversion(ty),
-                            })
-                        }
-                    });
+            sync_methods,
+            async_methods,
+            has_async,
+        }
+    }
 
-                    TraitMethodView {
-                        name: NamingConvention::method_name(&method.name),
-                        ffi_name: naming::to_snake_case(&method.name),
-                        params: method
-                            .inputs
-                            .iter()
-                            .map(|param| {
-                                let kotlin_name = NamingConvention::param_name(&param.name);
-                                TraitParamView {
-                                    name: kotlin_name.clone(),
-                                    ffi_name: param.name.clone(),
-                                    kotlin_type: TypeMapper::map_type(&param.param_type),
-                                    jni_type: TypeMapper::jni_type(&param.param_type),
-                                    conversion: Self::jni_param_conversion(
-                                        &kotlin_name,
-                                        &param.param_type,
-                                    ),
-                                }
-                            })
-                            .collect(),
-                        return_info,
-                        is_async: method.is_async,
-                    }
+    fn build_sync_method(method: &TraitMethod) -> SyncMethodView {
+        let return_info = Self::build_return_info(&method.returns);
+        SyncMethodView {
+            name: NamingConvention::method_name(&method.name),
+            ffi_name: naming::to_snake_case(&method.name),
+            params: Self::build_params(&method.inputs),
+            return_info,
+        }
+    }
+
+    fn build_async_method(method: &TraitMethod) -> AsyncMethodView {
+        let return_info = Self::build_return_info(&method.returns);
+        let invoker_suffix = Self::async_invoker_suffix(&method.returns);
+        AsyncMethodView {
+            name: NamingConvention::method_name(&method.name),
+            ffi_name: naming::to_snake_case(&method.name),
+            params: Self::build_params(&method.inputs),
+            return_info,
+            invoker_name: format!("invokeAsyncCallback{}", invoker_suffix),
+        }
+    }
+
+    fn build_return_info(returns: &ReturnType) -> Option<CallbackReturnInfo> {
+        returns.ok_type().and_then(|ty| {
+            if matches!(ty, Type::Void) {
+                None
+            } else {
+                Some(CallbackReturnInfo {
+                    kotlin_type: TypeMapper::map_type(ty),
+                    jni_type: TypeMapper::jni_type(ty),
+                    default_value: Self::default_value(ty),
+                    to_jni: Self::jni_return_conversion(ty),
                 })
-                .collect(),
+            }
+        })
+    }
+
+    fn build_params(inputs: &[TraitMethodParam]) -> Vec<TraitParamView> {
+        inputs
+            .iter()
+            .map(|param| {
+                let kotlin_name = NamingConvention::param_name(&param.name);
+                TraitParamView {
+                    name: kotlin_name.clone(),
+                    ffi_name: param.name.clone(),
+                    kotlin_type: TypeMapper::map_type(&param.param_type),
+                    jni_type: TypeMapper::jni_type(&param.param_type),
+                    conversion: Self::jni_param_conversion(&kotlin_name, &param.param_type),
+                }
+            })
+            .collect()
+    }
+
+    fn async_invoker_suffix(returns: &ReturnType) -> String {
+        match returns.ok_type() {
+            None => "Void".to_string(),
+            Some(Type::Void) => "Void".to_string(),
+            Some(Type::Primitive(p)) => primitives::info(*p).invoker_suffix.to_string(),
+            Some(Type::String) => "String".to_string(),
+            _ => "Object".to_string(),
         }
     }
 
     fn jni_return_conversion(ty: &Type) -> String {
         match ty {
-            Type::Primitive(p) => match p {
-                crate::model::Primitive::U8
-                | crate::model::Primitive::U16
-                | crate::model::Primitive::U32 => ".toInt()".to_string(),
-                crate::model::Primitive::U64 | crate::model::Primitive::Usize => {
-                    ".toLong()".to_string()
-                }
-                _ => String::new(),
-            },
+            Type::Primitive(p) => primitives::info(*p)
+                .jni_return_cast
+                .map(String::from)
+                .unwrap_or_default(),
             _ => String::new(),
         }
     }
 
     fn jni_param_conversion(name: &str, ty: &Type) -> String {
         match ty {
-            Type::Primitive(p) => match p {
-                crate::model::Primitive::U8
-                | crate::model::Primitive::U16
-                | crate::model::Primitive::U32 => format!("{}.toUInt()", name),
-                crate::model::Primitive::U64 | crate::model::Primitive::Usize => {
-                    format!("{}.toULong()", name)
-                }
-                _ => name.to_string(),
-            },
+            Type::Primitive(p) => primitives::info(*p)
+                .jni_param_cast
+                .map(|cast| format!("{}.{}", name, cast))
+                .unwrap_or_else(|| name.to_string()),
             _ => name.to_string(),
         }
     }
 
-    fn is_supported_callback_method(method: &crate::model::TraitMethod) -> bool {
-        let supported_return = match &method.output {
+    fn is_supported_callback_method(method: &TraitMethod) -> bool {
+        let supported_return = match method.returns.ok_type() {
             None => true,
             Some(Type::Void) => true,
             Some(Type::Primitive(_)) => true,
@@ -1223,21 +1311,7 @@ impl CallbackTraitTemplate {
 
     fn default_value(ty: &Type) -> String {
         match ty {
-            Type::Primitive(p) => match p {
-                crate::model::Primitive::Bool => "false".to_string(),
-                crate::model::Primitive::I8
-                | crate::model::Primitive::I16
-                | crate::model::Primitive::I32
-                | crate::model::Primitive::U8
-                | crate::model::Primitive::U16
-                | crate::model::Primitive::U32 => "0".to_string(),
-                crate::model::Primitive::I64
-                | crate::model::Primitive::U64
-                | crate::model::Primitive::Isize
-                | crate::model::Primitive::Usize => "0L".to_string(),
-                crate::model::Primitive::F32 => "0.0f".to_string(),
-                crate::model::Primitive::F64 => "0.0".to_string(),
-            },
+            Type::Primitive(p) => primitives::info(*p).callback_default.to_string(),
             Type::String => "\"\"".to_string(),
             Type::Void => "Unit".to_string(),
             _ => "throw IllegalStateException(\"Handle not found\")".to_string(),

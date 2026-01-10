@@ -2,6 +2,7 @@ mod jni;
 mod layout;
 mod marshal;
 mod names;
+mod primitives;
 mod templates;
 mod types;
 
@@ -17,7 +18,9 @@ pub use templates::{
 };
 pub use types::TypeMapper;
 
-use crate::model::{CallbackTrait, Class, Enumeration, Function, Module, Record, Type};
+use crate::model::{
+    CallbackTrait, Class, Enumeration, Function, Module, Record, ReturnType, Type,
+};
 
 pub struct Kotlin;
 
@@ -29,7 +32,7 @@ impl Kotlin {
     pub fn render_module_with_package(module: &Module, package_name: &str) -> String {
         let mut sections = Vec::new();
 
-        sections.push(Self::render_preamble_with_package(package_name));
+        sections.push(Self::render_preamble_with_package(package_name, module));
 
         module.enums.iter().for_each(|enumeration| {
             sections.push(Self::render_enum(enumeration));
@@ -88,8 +91,8 @@ impl Kotlin {
             .expect("preamble template failed")
     }
 
-    pub fn render_preamble_with_package(package_name: &str) -> String {
-        PreambleTemplate::with_package(package_name)
+    pub fn render_preamble_with_package(package_name: &str, module: &Module) -> String {
+        PreambleTemplate::with_package_and_module(package_name, module)
             .render()
             .expect("preamble template failed")
     }
@@ -165,12 +168,12 @@ impl Kotlin {
             .functions
             .iter()
             .filter_map(|func| {
-                if let Some(Type::Vec(inner)) = &func.output {
+                if let Some(Type::Vec(inner)) = func.returns.ok_type() {
                     if let Type::Record(record_name) = inner.as_ref() {
                         let is_blittable = module
                             .records
                             .iter()
-                            .find(|record| &record.name == record_name)
+                            .find(|record| record.name == *record_name)
                             .map(|record| record.is_blittable())
                             .unwrap_or(false);
                         if is_blittable {
@@ -216,11 +219,11 @@ impl Kotlin {
             .iter()
             .filter(|func| func.is_async)
             .filter_map(|func| {
-                if let Some(Type::Record(record_name)) = &func.output {
+                if let Some(Type::Record(record_name)) = func.returns.ok_type() {
                     let is_blittable = module
                         .records
                         .iter()
-                        .find(|record| &record.name == record_name)
+                        .find(|record| record.name == *record_name)
                         .map(|record| record.is_blittable())
                         .unwrap_or(false);
                     if is_blittable {
@@ -237,19 +240,22 @@ impl Kotlin {
             return Self::is_supported_async_function(func, module);
         }
 
-        let supported_output = match &func.output {
-            None => true,
-            Some(Type::Primitive(_)) => true,
-            Some(Type::String) => true,
-            Some(Type::Enum(_)) => true,
-            Some(Type::Vec(inner)) => match inner.as_ref() {
+        let supported_output = match &func.returns {
+            ReturnType::Void => true,
+            ReturnType::Fallible { ok, .. } => Self::is_supported_result_ok(ok, module),
+            ReturnType::Value(ty) => match ty {
+                Type::Void => true,
                 Type::Primitive(_) => true,
-                Type::Record(record_name) => Self::is_record_blittable(record_name, module),
+                Type::String => true,
+                Type::Enum(_) => true,
+                Type::Vec(inner) => match inner.as_ref() {
+                    Type::Primitive(_) => true,
+                    Type::Record(record_name) => Self::is_record_blittable(record_name, module),
+                    _ => false,
+                },
+                Type::Option(inner) => Self::is_supported_option_inner(inner, module),
                 _ => false,
             },
-            Some(Type::Option(inner)) => Self::is_supported_option_inner(inner, module),
-            Some(Type::Result { ok, .. }) => Self::is_supported_result_ok(ok, module),
-            _ => false,
         };
 
         let supported_inputs = func.inputs.iter().all(|param| match &param.param_type {
@@ -306,7 +312,7 @@ impl Kotlin {
     }
 
     fn is_supported_async_function(func: &Function, module: &Module) -> bool {
-        let supported_output = Self::is_supported_async_output(&func.output, module);
+        let supported_output = Self::is_supported_async_output(&func.returns, module);
 
         let supported_inputs = func
             .inputs
@@ -316,16 +322,18 @@ impl Kotlin {
         supported_output && supported_inputs
     }
 
-    pub fn is_supported_async_output(output: &Option<Type>, module: &Module) -> bool {
-        match output {
-            None => true,
-            Some(Type::Primitive(_)) => true,
-            Some(Type::String) => true,
-            Some(Type::Void) => true,
-            Some(Type::Vec(inner)) => matches!(inner.as_ref(), Type::Primitive(_)),
-            Some(Type::Record(name)) => Self::is_record_blittable(name, module),
-            Some(Type::Result { ok, .. }) => Self::is_supported_async_result_ok(ok),
-            _ => false,
+    pub fn is_supported_async_output(returns: &ReturnType, module: &Module) -> bool {
+        match returns {
+            ReturnType::Void => true,
+            ReturnType::Fallible { ok, .. } => Self::is_supported_async_result_ok(ok),
+            ReturnType::Value(ty) => match ty {
+                Type::Void => true,
+                Type::Primitive(_) => true,
+                Type::String => true,
+                Type::Vec(inner) => matches!(inner.as_ref(), Type::Primitive(_)),
+                Type::Record(name) => Self::is_record_blittable(name, module),
+                _ => false,
+            },
         }
     }
 

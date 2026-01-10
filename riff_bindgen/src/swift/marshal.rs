@@ -1,7 +1,8 @@
-use crate::model::{Module, OptionInfo, Primitive, Type};
+use crate::model::{Module, OptionInfo, Primitive, ReturnType, Type};
 use riff_ffi_rules::naming;
 
 use super::names::NamingConvention;
+use super::primitives;
 
 #[derive(Debug, Clone)]
 pub struct OptionView {
@@ -145,7 +146,7 @@ impl SwiftType {
     pub fn swift_type(&self) -> String {
         match self {
             Self::Void => "Void".into(),
-            Self::Primitive(p) => p.swift_type().into(),
+            Self::Primitive(p) => primitives::info(*p).swift_type.into(),
             Self::String => "String".into(),
             Self::Bytes => "Data".into(),
             Self::Slice { inner, .. } | Self::Vec(inner) => format!("[{}]", inner.swift_type()),
@@ -243,13 +244,34 @@ pub enum ReturnKind {
 }
 
 impl ReturnKind {
-    pub fn from_function(return_type: Option<&Type>, func_name: &str, module: &Module) -> Self {
-        match return_type {
-            None => Self::Void,
-            Some(Type::Option(inner)) => {
-                Self::Option(OptionView::from_type(inner, func_name, module))
-            }
-            Some(ty) => Self::from_type(ty, func_name),
+    pub fn from_returns(returns: &ReturnType, func_name: &str, module: &Module) -> Self {
+        match returns {
+            ReturnType::Void => Self::Void,
+            ReturnType::Value(ty) => match ty {
+                Type::Void => Self::Void,
+                Type::Option(inner) => Self::Option(OptionView::from_type(inner, func_name, module)),
+                _ => Self::from_type(ty, func_name),
+            },
+            ReturnType::Fallible { ok, .. } => match ok {
+                Type::Void => Self::Result {
+                    ok_type: "Void".to_string(),
+                    ok_is_vec: false,
+                },
+                Type::Option(inner) => {
+                    let opt_view = OptionView::from_type(inner, func_name, module);
+                    Self::Result {
+                        ok_type: opt_view.inner_type.clone(),
+                        ok_is_vec: opt_view.is_vec(),
+                    }
+                }
+                _ => {
+                    let swift_ty = SwiftType::from_model(ok);
+                    Self::Result {
+                        ok_type: swift_ty.swift_type(),
+                        ok_is_vec: matches!(swift_ty, SwiftType::Vec(_)),
+                    }
+                }
+            },
         }
     }
 
