@@ -123,7 +123,7 @@ fn generate_wire_size_impl(
             }
             
             fn fixed_size() -> Option<usize> {
-                if Self::is_fixed_size() {
+                if <Self as riff_core::wire::WireSize>::is_fixed_size() {
                     Some(#(#fixed_size_sum)+*)
                 } else {
                     None
@@ -131,7 +131,7 @@ fn generate_wire_size_impl(
             }
             
             fn wire_size(&self) -> usize {
-                Self::fixed_size().unwrap_or_else(|| {
+                <Self as riff_core::wire::WireSize>::fixed_size().unwrap_or_else(|| {
                     let header_size = riff_core::wire::FIELD_COUNT_SIZE 
                         + (#field_count_u16 as usize * riff_core::wire::OFFSET_SIZE);
                     let fields_size = #(#field_wire_sizes)+*;
@@ -180,7 +180,7 @@ fn generate_wire_encode_impl(
     quote! {
         impl #impl_generics riff_core::wire::WireEncode for #struct_name #ty_generics #where_clause {
             fn encode_to(&self, buf: &mut [u8]) -> usize {
-                if Self::is_fixed_size() {
+                if <Self as riff_core::wire::WireSize>::is_fixed_size() {
                     let mut written = 0usize;
                     #(#fixed_encode_fields)*
                     written

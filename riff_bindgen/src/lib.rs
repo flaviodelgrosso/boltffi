@@ -132,30 +132,22 @@ mod tests {
     #[test]
     fn test_swift_record_generation() {
         let module = create_test_module();
-        let no_alias_record = Record::new("Point")
+        let point_record = Record::new("Point")
             .with_field(RecordField::new("x", Type::Primitive(Primitive::F64)))
             .with_field(RecordField::new("y", Type::Primitive(Primitive::F64)));
-        let output = Swift::render_record(&no_alias_record, &module);
-        assert!(output.contains("public typealias Point"));
-        assert!(
-            !output.contains("extension Point"),
-            "No extension needed when field names match"
-        );
-        let aliased_record = Record::new("SensorData")
-            .with_field(RecordField::new(
-                "sensor_id",
-                Type::Primitive(Primitive::I32),
-            ))
-            .with_field(RecordField::new(
-                "timestamp_ms",
-                Type::Primitive(Primitive::U64),
-            ));
-        let output = Swift::render_record(&aliased_record, &module);
-        assert!(output.contains("public typealias SensorData"));
-        assert!(
-            !output.contains("extension SensorData"),
-            "No extension needed when C header also uses camelCase field names"
-        );
+        let output = Swift::render_record(&point_record, &module);
+        assert!(output.contains("public struct Point: Hashable, Equatable, Sendable"));
+        assert!(output.contains("public let x: Double"));
+        assert!(output.contains("public let y: Double"));
+        assert!(output.contains("init(wireBuffer: WireBuffer, at offset: Int)"));
+
+        let sensor_record = Record::new("SensorData")
+            .with_field(RecordField::new("sensor_id", Type::Primitive(Primitive::I32)))
+            .with_field(RecordField::new("timestamp_ms", Type::Primitive(Primitive::U64)));
+        let output = Swift::render_record(&sensor_record, &module);
+        assert!(output.contains("public struct SensorData: Hashable, Equatable, Sendable"));
+        assert!(output.contains("public let sensorId: Int32"));
+        assert!(output.contains("public let timestampMs: UInt64"));
     }
 
     #[test]

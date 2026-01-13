@@ -89,3 +89,58 @@ final class FfiFutureState<T>: @unchecked Sendable {
     }
 }
 {%- endif %}
+
+struct WireBuffer {
+    let data: Data
+    init(ptr: UnsafePointer<UInt8>, len: UInt) { self.data = Data(bytes: ptr, count: Int(len)) }
+    init(data: Data) { self.data = data }
+    @inlinable var contentOffset: Int { 10 }
+    @inlinable func readU8(at offset: Int) -> UInt8 { data[offset] }
+    @inlinable func readI8(at offset: Int) -> Int8 { Int8(bitPattern: data[offset]) }
+    @inlinable func readU16(at offset: Int) -> UInt16 { data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt16.self) } }
+    @inlinable func readI16(at offset: Int) -> Int16 { Int16(bitPattern: readU16(at: offset)) }
+    @inlinable func readU32(at offset: Int) -> UInt32 { data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) } }
+    @inlinable func readI32(at offset: Int) -> Int32 { Int32(bitPattern: readU32(at: offset)) }
+    @inlinable func readU64(at offset: Int) -> UInt64 { data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self) } }
+    @inlinable func readI64(at offset: Int) -> Int64 { Int64(bitPattern: readU64(at: offset)) }
+    @inlinable func readF32(at offset: Int) -> Float { Float(bitPattern: readU32(at: offset)) }
+    @inlinable func readF64(at offset: Int) -> Double { Double(bitPattern: readU64(at: offset)) }
+    @inlinable func readBool(at offset: Int) -> Bool { data[offset] != 0 }
+    @inlinable func readString(at offset: Int) -> (value: String, size: Int) {
+        let len = Int(readU32(at: offset))
+        guard len > 0 else { return ("", 4) }
+        let start = offset + 4
+        return (String(decoding: data[start..<(start + len)], as: UTF8.self), 4 + len)
+    }
+    @inlinable func readOptional<T>(at offset: Int, reader: (Int) -> (value: T, size: Int)) -> (value: T?, size: Int) {
+        guard data[offset] != 0 else { return (nil, 1) }
+        let (value, size) = reader(offset + 1)
+        return (value, 1 + size)
+    }
+    @inlinable func readFixedArray<T>(at offset: Int, elementSize: Int, reader: (Int) -> T) -> (value: [T], size: Int) {
+        let count = Int(readU32(at: offset))
+        guard count > 0 else { return ([], 4) }
+        var result = [T]()
+        result.reserveCapacity(count)
+        var pos = offset + 4
+        for _ in 0..<count { result.append(reader(pos)); pos += elementSize }
+        return (result, pos - offset)
+    }
+    @inlinable func readVariableArray<T>(at offset: Int, reader: (Int) -> (value: T, size: Int)) -> (value: [T], size: Int) {
+        let count = Int(readU32(at: offset))
+        guard count > 0 else { return ([], 4) }
+        let offsetsStart = offset + 4
+        var result = [T]()
+        result.reserveCapacity(count)
+        var maxEnd = offsetsStart + (count * 4)
+        for i in 0..<count {
+            let relOffset = Int(readU32(at: offsetsStart + (i * 4)))
+            let elemOffset = offsetsStart + relOffset
+            let (value, elemSize) = reader(elemOffset)
+            result.append(value)
+            let elemEnd = elemOffset + elemSize
+            if elemEnd > maxEnd { maxEnd = elemEnd }
+        }
+        return (result, maxEnd - offset)
+    }
+}

@@ -1,16 +1,32 @@
-public typealias {{ class_name }} = {{ ffi_module }}.{{ class_name }}
-{%- if has_aliases %}
-extension {{ class_name }} {
-    public init({% for field in fields %}{{ field.swift_name }}: {{ field.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}) {
-        self.init({% for field in fields %}{{ field.c_name }}: {{ field.swift_name }}{% if !loop.last %}, {% endif %}{% endfor %})
-    }
+public struct {{ class_name }}: Hashable, Equatable, Sendable {
 {%- for field in fields %}
-{%- if field.needs_alias %}
-    public var {{ field.swift_name }}: {{ field.swift_type }} {
-        get { {{ field.c_name }} }
-        set { {{ field.c_name }} = newValue }
+    public let {{ field.swift_name }}: {{ field.swift_type }}
+{%- endfor %}
+
+    public init({% for field in fields %}{{ field.swift_name }}: {{ field.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{%- for field in fields %}
+        self.{{ field.swift_name }} = {{ field.swift_name }}
+{%- endfor %}
+    }
+{%- if is_fixed_size %}
+
+    init(wireBuffer: WireBuffer, at offset: Int) {
+        var pos = offset
+{%- for field in fields %}
+        self.{{ field.swift_name }} = {{ field.wire_read }}
+        pos += {{ field.wire_size }}
+{%- endfor %}
+    }
+{%- else %}
+
+    init(wireBuffer: WireBuffer, at offset: Int) {
+        let offsetsStart = offset + 2
+{%- for field in fields %}
+        let offset{{ loop.index0 }} = offsetsStart + Int(wireBuffer.readU32(at: offsetsStart + {{ loop.index0 }} * 4))
+{%- endfor %}
+{%- for field in fields %}
+        {{ field.wire_decode }}
+{%- endfor %}
     }
 {%- endif %}
-{%- endfor %}
 }
-{%- endif %}

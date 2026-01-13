@@ -2,8 +2,8 @@ use askama::Template;
 use riff_ffi_rules::naming;
 
 use crate::model::{
-    CallbackTrait, Class, Enumeration, Function, Method, Module, Record, ReturnType, StreamMethod,
-    StreamMode, Type,
+    CallbackTrait, Class, Enumeration, Function, Method, Module, Primitive, Record, ReturnType,
+    StreamMethod, StreamMode, Type,
 };
 
 use super::body::BodyRenderer;
@@ -52,34 +52,137 @@ impl PreambleTemplate {
 #[template(path = "swift/record.txt", escape = "none")]
 pub struct RecordTemplate {
     pub class_name: String,
-    pub ffi_module: String,
     pub fields: Vec<FieldView>,
-    pub has_aliases: bool,
+    pub is_fixed_size: bool,
 }
 
 impl RecordTemplate {
-    pub fn from_record(record: &Record, module: &Module) -> Self {
+    pub fn from_record(record: &Record, _module: &Module) -> Self {
         let fields: Vec<FieldView> = record
             .fields
             .iter()
-            .map(|field| {
-                let swift_name = NamingConvention::property_name(&field.name);
-                let c_name = naming::snake_to_camel(&field.name);
-                let needs_alias = swift_name != c_name;
-                FieldView {
-                    needs_alias,
-                    swift_name,
-                    c_name,
-                    swift_type: TypeMapper::map_type(&field.field_type),
-                }
-            })
+            .enumerate()
+            .map(|(idx, field)| Self::make_field(field, idx))
             .collect();
-        let has_aliases = fields.iter().any(|field| field.needs_alias);
+        let is_fixed_size = fields.iter().all(|f| f.is_fixed);
         Self {
             class_name: NamingConvention::class_name(&record.name),
-            ffi_module: NamingConvention::ffi_module_name(&module.name),
             fields,
-            has_aliases,
+            is_fixed_size,
+        }
+    }
+
+    fn make_field(field: &crate::model::RecordField, idx: usize) -> FieldView {
+        let swift_name = NamingConvention::property_name(&field.name);
+        let swift_type = TypeMapper::map_type(&field.field_type);
+        let (wire_size, is_fixed, wire_read, wire_decode) = Self::wire_info(&field.field_type, &swift_name, idx);
+        FieldView {
+            swift_name,
+            swift_type,
+            wire_size,
+            wire_read,
+            wire_decode,
+            is_fixed,
+        }
+    }
+
+    fn wire_info(ty: &Type, name: &str, idx: usize) -> (String, bool, String, String) {
+        match ty {
+            Type::Primitive(p) => {
+                let (size, read_fn) = Self::primitive_wire_info(*p);
+                (size.to_string(), true, format!("wireBuffer.{}(at: pos)", read_fn), format!("self.{} = wireBuffer.{}(at: offset{})", name, read_fn, idx))
+            }
+            Type::String => (
+                "0".into(),
+                false,
+                "wireBuffer.readString(at: pos).value".into(),
+                format!("self.{} = wireBuffer.readString(at: offset{}).value", name, idx),
+            ),
+            Type::Vec(inner) => {
+                let read_expr = Self::vec_read_expr(inner);
+                (
+                    "0".into(),
+                    false,
+                    read_expr.clone(),
+                    format!("self.{} = {}", name, read_expr.replace("pos", &format!("offset{}", idx))),
+                )
+            }
+            Type::Option(inner) => {
+                let read_expr = Self::option_read_expr(inner);
+                (
+                    "0".into(),
+                    false,
+                    read_expr.clone(),
+                    format!("self.{} = {}", name, read_expr.replace("pos", &format!("offset{}", idx))),
+                )
+            }
+            Type::Record(rec_name) => {
+                let class_name = NamingConvention::class_name(rec_name);
+                (
+                    "0".into(),
+                    false,
+                    format!("{}(wireBuffer: wireBuffer, at: pos)", class_name),
+                    format!("self.{} = {}(wireBuffer: wireBuffer, at: offset{})", name, class_name, idx),
+                )
+            }
+            Type::Enum(enum_name) => {
+                let class_name = NamingConvention::class_name(enum_name);
+                (
+                    "0".into(),
+                    false,
+                    format!("{}(wireBuffer: wireBuffer, at: pos)", class_name),
+                    format!("self.{} = {}(wireBuffer: wireBuffer, at: offset{})", name, class_name, idx),
+                )
+            }
+            _ => ("0".into(), false, "/* unsupported */".into(), format!("self.{} = /* unsupported */", name)),
+        }
+    }
+
+    fn primitive_wire_info(p: Primitive) -> (usize, &'static str) {
+        match p {
+            Primitive::Bool => (1, "readBool"),
+            Primitive::I8 => (1, "readI8"),
+            Primitive::U8 => (1, "readU8"),
+            Primitive::I16 => (2, "readI16"),
+            Primitive::U16 => (2, "readU16"),
+            Primitive::I32 => (4, "readI32"),
+            Primitive::U32 => (4, "readU32"),
+            Primitive::I64 => (8, "readI64"),
+            Primitive::U64 => (8, "readU64"),
+            Primitive::F32 => (4, "readF32"),
+            Primitive::F64 => (8, "readF64"),
+            Primitive::Isize => (8, "readI64"),
+            Primitive::Usize => (8, "readU64"),
+        }
+    }
+
+    fn vec_read_expr(inner: &Type) -> String {
+        match inner {
+            Type::Primitive(p) => {
+                let (size, read_fn) = Self::primitive_wire_info(*p);
+                format!("wireBuffer.readFixedArray(at: pos, elementSize: {}, reader: {{ wireBuffer.{}(at: $0) }}).value", size, read_fn)
+            }
+            Type::String => {
+                "wireBuffer.readVariableArray(at: pos, reader: { wireBuffer.readString(at: $0) }).value".into()
+            }
+            Type::Record(name) => {
+                let class_name = NamingConvention::class_name(name);
+                format!("wireBuffer.readVariableArray(at: pos, reader: {{ ({}(wireBuffer: wireBuffer, at: $0), 0) }}).value", class_name)
+            }
+            _ => "/* unsupported vec element */".into(),
+        }
+    }
+
+    fn option_read_expr(inner: &Type) -> String {
+        match inner {
+            Type::Primitive(p) => {
+                let (size, read_fn) = Self::primitive_wire_info(*p);
+                format!("wireBuffer.readOptional(at: pos, reader: {{ (wireBuffer.{}(at: $0), {}) }}).value", read_fn, size)
+            }
+            Type::String => {
+                "wireBuffer.readOptional(at: pos, reader: { wireBuffer.readString(at: $0) }).value".into()
+            }
+            _ => "/* unsupported option inner */".into(),
         }
     }
 }
@@ -319,7 +422,7 @@ impl DataEnumTemplate {
                             .map(|field| {
                                 let swift_name = NamingConvention::param_name(&field.name);
                                 let c_name = field.name.clone();
-                                FieldView {
+                                EnumFieldView {
                                     needs_alias: swift_name != c_name,
                                     swift_name,
                                     c_name,
@@ -437,9 +540,11 @@ impl ClassTemplate {
 
 pub struct FieldView {
     pub swift_name: String,
-    pub c_name: String,
     pub swift_type: String,
-    pub needs_alias: bool,
+    pub wire_size: String,
+    pub wire_read: String,
+    pub wire_decode: String,
+    pub is_fixed: bool,
 }
 
 pub struct CStyleVariantView {
@@ -447,12 +552,19 @@ pub struct CStyleVariantView {
     pub discriminant: i64,
 }
 
+pub struct EnumFieldView {
+    pub swift_name: String,
+    pub c_name: String,
+    pub swift_type: String,
+    pub needs_alias: bool,
+}
+
 pub struct DataVariantView {
     pub swift_name: String,
     pub c_name: String,
     pub tag_constant: String,
     pub is_single_tuple: bool,
-    pub fields: Vec<FieldView>,
+    pub fields: Vec<EnumFieldView>,
 }
 
 pub struct ConstructorView {

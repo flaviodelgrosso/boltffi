@@ -248,7 +248,7 @@ pub enum ConfigError {
         source: std::io::Error,
     },
 
-    #[error("failed to parse config from {path}")]
+    #[error("failed to parse config from {path}: {source}")]
     Parse {
         path: PathBuf,
         source: toml::de::Error,
