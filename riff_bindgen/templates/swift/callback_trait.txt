@@ -37,7 +37,7 @@ private var {{ vtable_var }}: {{ vtable_type }} = {
 {%- if method.has_out_param %}
 {%- if method.wire_encoded_return %}
             let encoded = result.wireEncode()
-            encoded.withUnsafeBytes { bytes in
+            _ = encoded.withUnsafeBytes { bytes in
                 memcpy(outPtr!, bytes.baseAddress!, bytes.count)
             }
             outLen?.pointee = UInt(encoded.count)

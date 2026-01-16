@@ -88,65 +88,8 @@ impl SwiftType {
         }
     }
 
-    pub fn default_value(&self) -> String {
-        match self {
-            Self::Void => "()".into(),
-            Self::Primitive(p) => p.default_value().into(),
-            Self::String => "\"\"".into(),
-            Self::Bytes => "Data()".into(),
-            Self::Slice { .. } | Self::Vec(_) => "[]".into(),
-            Self::Option(_) => "nil".into(),
-            Self::Result { ok } => ok.default_value(),
-            Self::Enum(_) => "0".into(),
-            Self::Record(name) => format!("{}()", NamingConvention::class_name(name)),
-            Self::Object(_) | Self::BoxedTrait(_) => "nil".into(),
-            Self::Closure { params, .. } => {
-                let underscores = (0..params.len()).map(|_| "_").collect::<Vec<_>>().join(", ");
-                format!("{{ {} in }}", underscores)
-            }
-        }
-    }
-
-    pub fn ffi_type_suffix(&self) -> String {
-        match self {
-            Self::Primitive(p) => p.rust_name().into(),
-            Self::String => "string".into(),
-            Self::Record(name) | Self::Enum(name) => name.to_lowercase(),
-            Self::Vec(inner) => inner.ffi_type_suffix(),
-            Self::Result { ok } => ok.ffi_type_suffix(),
-            _ => "unknown".into(),
-        }
-    }
-
     pub fn is_void(&self) -> bool {
         matches!(self, Self::Void)
-    }
-
-    pub fn is_struct(&self) -> bool {
-        matches!(self, Self::Record(_))
-    }
-
-    pub fn cbindgen_name(&self) -> String {
-        match self {
-            Self::Primitive(p) => p.cbindgen_name().to_string(),
-            Self::String => "FfiString".to_string(),
-            Self::Record(name) | Self::Enum(name) => name.clone(),
-            _ => "unknown".to_string(),
-        }
-    }
-
-    pub fn unwrap_result(&self) -> &SwiftType {
-        match self {
-            Self::Result { ok } => ok.as_ref(),
-            other => other,
-        }
-    }
-
-    pub fn inner_type(&self) -> Option<&SwiftType> {
-        match self {
-            Self::Vec(inner) | Self::Option(inner) | Self::Result { ok: inner } => Some(inner),
-            _ => None,
-        }
     }
 
     pub fn is_primitive(&self) -> bool {
@@ -156,13 +99,9 @@ impl SwiftType {
 
 #[derive(Debug, Clone)]
 pub struct ParamConversion {
-    pub name: String,
-    pub swift_type: String,
     pub wrapper_pre: Option<String>,
     pub wrapper_post: Option<String>,
     pub ffi_args: Vec<String>,
-    pub is_mutable: bool,
-    pub is_escaping: bool,
 }
 
 impl ParamConversion {
@@ -170,162 +109,92 @@ impl ParamConversion {
         let swift_ty = SwiftType::from_model(ty);
         let swift_name = NamingConvention::param_name(name);
 
-        let (wrapper_pre, ffi_args, wrapper_post, is_mutable) = match &swift_ty {
+        let (wrapper_pre, ffi_args, wrapper_post) = match &swift_ty {
             SwiftType::String => (
-                Some(format!(
-                    "{}.withCString {{ {}Ptr in",
-                    swift_name, swift_name
-                )),
+                Some(format!("{}.withCString {{ {}Ptr in", swift_name, swift_name)),
                 vec![
-                    format!(
-                        "UnsafeRawPointer({}Ptr).assumingMemoryBound(to: UInt8.self)",
-                        swift_name
-                    ),
+                    format!("UnsafeRawPointer({}Ptr).assumingMemoryBound(to: UInt8.self)", swift_name),
                     format!("UInt({}.utf8.count)", swift_name),
                 ],
                 Some("}".into()),
-                false,
             ),
             SwiftType::Bytes => (
-                Some(format!(
-                    "{}.withUnsafeBytes {{ {}Ptr in",
-                    swift_name, swift_name
-                )),
+                Some(format!("{}.withUnsafeBytes {{ {}Ptr in", swift_name, swift_name)),
                 vec![
-                    format!(
-                        "{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)",
-                        swift_name
-                    ),
+                    format!("{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)", swift_name),
                     format!("UInt({}.count)", swift_name),
                 ],
                 Some("}".into()),
-                false,
             ),
             SwiftType::Slice { mutable: false, .. } => (
-                Some(format!(
-                    "{}.withUnsafeBufferPointer {{ {}Ptr in",
-                    swift_name, swift_name
-                )),
+                Some(format!("{}.withUnsafeBufferPointer {{ {}Ptr in", swift_name, swift_name)),
                 vec![
                     format!("{}Ptr.baseAddress", swift_name),
                     format!("UInt({}Ptr.count)", swift_name),
                 ],
                 Some("}".into()),
-                false,
             ),
             SwiftType::Vec(inner) if inner.is_primitive() => (
-                Some(format!(
-                    "{}.withUnsafeBufferPointer {{ {}Ptr in",
-                    swift_name, swift_name
-                )),
+                Some(format!("{}.withUnsafeBufferPointer {{ {}Ptr in", swift_name, swift_name)),
                 vec![
                     format!("{}Ptr.baseAddress", swift_name),
                     format!("UInt({}Ptr.count)", swift_name),
                 ],
                 Some("}".into()),
-                false,
             ),
             SwiftType::Vec(_) => (
-                Some(format!(
-                    "withWireEncodedArray({}) {{ {}Ptr in",
-                    swift_name, swift_name
-                )),
+                Some(format!("withWireEncodedArray({}) {{ {}Ptr in", swift_name, swift_name)),
                 vec![
-                    format!(
-                        "{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)",
-                        swift_name
-                    ),
+                    format!("{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)", swift_name),
                     format!("UInt({}Ptr.count)", swift_name),
                 ],
                 Some("}".into()),
-                false,
             ),
             SwiftType::Slice { mutable: true, .. } => (
-                Some(format!(
-                    "{}.withUnsafeMutableBufferPointer {{ {}Ptr in",
-                    swift_name, swift_name
-                )),
+                Some(format!("{}.withUnsafeMutableBufferPointer {{ {}Ptr in", swift_name, swift_name)),
                 vec![
                     format!("{}Ptr.baseAddress", swift_name),
                     format!("UInt({}Ptr.count)", swift_name),
                 ],
                 Some("}".into()),
-                true,
             ),
             SwiftType::Enum(_) => (
-                Some(format!(
-                    "{}.wireEncode().withUnsafeBytes {{ {}Ptr in",
-                    swift_name, swift_name
-                )),
+                Some(format!("{}.wireEncode().withUnsafeBytes {{ {}Ptr in", swift_name, swift_name)),
                 vec![
-                    format!(
-                        "{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)",
-                        swift_name
-                    ),
+                    format!("{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)", swift_name),
                     format!("UInt({}Ptr.count)", swift_name),
                 ],
                 Some("}".into()),
-                false,
             ),
             SwiftType::BoxedTrait(trait_name) => (
                 None,
-                vec![format!(
-                    "{}Bridge.create({})",
-                    NamingConvention::class_name(trait_name),
-                    swift_name
-                )],
+                vec![format!("{}Bridge.create({})", NamingConvention::class_name(trait_name), swift_name)],
                 None,
-                false,
             ),
             SwiftType::Record(_) => (
-                Some(format!(
-                    "{}.wireEncode().withUnsafeBytes {{ {}Ptr in",
-                    swift_name, swift_name
-                )),
+                Some(format!("{}.wireEncode().withUnsafeBytes {{ {}Ptr in", swift_name, swift_name)),
                 vec![
-                    format!(
-                        "{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)",
-                        swift_name
-                    ),
+                    format!("{}Ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)", swift_name),
                     format!("UInt({}Ptr.count)", swift_name),
                 ],
                 Some("}".into()),
-                false,
             ),
             SwiftType::Option(inner)
-                if matches!(
-                    inner.as_ref(),
-                    SwiftType::Record(_) | SwiftType::Enum(_) | SwiftType::Vec(_)
-                ) =>
+                if matches!(inner.as_ref(), SwiftType::Record(_) | SwiftType::Enum(_) | SwiftType::Vec(_)) =>
             {
                 (
-                    Some(format!(
-                        "withWireEncodedOptional({}) {{ {}Ptr in",
-                        swift_name, swift_name
-                    )),
+                    Some(format!("withWireEncodedOptional({}) {{ {}Ptr in", swift_name, swift_name)),
                     vec![
-                        format!(
-                            "{}Ptr?.baseAddress?.assumingMemoryBound(to: UInt8.self)",
-                            swift_name
-                        ),
+                        format!("{}Ptr?.baseAddress?.assumingMemoryBound(to: UInt8.self)", swift_name),
                         format!("UInt({}Ptr?.count ?? 0)", swift_name),
                     ],
                     Some("}".into()),
-                    false,
                 )
             }
-            _ => (None, vec![swift_name.clone()], None, false),
+            _ => (None, vec![swift_name.clone()], None),
         };
 
-        Self {
-            name: swift_name,
-            swift_type: swift_ty.swift_type(),
-            wrapper_pre,
-            wrapper_post,
-            ffi_args,
-            is_mutable,
-            is_escaping: matches!(swift_ty, SwiftType::Closure { .. }),
-        }
+        Self { wrapper_pre, wrapper_post, ffi_args }
     }
 
     pub fn needs_wrapper(&self) -> bool {
@@ -339,7 +208,7 @@ pub struct SyncCallBuilder {
 }
 
 impl SyncCallBuilder {
-    pub fn new(_ffi_name: &str, include_handle: bool) -> Self {
+    pub fn new(include_handle: bool) -> Self {
         Self {
             params: Vec::new(),
             include_handle,
@@ -645,24 +514,10 @@ impl ReturnAbi {
         matches!(self, Self::WireEncoded { throws: true, .. })
     }
 
-    pub fn swift_type(&self) -> Option<&str> {
-        match self {
-            Self::Unit => None,
-            Self::Direct { swift_type, .. } | Self::WireEncoded { swift_type, .. } => Some(swift_type),
-        }
-    }
-
     pub fn decode_expr(&self) -> &str {
         match self {
             Self::WireEncoded { decode_expr, .. } => decode_expr,
             _ => "",
-        }
-    }
-
-    pub fn conversion(&self) -> Option<&str> {
-        match self {
-            Self::Direct { conversion, .. } => conversion.as_deref(),
-            _ => None,
         }
     }
 
@@ -671,23 +526,6 @@ impl ReturnAbi {
             Self::Direct { conversion: Some(conv), .. } => conv.replace("$0", ffi_call),
             Self::Direct { conversion: None, .. } => ffi_call.to_string(),
             _ => ffi_call.to_string(),
-        }
-    }
-
-    pub fn async_resume_expr(&self) -> String {
-        match self {
-            Self::Unit => "continuation.resume(returning: ())".into(),
-            Self::Direct { .. } => "continuation.resume(returning: result)".into(),
-            Self::WireEncoded { decode_expr, throws, .. } => {
-                if *throws {
-                    format!(
-                        "do {{ let value = {} ; continuation.resume(returning: value) }} catch {{ continuation.resume(throwing: error) }}",
-                        decode_expr.replace("at: 0", "at: 0")
-                    )
-                } else {
-                    format!("continuation.resume(returning: {})", decode_expr)
-                }
-            }
         }
     }
 }

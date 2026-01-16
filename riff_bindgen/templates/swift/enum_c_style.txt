@@ -3,7 +3,7 @@ public enum {{ class_name }}: Int32, Hashable, Sendable, CaseIterable{% if is_er
     case {{ variant.swift_name }} = {{ variant.discriminant }}
 {%- endfor %}
 
-    @inlinable public init(fromC c: Int32) { self = {{ class_name }}(rawValue: c)! }
+    @usableFromInline init(fromC c: Int32) { self = {{ class_name }}(rawValue: c)! }
     @usableFromInline var cValue: Int32 { rawValue }
 
     @inlinable static func decode(wireBuffer wire: WireBuffer, at offset: Int) -> (value: {{ class_name }}, size: Int) {

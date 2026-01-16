@@ -2,7 +2,7 @@ use askama::Template;
 use riff_ffi_rules::naming;
 
 use crate::model::{
-    CallbackTrait, Class, Enumeration, Function, Method, Module, Primitive, Record, ReturnType,
+    CallbackTrait, Class, Enumeration, Function, Method, Module, Primitive, Record,
     StreamMethod, StreamMode, Type,
 };
 
@@ -11,11 +11,6 @@ use super::conversion::ParamInfo;
 use super::marshal::{ReturnAbi, SyncCallBuilder};
 use super::names::NamingConvention;
 use super::types::TypeMapper;
-
-enum WireSize {
-    Fixed(usize),
-    Variable(String),
-}
 
 #[derive(Template)]
 #[template(path = "swift/preamble.txt", escape = "none")]
@@ -64,9 +59,7 @@ impl PreambleTemplate {
 pub struct RecordTemplate {
     pub class_name: String,
     pub fields: Vec<FieldView>,
-    pub is_fixed_size: bool,
     pub is_blittable: bool,
-    pub wire_size: String,
 }
 
 impl RecordTemplate {
@@ -77,95 +70,36 @@ impl RecordTemplate {
             .enumerate()
             .map(|(idx, field)| Self::make_field(field, idx, module))
             .collect();
-        let is_fixed_size = fields.iter().all(|f| f.is_fixed);
         let is_blittable = record.fields.iter().all(|f| Self::is_type_blittable(&f.field_type));
-        let wire_size = Self::compute_wire_size(&record.fields);
         Self {
             class_name: NamingConvention::class_name(&record.name),
             fields,
-            is_fixed_size,
             is_blittable,
-            wire_size,
         }
     }
 
     fn is_type_blittable(ty: &Type) -> bool {
-        match ty {
-            Type::Primitive(_) => true,
-            _ => false,
-        }
-    }
-
-    fn compute_wire_size(fields: &[crate::model::RecordField]) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        let mut fixed_sum: usize = 0;
-
-        for field in fields {
-            match Self::type_wire_size(&field.field_type) {
-                WireSize::Fixed(size) => fixed_sum += size,
-                WireSize::Variable(expr) => parts.push(expr),
-            }
-        }
-
-        if fixed_sum > 0 {
-            parts.insert(0, fixed_sum.to_string());
-        }
-
-        if parts.is_empty() {
-            "0".to_string()
-        } else {
-            parts.join(" + ")
-        }
-    }
-
-    fn type_wire_size(ty: &Type) -> WireSize {
-        match ty {
-            Type::Primitive(p) => WireSize::Fixed(Self::primitive_size(*p)),
-            Type::String => WireSize::Variable("0".to_string()),
-            Type::Record(name) => {
-                let class_name = NamingConvention::class_name(name);
-                WireSize::Variable(format!("{}.wireSize", class_name))
-            }
-            Type::Vec(_) => WireSize::Variable("0".to_string()),
-            Type::Option(inner) => {
-                match Self::type_wire_size(inner) {
-                    WireSize::Fixed(size) => WireSize::Fixed(1 + size),
-                    WireSize::Variable(_) => WireSize::Variable("0".to_string()),
-                }
-            }
-            _ => WireSize::Fixed(0),
-        }
+        matches!(ty, Type::Primitive(_))
     }
 
     fn primitive_size(p: Primitive) -> usize {
         match p {
-            Primitive::Bool => 1,
-            Primitive::I8 | Primitive::U8 => 1,
+            Primitive::Bool | Primitive::I8 | Primitive::U8 => 1,
             Primitive::I16 | Primitive::U16 => 2,
             Primitive::I32 | Primitive::U32 | Primitive::F32 => 4,
             Primitive::I64 | Primitive::U64 | Primitive::F64 | Primitive::Isize | Primitive::Usize => 8,
         }
     }
 
-    fn make_field(field: &crate::model::RecordField, idx: usize, module: &Module) -> FieldView {
+    fn make_field(field: &crate::model::RecordField, _idx: usize, module: &Module) -> FieldView {
         let swift_name = NamingConvention::property_name(&field.name);
-        let swift_type = TypeMapper::map_type(&field.field_type);
-        let (wire_size, is_fixed, wire_read, wire_decode) = Self::wire_info(&field.field_type, &swift_name, idx);
-        let wire_size_expr = Self::wire_size_expr(&field.field_type, &swift_name, module);
-        let wire_decode_inline = Self::wire_decode_inline_expr(&field.field_type);
-        let wire_encode = Self::wire_encode_expr(&field.field_type, &swift_name, module);
-        let wire_encode_bytes = Self::wire_encode_bytes_expr(&field.field_type, &swift_name, module);
         FieldView {
-            swift_name,
-            swift_type,
-            wire_size,
-            wire_size_expr,
-            wire_read,
-            wire_decode,
-            wire_decode_inline,
-            wire_encode,
-            wire_encode_bytes,
-            is_fixed,
+            swift_name: swift_name.clone(),
+            swift_type: TypeMapper::map_type(&field.field_type),
+            wire_size_expr: Self::wire_size_expr(&field.field_type, &swift_name, module),
+            wire_decode_inline: Self::wire_decode_inline_expr(&field.field_type),
+            wire_encode: Self::wire_encode_expr(&field.field_type, &swift_name, module),
+            wire_encode_bytes: Self::wire_encode_bytes_expr(&field.field_type, &swift_name, module),
         }
     }
     
@@ -365,58 +299,6 @@ impl RecordTemplate {
         }
     }
 
-    fn wire_info(ty: &Type, name: &str, idx: usize) -> (String, bool, String, String) {
-        match ty {
-            Type::Primitive(p) => {
-                let (size, read_fn) = Self::primitive_wire_info(*p);
-                (size.to_string(), true, format!("wireBuffer.{}(at: pos)", read_fn), format!("self.{} = wireBuffer.{}(at: offset{})", name, read_fn, idx))
-            }
-            Type::String => (
-                "0".into(),
-                false,
-                "wireBuffer.readString(at: pos).value".into(),
-                format!("self.{} = wireBuffer.readString(at: offset{}).value", name, idx),
-            ),
-            Type::Vec(inner) => {
-                let read_expr = Self::vec_read_expr(inner);
-                (
-                    "0".into(),
-                    false,
-                    read_expr.clone(),
-                    format!("self.{} = {}", name, read_expr.replace("pos", &format!("offset{}", idx))),
-                )
-            }
-            Type::Option(inner) => {
-                let read_expr = Self::option_read_expr(inner);
-                (
-                    "0".into(),
-                    false,
-                    read_expr.clone(),
-                    format!("self.{} = {}", name, read_expr.replace("pos", &format!("offset{}", idx))),
-                )
-            }
-            Type::Record(rec_name) => {
-                let class_name = NamingConvention::class_name(rec_name);
-                (
-                    "0".into(),
-                    false,
-                    format!("{}(wireBuffer: wireBuffer, at: pos)", class_name),
-                    format!("self.{} = {}(wireBuffer: wireBuffer, at: offset{})", name, class_name, idx),
-                )
-            }
-            Type::Enum(enum_name) => {
-                let class_name = NamingConvention::class_name(enum_name);
-                (
-                    "0".into(),
-                    false,
-                    format!("{}(wireBuffer: wireBuffer, at: pos)", class_name),
-                    format!("self.{} = {}(wireBuffer: wireBuffer, at: offset{})", name, class_name, idx),
-                )
-            }
-            _ => ("0".into(), false, "/* unsupported */".into(), format!("self.{} = /* unsupported */", name)),
-        }
-    }
-
     fn primitive_wire_info(p: Primitive) -> (usize, &'static str) {
         match p {
             Primitive::Bool => (1, "readBool"),
@@ -435,41 +317,6 @@ impl RecordTemplate {
         }
     }
 
-    fn vec_read_expr(inner: &Type) -> String {
-        match inner {
-            Type::Primitive(p) => {
-                let (size, read_fn) = Self::primitive_wire_info(*p);
-                format!("wireBuffer.readFixedArray(at: pos, elementSize: {}, reader: {{ wireBuffer.{}(at: $0) }}).value", size, read_fn)
-            }
-            Type::String => {
-                "wireBuffer.readVariableArray(at: pos, reader: { wireBuffer.readString(at: $0) }).value".into()
-            }
-            Type::Record(name) => {
-                let class_name = NamingConvention::class_name(name);
-                format!("wireBuffer.readVariableArray(at: pos, reader: {{ ({}(wireBuffer: wireBuffer, at: $0), 0) }}).value", class_name)
-            }
-            _ => "/* unsupported vec element */".into(),
-        }
-    }
-
-    fn option_read_expr(inner: &Type) -> String {
-        match inner {
-            Type::Primitive(p) => {
-                let (size, read_fn) = Self::primitive_wire_info(*p);
-                format!("wireBuffer.readOptional(at: pos, reader: {{ (wireBuffer.{}(at: $0), {}) }}).value", read_fn, size)
-            }
-            Type::String => {
-                "wireBuffer.readOptional(at: pos, reader: { wireBuffer.readString(at: $0) }).value".into()
-            }
-            _ => "/* unsupported option inner */".into(),
-        }
-    }
-}
-
-pub struct StructuredError {
-    pub swift_type: String,
-    pub ffi_type: String,
-    pub is_string_error: bool,
 }
 
 #[derive(Template)]
@@ -478,13 +325,10 @@ pub struct FunctionTemplate {
     pub prefix: String,
     pub func_name: String,
     pub ffi_name: String,
-    pub ffi_module_name: Option<String>,
     pub params: Vec<ParamInfo>,
     pub return_type: Option<String>,
     pub return_abi: ReturnAbi,
     pub direct_call: String,
-    pub structured_error: Option<StructuredError>,
-    pub result_ok_ffi_type: Option<String>,
     pub is_async: bool,
     pub throws: bool,
     pub has_callbacks: bool,
@@ -493,7 +337,6 @@ pub struct FunctionTemplate {
     pub ffi_complete: String,
     pub ffi_free: String,
     pub ffi_cancel: String,
-    pub ffi_free_vec: String,
     pub has_wrappers: bool,
     pub wrappers_open: String,
     pub wrappers_close: String,
@@ -516,7 +359,7 @@ impl FunctionTemplate {
         );
 
         let ffi_name = naming::function_ffi_name(&function.name);
-        let call_builder = SyncCallBuilder::new(&ffi_name, false).with_params(
+        let call_builder = SyncCallBuilder::new(false).with_params(
             function
                 .non_callback_params()
                 .map(|p| (p.name.as_str(), &p.param_type)),
@@ -530,8 +373,6 @@ impl FunctionTemplate {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let ffi_prefix = naming::ffi_prefix().to_string();
-
         let return_type = if ret.is_void {
             None
         } else if ret.is_result {
@@ -540,32 +381,17 @@ impl FunctionTemplate {
             ret.swift_type.clone()
         };
 
-        let ffi_free_vec = Self::extract_vec_inner(&function.returns)
-            .map(|inner_type| {
-                let inner_ffi = TypeMapper::ffi_type_name(inner_type);
-                format!("{}_free_buf_{}", ffi_prefix, inner_ffi)
-            })
-            .unwrap_or_default();
-
         let return_abi = ReturnAbi::from_return_type(&function.returns, module);
         let direct_call = return_abi.direct_call_expr(&format!("{}({})", ffi_name, call_builder.build_ffi_args()));
 
-        let structured_error = Self::extract_structured_error(&function.returns, module);
-        let result_ok_ffi_type = Self::extract_result_ok_ffi_type(&function.returns, module);
-
-        let ffi_module_name = Some(NamingConvention::ffi_module_name(&module.name));
-
         Self {
-            prefix: ffi_prefix,
+            prefix: naming::ffi_prefix().to_string(),
             func_name: NamingConvention::method_name(&function.name),
             ffi_name,
-            ffi_module_name,
             params: params_info.params,
             return_type,
             return_abi,
             direct_call,
-            structured_error,
-            result_ok_ffi_type,
             is_async: function.is_async,
             throws: function.throws() || ret.is_result,
             has_callbacks: params_info.has_callbacks,
@@ -574,73 +400,11 @@ impl FunctionTemplate {
             ffi_complete: naming::function_ffi_complete(&function.name),
             ffi_free: naming::function_ffi_free(&function.name),
             ffi_cancel: naming::function_ffi_cancel(&function.name),
-            ffi_free_vec,
             has_wrappers: call_builder.has_wrappers(),
             wrappers_open: call_builder.build_wrappers_open(),
             wrappers_close: call_builder.build_wrappers_close(),
             ffi_args: call_builder.build_ffi_args(),
             callback_args,
-        }
-    }
-
-    fn extract_vec_inner(returns: &ReturnType) -> Option<&Type> {
-        let ok_type = match returns {
-            ReturnType::Void => return None,
-            ReturnType::Value(ty) => ty,
-            ReturnType::Fallible { ok, .. } => ok,
-        };
-        match ok_type {
-            Type::Vec(inner) => Some(inner.as_ref()),
-            _ => None,
-        }
-    }
-
-    fn extract_structured_error(returns: &ReturnType, module: &Module) -> Option<StructuredError> {
-        let err = match returns {
-            ReturnType::Fallible { err, .. } => err,
-            _ => return None,
-        };
-        let ffi_module = NamingConvention::ffi_module_name(&module.name);
-        match err {
-            Type::Enum(err_name) => {
-                let enum_def = module.enums.iter().find(|e| &e.name == err_name)?;
-                if !enum_def.is_error {
-                    return None;
-                }
-                Some(StructuredError {
-                    swift_type: NamingConvention::class_name(err_name),
-                    ffi_type: format!("{}.{}", ffi_module, err_name),
-                    is_string_error: false,
-                })
-            }
-            Type::String => Some(StructuredError {
-                swift_type: "FfiError".to_string(),
-                ffi_type: format!("{}.FfiError", ffi_module),
-                is_string_error: true,
-            }),
-            _ => None,
-        }
-    }
-
-    fn extract_result_ok_ffi_type(returns: &ReturnType, module: &Module) -> Option<String> {
-        let ok = match returns {
-            ReturnType::Fallible { ok, .. } => ok,
-            _ => return None,
-        };
-        let ffi_module = NamingConvention::ffi_module_name(&module.name);
-        match ok {
-            Type::Void => None,
-            Type::String => Some(format!("{}.FfiString", ffi_module)),
-            Type::Record(name) => Some(NamingConvention::class_name(name)),
-            Type::Enum(name) => {
-                let enum_def = module.enums.iter().find(|e| &e.name == name);
-                if enum_def.map(|e| e.is_data_enum()).unwrap_or(false) {
-                    Some(format!("{}.{}", ffi_module, name))
-                } else {
-                    Some("Int32".to_string())
-                }
-            }
-            _ => Some(TypeMapper::map_type(ok)),
         }
     }
 }
@@ -1035,14 +799,10 @@ impl ClassTemplate {
 pub struct FieldView {
     pub swift_name: String,
     pub swift_type: String,
-    pub wire_size: String,
     pub wire_size_expr: String,
-    pub wire_read: String,
-    pub wire_decode: String,
     pub wire_decode_inline: String,
     pub wire_encode: String,
     pub wire_encode_bytes: String,
-    pub is_fixed: bool,
 }
 
 pub struct CStyleVariantView {
@@ -1235,7 +995,7 @@ pub struct SyncMethodBodyTemplate {
 impl SyncMethodBodyTemplate {
     pub fn from_method(method: &Method, class: &Class, module: &Module) -> Self {
         let ffi_name = naming::method_ffi_name(&class.name, &method.name);
-        let call_builder = SyncCallBuilder::new(&ffi_name, true).with_params(
+        let call_builder = SyncCallBuilder::new(true).with_params(
             method
                 .non_callback_params()
                 .map(|p| (p.name.as_str(), &p.param_type)),
@@ -1269,7 +1029,7 @@ pub struct CallbackMethodBodyTemplate {
 impl CallbackMethodBodyTemplate {
     pub fn from_method(method: &Method, class: &Class, module: &Module) -> Self {
         let ffi_name = naming::method_ffi_name(&class.name, &method.name);
-        let call_builder = SyncCallBuilder::new(&ffi_name, true).with_params(
+        let call_builder = SyncCallBuilder::new(true).with_params(
             method
                 .non_callback_params()
                 .map(|p| (p.name.as_str(), &p.param_type)),
@@ -1309,7 +1069,6 @@ impl CallbackMethodBodyTemplate {
 pub struct ThrowingMethodBodyTemplate {
     pub ffi_name: String,
     pub prefix: String,
-    pub return_type: String,
     pub has_wrappers: bool,
     pub wrappers_open: String,
     pub wrappers_close: String,
@@ -1320,7 +1079,7 @@ pub struct ThrowingMethodBodyTemplate {
 impl ThrowingMethodBodyTemplate {
     pub fn from_method(method: &Method, class: &Class, module: &Module) -> Self {
         let ffi_name = naming::method_ffi_name(&class.name, &method.name);
-        let call_builder = SyncCallBuilder::new(&ffi_name, false).with_params(
+        let call_builder = SyncCallBuilder::new(false).with_params(
             method
                 .inputs
                 .iter()
@@ -1332,11 +1091,6 @@ impl ThrowingMethodBodyTemplate {
         Self {
             ffi_name,
             prefix: naming::ffi_prefix().to_string(),
-            return_type: method
-                .returns
-                .ok_type()
-                .map(TypeMapper::map_type)
-                .unwrap_or_else(|| "Void".into()),
             has_wrappers: call_builder.has_wrappers(),
             wrappers_open: call_builder.build_wrappers_open(),
             wrappers_close: call_builder.build_wrappers_close(),
