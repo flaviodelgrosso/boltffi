@@ -5,6 +5,7 @@ mod names;
 mod primitives;
 mod templates;
 mod types;
+mod wire;
 
 use askama::Template;
 

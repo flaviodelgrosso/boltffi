@@ -131,6 +131,9 @@ final class FfiFutureState<T>: @unchecked Sendable {
         }
         return (result, pos - offset)
     }
+    @inlinable func readBlittable<T>(at offset: Int, as type: T.Type) -> T {
+        data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) }
+    }
     @inlinable func readBlittableArray<T>(at offset: Int, as type: T.Type) -> [T] {
         let count = Int(readU32(at: offset))
         guard count > 0 else { return [] }
@@ -154,6 +157,12 @@ final class FfiFutureState<T>: @unchecked Sendable {
         guard count > 0 else { return [] }
         let start = offset + 4
         return Array(data[start..<(start + count)])
+    }
+    @inlinable func readBytesWithSize(at offset: Int) -> (value: [UInt8], size: Int) {
+        let count = Int(readU32(at: offset))
+        guard count > 0 else { return ([], 4) }
+        let start = offset + 4
+        return (Array(data[start..<(start + count)]), 4 + count)
     }
     @inlinable func readResultOrThrow<T, E: Error>(at offset: Int, ok: (Int) -> T, err: (Int) -> E) throws -> T {
         let tag = readU8(at: offset)
@@ -273,6 +282,10 @@ extension Data {
         appendU32(UInt32(value.count))
         value.withUnsafeBytes { append(contentsOf: $0) }
     }
+    @inlinable mutating func appendBlittableArray<T>(_ value: [T]) {
+        appendU32(UInt32(value.count))
+        value.withUnsafeBytes { append(contentsOf: $0) }
+    }
     @inlinable mutating func appendStringArray(_ value: [String]) {
         appendU32(UInt32(value.count))
         for s in value { appendString(s) }
@@ -299,6 +312,10 @@ extension Array where Element == UInt8 {
         }
     }
     @inlinable mutating func appendArray<T>(_ value: [T]) where T: FixedWidthInteger {
+        appendU32(UInt32(value.count))
+        value.withUnsafeBytes { append(contentsOf: $0) }
+    }
+    @inlinable mutating func appendBlittableArray<T>(_ value: [T]) {
         appendU32(UInt32(value.count))
         value.withUnsafeBytes { append(contentsOf: $0) }
     }

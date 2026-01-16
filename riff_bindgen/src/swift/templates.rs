@@ -11,6 +11,7 @@ use super::conversion::ParamInfo;
 use super::marshal::{ReturnAbi, SyncCallBuilder};
 use super::names::NamingConvention;
 use super::types::TypeMapper;
+use super::wire;
 
 #[derive(Template)]
 #[template(path = "swift/preamble.txt", escape = "none")]
@@ -93,230 +94,30 @@ impl RecordTemplate {
 
     fn make_field(field: &crate::model::RecordField, _idx: usize, module: &Module) -> FieldView {
         let swift_name = NamingConvention::property_name(&field.name);
+        let encoder = wire::encode_type(&field.field_type, &swift_name, module);
+        
         FieldView {
             swift_name: swift_name.clone(),
             swift_type: TypeMapper::map_type(&field.field_type),
-            wire_size_expr: Self::wire_size_expr(&field.field_type, &swift_name, module),
-            wire_decode_inline: Self::wire_decode_inline_expr(&field.field_type),
-            wire_encode: Self::wire_encode_expr(&field.field_type, &swift_name, module),
-            wire_encode_bytes: Self::wire_encode_bytes_expr(&field.field_type, &swift_name, module),
-        }
-    }
-    
-    fn wire_size_expr(ty: &Type, name: &str, module: &Module) -> String {
-        match ty {
-            Type::Primitive(p) => Self::primitive_size(*p).to_string(),
-            Type::String => format!("(4 + {}.utf8.count)", name),
-            Type::Vec(inner) => {
-                match inner.as_ref() {
-                    Type::Primitive(p) => format!("(4 + {}.count * {})", name, Self::primitive_size(*p)),
-                    Type::String => format!("(4 + {}.reduce(0) {{ $0 + 4 + $1.utf8.count }})", name),
-                    _ => format!("(4 + {}.reduce(0) {{ $0 + $1.wireEncodedSize() }})", name),
-                }
-            }
-            Type::Option(inner) => {
-                let inner_expr = Self::wire_size_expr(inner, "v", module);
-                format!("({}.map {{ v in 1 + {} }} ?? 1)", name, inner_expr)
-            }
-            Type::Record(_) => format!("{}.wireEncodedSize()", name),
-            Type::Enum(enum_name) => {
-                if module.is_data_enum(enum_name) {
-                    format!("{}.wireEncodedSize()", name)
-                } else {
-                    "4".into()
-                }
-            }
-            _ => "0".into(),
+            wire_size_expr: encoder.size_expr,
+            wire_decode_inline: Self::make_decode_inline(&field.field_type, module),
+            wire_encode: encoder.encode_to_data,
+            wire_encode_bytes: encoder.encode_to_bytes,
         }
     }
 
-    fn wire_decode_inline_expr(ty: &Type) -> String {
-        match ty {
-            Type::Primitive(p) => {
-                let (size, read_fn) = Self::primitive_wire_info(*p);
-                format!("{{ let v = wire.{}(at: pos); pos += {}; return v }}()", read_fn, size)
+    fn make_decode_inline(ty: &Type, module: &Module) -> String {
+        let codec = wire::decode_type(ty, module);
+        let reader = codec.reader_expr.replace("OFFSET", "pos");
+        match &codec.size_kind {
+            wire::SizeKind::Fixed(size) => {
+                format!("{{ let v = {}; pos += {}; return v }}()", reader, size)
             }
-            Type::String => "{ let (v, s) = wire.readString(at: pos); pos += s; return v }()".into(),
-            Type::Record(name) => {
-                let class_name = NamingConvention::class_name(name);
-                format!("{{ let (v, s) = {}.decode(wireBuffer: wire, at: pos); pos += s; return v }}()", class_name)
+            wire::SizeKind::Variable => {
+                format!("{{ let (v, s) = {}; pos += s; return v }}()", reader)
             }
-            Type::Vec(inner) => {
-                let inner_reader = Self::vec_inner_reader(inner);
-                format!("{{ let (v, s) = wire.readArray(at: pos, reader: {{ {} }}); pos += s; return v }}()", inner_reader)
-            }
-            Type::Option(inner) => {
-                let inner_reader = Self::option_inner_reader(inner);
-                format!("{{ let (v, s) = wire.readOptional(at: pos, reader: {{ {} }}); pos += s; return v }}()", inner_reader)
-            }
-            Type::Enum(name) => {
-                let class_name = NamingConvention::class_name(name);
-                format!("{{ let (v, s) = {}.decode(wireBuffer: wire, at: pos); pos += s; return v }}()", class_name)
-            }
-            _ => "/* TODO */".into(),
         }
     }
-
-    fn vec_inner_reader(inner: &Type) -> String {
-        match inner {
-            Type::Primitive(p) => {
-                let (size, read_fn) = Self::primitive_wire_info(*p);
-                format!("(wire.{}(at: $0), {})", read_fn, size)
-            }
-            Type::String => "wire.readString(at: $0)".into(),
-            Type::Record(name) => format!("{}.decode(wireBuffer: wire, at: $0)", NamingConvention::class_name(name)),
-            Type::Enum(name) => format!("{}.decode(wireBuffer: wire, at: $0)", NamingConvention::class_name(name)),
-            _ => "(/* TODO */, 0)".into(),
-        }
-    }
-
-    fn option_inner_reader(inner: &Type) -> String {
-        match inner {
-            Type::Primitive(p) => {
-                let (size, read_fn) = Self::primitive_wire_info(*p);
-                format!("(wire.{}(at: $0), {})", read_fn, size)
-            }
-            Type::String => "(wire.readString(at: $0).value, wire.readString(at: $0).size)".into(),
-            Type::Record(name) => format!("{}.decode(wireBuffer: wire, at: $0)", NamingConvention::class_name(name)),
-            Type::Enum(name) => format!("{}.decode(wireBuffer: wire, at: $0)", NamingConvention::class_name(name)),
-            _ => "(/* TODO */, 0)".into(),
-        }
-    }
-
-    fn wire_encode_expr(ty: &Type, name: &str, module: &Module) -> String {
-        match ty {
-            Type::Primitive(p) => {
-                let encode_fn = match p {
-                    Primitive::Bool => "appendBool",
-                    Primitive::U8 => "appendU8",
-                    Primitive::U16 => "appendU16",
-                    Primitive::U32 => "appendU32",
-                    Primitive::U64 => "appendU64",
-                    Primitive::I8 => "appendI8",
-                    Primitive::I16 => "appendI16",
-                    Primitive::I32 => "appendI32",
-                    Primitive::I64 => "appendI64",
-                    Primitive::F32 => "appendF32",
-                    Primitive::F64 => "appendF64",
-                    Primitive::Usize => "appendU64",
-                    Primitive::Isize => "appendI64",
-                };
-                format!("data.{}({})", encode_fn, name)
-            }
-            Type::String => format!("data.appendString({})", name),
-            Type::Vec(inner) => {
-                match inner.as_ref() {
-                    Type::Primitive(_) => format!("data.appendArray({})", name),
-                    Type::String => format!("data.appendStringArray({})", name),
-                    Type::Record(_) => format!("data.appendU32(UInt32({}.count)); for item in {} {{ item.wireEncodeTo(&data) }}", name, name),
-                    Type::Enum(enum_name) => {
-                        if module.is_data_enum(enum_name) {
-                            format!("data.appendU32(UInt32({}.count)); for item in {} {{ item.wireEncodeTo(&data) }}", name, name)
-                        } else {
-                            format!("data.appendU32(UInt32({}.count)); for item in {} {{ data.appendI32(item.cValue) }}", name, name)
-                        }
-                    }
-                    _ => {
-                        let inner_encode = Self::wire_encode_expr(inner, "item", module);
-                        format!("data.appendU32(UInt32({}.count)); for item in {} {{ {} }}", name, name, inner_encode)
-                    }
-                }
-            }
-            Type::Option(inner) => {
-                let inner_encode = Self::wire_encode_expr(inner, "v", module);
-                format!(
-                    "if let v = {} {{ data.appendU8(1); {} }} else {{ data.appendU8(0) }}",
-                    name, inner_encode
-                )
-            }
-            Type::Record(_) => format!("{}.wireEncodeTo(&data)", name),
-            Type::Enum(enum_name) => {
-                if module.is_data_enum(enum_name) {
-                    format!("{}.wireEncodeTo(&data)", name)
-                } else {
-                    format!("data.appendI32({}.cValue)", name)
-                }
-            }
-            _ => format!("/* TODO: encode {} */", name),
-        }
-    }
-
-    fn wire_encode_bytes_expr(ty: &Type, name: &str, module: &Module) -> String {
-        match ty {
-            Type::Primitive(p) => {
-                let encode_fn = match p {
-                    Primitive::Bool => "appendBool",
-                    Primitive::U8 => "appendU8",
-                    Primitive::U16 => "appendU16",
-                    Primitive::U32 => "appendU32",
-                    Primitive::U64 => "appendU64",
-                    Primitive::I8 => "appendI8",
-                    Primitive::I16 => "appendI16",
-                    Primitive::I32 => "appendI32",
-                    Primitive::I64 => "appendI64",
-                    Primitive::F32 => "appendF32",
-                    Primitive::F64 => "appendF64",
-                    Primitive::Usize => "appendU64",
-                    Primitive::Isize => "appendI64",
-                };
-                format!("bytes.{}({})", encode_fn, name)
-            }
-            Type::String => format!("bytes.appendString({})", name),
-            Type::Vec(inner) => {
-                match inner.as_ref() {
-                    Type::Primitive(_) => format!("bytes.appendArray({})", name),
-                    Type::String => format!("bytes.appendStringArray({})", name),
-                    Type::Record(_) => format!("bytes.appendU32(UInt32({}.count)); for item in {} {{ item.wireEncodeToBytes(&bytes) }}", name, name),
-                    Type::Enum(enum_name) => {
-                        if module.is_data_enum(enum_name) {
-                            format!("bytes.appendU32(UInt32({}.count)); for item in {} {{ item.wireEncodeToBytes(&bytes) }}", name, name)
-                        } else {
-                            format!("bytes.appendU32(UInt32({}.count)); for item in {} {{ bytes.appendI32(item.cValue) }}", name, name)
-                        }
-                    }
-                    _ => {
-                        let inner_encode = Self::wire_encode_bytes_expr(inner, "item", module);
-                        format!("bytes.appendU32(UInt32({}.count)); for item in {} {{ {} }}", name, name, inner_encode)
-                    }
-                }
-            }
-            Type::Option(inner) => {
-                let inner_encode = Self::wire_encode_bytes_expr(inner, "v", module);
-                format!(
-                    "if let v = {} {{ bytes.appendU8(1); {} }} else {{ bytes.appendU8(0) }}",
-                    name, inner_encode
-                )
-            }
-            Type::Record(_) => format!("{}.wireEncodeToBytes(&bytes)", name),
-            Type::Enum(enum_name) => {
-                if module.is_data_enum(enum_name) {
-                    format!("{}.wireEncodeToBytes(&bytes)", name)
-                } else {
-                    format!("bytes.appendI32({}.cValue)", name)
-                }
-            }
-            _ => format!("/* TODO: encode {} */", name),
-        }
-    }
-
-    fn primitive_wire_info(p: Primitive) -> (usize, &'static str) {
-        match p {
-            Primitive::Bool => (1, "readBool"),
-            Primitive::I8 => (1, "readI8"),
-            Primitive::U8 => (1, "readU8"),
-            Primitive::I16 => (2, "readI16"),
-            Primitive::U16 => (2, "readU16"),
-            Primitive::I32 => (4, "readI32"),
-            Primitive::U32 => (4, "readU32"),
-            Primitive::I64 => (8, "readI64"),
-            Primitive::U64 => (8, "readU64"),
-            Primitive::F32 => (4, "readF32"),
-            Primitive::F64 => (8, "readF64"),
-            Primitive::Isize => (8, "readI64"),
-            Primitive::Usize => (8, "readU64"),
-        }
-    }
-
 }
 
 #[derive(Template)]
