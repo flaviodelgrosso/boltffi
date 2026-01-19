@@ -45,4 +45,19 @@ impl PreambleTemplate {
             has_streams,
         }
     }
+
+    pub fn for_module_with_ffi_module_name(module: &Module, ffi_module_name: String) -> Self {
+        let has_async = module.functions.iter().any(|function| function.is_async)
+            || module
+                .classes
+                .iter()
+                .any(|class_item| class_item.methods.iter().any(|method| method.is_async));
+        let has_streams = module.classes.iter().any(|c| !c.streams.is_empty());
+        Self {
+            prefix: naming::ffi_prefix().to_string(),
+            ffi_module_name: Some(ffi_module_name),
+            has_async,
+            has_streams,
+        }
+    }
 }

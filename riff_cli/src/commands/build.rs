@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::error::Result;
 
 pub enum BuildPlatform {
-    Ios,
+    Apple,
     Android,
     MacOs,
     All,
@@ -27,8 +27,8 @@ pub fn run_build(config: &Config, options: BuildCommandOptions) -> Result<Vec<Bu
     let profile = if options.release { "release" } else { "debug" };
 
     let results = match options.platform {
-        BuildPlatform::Ios => {
-            println!("Building for iOS ({})...", profile);
+        BuildPlatform::Apple => {
+            println!("Building for Apple ({})...", profile);
             builder.build_ios()
         }
         BuildPlatform::Android => {
@@ -43,7 +43,7 @@ pub fn run_build(config: &Config, options: BuildCommandOptions) -> Result<Vec<Bu
             println!("Building all targets ({})...", profile);
             let mut all_results = builder.build_ios();
             all_results.extend(builder.build_android());
-            if config.ios.include_macos {
+            if config.apple.include_macos {
                 all_results.extend(builder.build_macos());
             }
             all_results

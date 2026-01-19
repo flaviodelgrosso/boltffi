@@ -47,9 +47,19 @@ pub enum FactoryStyle {
     CompanionMethods,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KotlinApiStyle {
+    #[default]
+    TopLevel,
+    ModuleObject,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct KotlinOptions {
     pub factory_style: FactoryStyle,
+    pub api_style: KotlinApiStyle,
+    pub module_object_name: Option<String>,
+    pub library_name: Option<String>,
 }
 
 pub struct Kotlin;
@@ -68,62 +78,87 @@ impl Kotlin {
         package_name: &str,
         options: &KotlinOptions,
     ) -> String {
-        let mut sections = Vec::new();
-
-        sections.push(Self::render_preamble_with_package(package_name, module));
-
-        module.enums.iter().for_each(|enumeration| {
-            sections.push(Self::render_enum_with_module(enumeration, module));
-            if enumeration.is_data_enum() || enumeration.is_error {
-                sections.push(Self::render_data_enum_codec(enumeration));
-            }
-        });
+        let preamble = Self::render_preamble_with_package(package_name, module);
 
         let blittable_vec_return_records = Self::find_blittable_vec_return_records(module);
         let blittable_vec_param_records = Self::find_blittable_vec_param_records(module);
         let async_return_records = Self::find_async_return_records(module);
 
+        let mut declarations = Vec::new();
+
+        module.enums.iter().for_each(|enumeration| {
+            declarations.push(Self::render_enum_with_module(enumeration, module));
+            if enumeration.is_data_enum() || enumeration.is_error {
+                declarations.push(Self::render_data_enum_codec(enumeration));
+            }
+        });
+
         module.records.iter().for_each(|record| {
-            sections.push(Self::render_record_with_module(record, module));
+            declarations.push(Self::render_record_with_module(record, module));
             let needs_reader = blittable_vec_return_records.contains(&record.name.as_str())
                 || async_return_records.contains(&record.name.as_str());
             if needs_reader {
-                sections.push(Self::render_record_reader(record));
+                declarations.push(Self::render_record_reader(record));
             }
             if blittable_vec_param_records.contains(&record.name.as_str()) {
-                sections.push(Self::render_record_writer(record));
+                declarations.push(Self::render_record_writer(record));
             }
         });
 
         Self::collect_unique_closures(module)
             .iter()
-            .for_each(|sig| sections.push(Self::render_closure_interface(sig)));
+            .for_each(|sig| declarations.push(Self::render_closure_interface(sig)));
 
         module
             .functions
             .iter()
             .filter(|func| !func.is_async)
-            .for_each(|function| sections.push(Self::render_function(function, module)));
+            .for_each(|function| declarations.push(Self::render_function(function, module)));
 
         module
             .functions
             .iter()
             .filter(|func| func.is_async && Self::is_supported_async_function(func, module))
-            .for_each(|function| sections.push(Self::render_function(function, module)));
+            .for_each(|function| declarations.push(Self::render_function(function, module)));
 
         module
             .classes
             .iter()
-            .for_each(|class| sections.push(Self::render_class(class, module, options)));
+            .for_each(|class| declarations.push(Self::render_class(class, module, options)));
 
         module
             .callback_traits
             .iter()
-            .for_each(|t| sections.push(Self::render_callback_trait(t, module)));
+            .for_each(|t| declarations.push(Self::render_callback_trait(t, module)));
 
-        sections.push(Self::render_native(module));
+        let native = Self::render_native_with_library_name(module, options.library_name.as_deref());
 
-        let mut output = sections
+        let wrapped_declarations = match options.api_style {
+            KotlinApiStyle::TopLevel => declarations
+                .iter()
+                .map(|section| section.trim().to_string())
+                .filter(|section| !section.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+            KotlinApiStyle::ModuleObject => {
+                let object_name = options
+                    .module_object_name
+                    .clone()
+                    .unwrap_or_else(|| NamingConvention::class_name(&module.name));
+                format!(
+                    "object {} {{\n{}\n}}",
+                    object_name,
+                    declarations
+                        .into_iter()
+                        .map(|section| section.trim().to_string())
+                        .filter(|section| !section.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                )
+            }
+        };
+
+        let mut output = [preamble, wrapped_declarations, native]
             .into_iter()
             .map(|section| section.trim().to_string())
             .filter(|section| !section.is_empty())
@@ -241,10 +276,14 @@ impl Kotlin {
             .expect("class template failed")
     }
 
-    pub fn render_native(module: &Module) -> String {
-        NativeTemplate::from_module(module)
+    pub fn render_native_with_library_name(module: &Module, library_name: Option<&str>) -> String {
+        NativeTemplate::from_module_with_library_name(module, library_name)
             .render()
             .expect("native template failed")
+    }
+
+    pub fn render_native(module: &Module) -> String {
+        Self::render_native_with_library_name(module, None)
     }
 
     pub fn render_callback_trait(callback_trait: &CallbackTrait, module: &Module) -> String {

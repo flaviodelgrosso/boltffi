@@ -11,17 +11,21 @@ use std::path::PathBuf;
 
 use commands::build::{BuildCommandOptions, BuildPlatform};
 use commands::check::CheckOptions;
+use commands::doctor::DoctorOptions;
 use commands::generate::{GenerateOptions, GenerateTarget, run_generate_with_output};
 use commands::init::InitOptions;
-use commands::pack::{PackOptions, PackTarget};
+use commands::pack::{PackAndroidOptions, PackAppleOptions, PackCommand};
 use commands::verify::VerifyOptions;
-use commands::{run_build, run_check, run_generate, run_init, run_pack, run_verify};
+use commands::{run_build, run_check, run_doctor, run_generate, run_init, run_pack, run_verify};
 use config::Config;
 use error::{CliError, Result};
 
 #[derive(Parser)]
 #[command(name = "riff")]
-#[command(about = "Riff - zero-copy Rust FFI toolchain for Rust")]
+#[command(about = "Riff - Rust FFI toolchain (Apple + Android)")]
+#[command(
+    after_help = "Examples:\n  riff init\n  riff check --apple\n  riff generate swift\n  riff build apple --release\n  riff pack apple --layout bundled\n\nConfig:\n  riff reads ./riff.toml\n  Apple settings live under [apple.*]\n  Android settings live under [android.*]\n"
+)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -30,30 +34,55 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(about = "Create riff.toml with sensible defaults")]
     Init {
         #[arg(long)]
         name: Option<String>,
     },
 
+    #[command(
+        about = "Check toolchain + required rust targets",
+        long_about = "Check toolchain + required rust targets.\n\nIf no platform flags are provided, riff checks both Apple and Android.\n\nExamples:\n  riff check\n  riff check --apple\n  riff check --android\n  riff check --fix\n"
+    )]
     Check {
-        #[arg(long)]
+        #[arg(long, help = "Install missing rust targets")]
         fix: bool,
 
+        #[arg(long, help = "Check Apple (iOS/iOS-simulator) targets + Xcode tooling")]
+        apple: bool,
+
+        #[arg(long, help = "Check Android targets + NDK")]
+        android: bool,
+    },
+
+    #[command(
+        about = "Print diagnostic environment info",
+        long_about = "Print diagnostic environment info.\n\nExamples:\n  riff doctor\n  riff doctor --apple\n  riff doctor --android\n"
+    )]
+    Doctor {
         #[arg(long)]
-        ios: bool,
+        apple: bool,
 
         #[arg(long)]
         android: bool,
     },
 
+    #[command(
+        about = "Generate bindings (Swift/Kotlin/header)",
+        long_about = "Generate bindings.\n\nExamples:\n  riff generate\n  riff generate swift\n  riff generate kotlin\n  riff generate header\n"
+    )]
     Generate {
         #[arg(value_enum)]
         target: Option<GenerateTargetArg>,
 
-        #[arg(short, long)]
+        #[arg(short, long, help = "Override output directory (default comes from riff.toml)")]
         output: Option<PathBuf>,
     },
 
+    #[command(
+        about = "Build rust libraries for targets",
+        long_about = "Build rust libraries for targets.\n\nExamples:\n  riff build\n  riff build apple\n  riff build android --release\n"
+    )]
     Build {
         #[arg(value_enum)]
         platform: Option<BuildPlatformArg>,
@@ -62,25 +91,22 @@ enum Commands {
         release: bool,
     },
 
+    #[command(
+        about = "Package platform artifacts (xcframework/SPM/jniLibs)",
+        long_about = "Package platform artifacts.\n\nExamples:\n  riff pack apple\n  riff pack apple --layout bundled\n  riff pack android --release\n"
+    )]
     Pack {
-        #[arg(value_enum)]
+        #[command(subcommand)]
         target: PackTargetArg,
-
-        #[arg(long)]
-        release: bool,
-
-        #[arg(long)]
-        version: Option<String>,
-
-        #[arg(long, default_value = "true")]
-        regenerate: bool,
     },
 
+    #[command(about = "Run check/build/generate/pack in order")]
     Release {
         #[arg(value_enum)]
         platform: Option<BuildPlatformArg>,
     },
 
+    #[command(about = "Verify a generated binding file")]
     Verify {
         path: PathBuf,
 
@@ -91,26 +117,81 @@ enum Commands {
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum GenerateTargetArg {
+    #[value(help = "Generate Swift bindings")]
     Swift,
+    #[value(help = "Generate Kotlin bindings + JNI glue")]
     Kotlin,
+    #[value(help = "Generate C header")]
     Header,
+    #[value(help = "Generate all bindings")]
     All,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum BuildPlatformArg {
-    Ios,
+    #[value(help = "Build Apple targets (iOS + iOS-simulator, and macOS if enabled)")]
+    Apple,
+    #[value(help = "Build Android targets")]
     Android,
+    #[value(help = "Build macOS target")]
     Macos,
+    #[value(help = "Build all configured targets")]
     All,
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Subcommand)]
 enum PackTargetArg {
-    Xcframework,
-    Spm,
-    Ios,
-    Android,
+    #[command(
+        about = "Build + package Apple artifacts",
+        long_about = "Build + package Apple artifacts.\n\nOutputs:\n  - xcframework: {apple.xcframework.output}/{Name}.xcframework\n  - SwiftPM:      {apple.spm.output}/Package.swift\n\nLayout:\n  bundled  -> one package with wrapper target\n  ffi-only -> standalone FFI package with Swift target\n  split    -> binary-only package (Swift bindings generated to apple.swift.output)\n"
+    )]
+    Apple {
+        #[arg(long)]
+        release: bool,
+
+        #[arg(long)]
+        version: Option<String>,
+
+        #[arg(long, default_value = "true")]
+        regenerate: bool,
+
+        #[arg(long)]
+        no_build: bool,
+
+        #[arg(long)]
+        spm_only: bool,
+
+        #[arg(long)]
+        xcframework_only: bool,
+
+        #[arg(long, value_enum)]
+        layout: Option<PackLayoutArg>,
+    },
+
+    #[command(
+        about = "Build + package Android artifacts",
+        long_about = "Build + package Android artifacts.\n\nOutputs:\n  - Kotlin/JNI: {android.kotlin.output}\n  - jniLibs:    {android.pack.output}\n"
+    )]
+    Android {
+        #[arg(long)]
+        release: bool,
+
+        #[arg(long, default_value = "true")]
+        regenerate: bool,
+
+        #[arg(long)]
+        no_build: bool,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PackLayoutArg {
+    #[value(help = "Single SwiftPM package with wrapper target + generated sources")]
+    Bundled,
+    #[value(help = "Binary-only SwiftPM package; generate Swift sources outside package")]
+    Split,
+    #[value(help = "Standalone FFI SwiftPM package (binary target + generated Swift target)")]
+    FfiOnly,
 }
 
 fn main() {
@@ -134,13 +215,25 @@ fn execute_command(command: Commands) -> Result<()> {
             run_init(options).map(|_| ())
         }
 
-        Commands::Check { fix, ios, android } => {
+        Commands::Check {
+            fix,
+            apple,
+            android,
+        } => {
             let options = CheckOptions {
                 fix,
-                ios: ios || !android,
-                android: android || !ios,
+                apple: apple || !android,
+                android: android || !apple,
             };
             run_check(options).map(|_| ())
+        }
+
+        Commands::Doctor { apple, android } => {
+            let options = DoctorOptions {
+                apple: apple || !android,
+                android: android || !apple,
+            };
+            run_doctor(options)
         }
 
         Commands::Generate { target, output } => {
@@ -164,7 +257,7 @@ fn execute_command(command: Commands) -> Result<()> {
             let options = BuildCommandOptions {
                 platform: platform
                     .map(|p| match p {
-                        BuildPlatformArg::Ios => BuildPlatform::Ios,
+                        BuildPlatformArg::Apple => BuildPlatform::Apple,
                         BuildPlatformArg::Android => BuildPlatform::Android,
                         BuildPlatformArg::Macos => BuildPlatform::MacOs,
                         BuildPlatformArg::All => BuildPlatform::All,
@@ -177,23 +270,41 @@ fn execute_command(command: Commands) -> Result<()> {
 
         Commands::Pack {
             target,
-            release,
-            version,
-            regenerate,
         } => {
             let config = load_config()?;
-            let options = PackOptions {
-                target: match target {
-                    PackTargetArg::Xcframework => PackTarget::Xcframework,
-                    PackTargetArg::Spm => PackTarget::Spm,
-                    PackTargetArg::Ios => PackTarget::Ios,
-                    PackTargetArg::Android => PackTarget::Android,
-                },
-                release,
-                version,
-                regenerate,
+            let command = match target {
+                PackTargetArg::Apple {
+                    release,
+                    version,
+                    regenerate,
+                    no_build,
+                    spm_only,
+                    xcframework_only,
+                    layout,
+                } => PackCommand::Apple(PackAppleOptions {
+                    release,
+                    version,
+                    regenerate,
+                    no_build,
+                    spm_only,
+                    xcframework_only,
+                    layout: layout.map(|l| match l {
+                        PackLayoutArg::Bundled => crate::config::SpmLayout::Bundled,
+                        PackLayoutArg::Split => crate::config::SpmLayout::Split,
+                        PackLayoutArg::FfiOnly => crate::config::SpmLayout::FfiOnly,
+                    }),
+                }),
+                PackTargetArg::Android {
+                    release,
+                    regenerate,
+                    no_build,
+                } => PackCommand::Android(PackAndroidOptions {
+                    release,
+                    regenerate,
+                    no_build,
+                }),
             };
-            run_pack(&config, options)
+            run_pack(&config, command)
         }
 
         Commands::Release { platform } => {
@@ -228,7 +339,7 @@ fn run_release(config: &Config, platform: Option<BuildPlatformArg>) -> Result<()
 
     let check_options = CheckOptions {
         fix: false,
-        ios: true,
+        apple: true,
         android: true,
     };
 
@@ -245,7 +356,7 @@ fn run_release(config: &Config, platform: Option<BuildPlatformArg>) -> Result<()
     let build_options = BuildCommandOptions {
         platform: platform
             .map(|p| match p {
-                BuildPlatformArg::Ios => BuildPlatform::Ios,
+                BuildPlatformArg::Apple => BuildPlatform::Apple,
                 BuildPlatformArg::Android => BuildPlatform::Android,
                 BuildPlatformArg::Macos => BuildPlatform::MacOs,
                 BuildPlatformArg::All => BuildPlatform::All,
@@ -263,23 +374,29 @@ fn run_release(config: &Config, platform: Option<BuildPlatformArg>) -> Result<()
     println!("[4/4] Packaging...");
 
     match platform {
-        Some(BuildPlatformArg::Ios) | None => {
-            let pack_options = PackOptions {
-                target: PackTarget::Ios,
-                release: true,
-                version: None,
-                regenerate: false,
-            };
-            run_pack(config, pack_options)?;
+        Some(BuildPlatformArg::Apple) | None => {
+            run_pack(
+                config,
+                PackCommand::Apple(PackAppleOptions {
+                    release: true,
+                    version: None,
+                    regenerate: false,
+                    no_build: true,
+                    spm_only: false,
+                    xcframework_only: false,
+                    layout: None,
+                }),
+            )?;
         }
         Some(BuildPlatformArg::Android) => {
-            let pack_options = PackOptions {
-                target: PackTarget::Android,
-                release: true,
-                version: None,
-                regenerate: false,
-            };
-            run_pack(config, pack_options)?;
+            run_pack(
+                config,
+                PackCommand::Android(PackAndroidOptions {
+                    release: true,
+                    regenerate: false,
+                    no_build: true,
+                }),
+            )?;
         }
         _ => {}
     }

@@ -28,9 +28,9 @@ impl<'a> AndroidPackager<'a> {
             });
         }
 
-        let jnilibs_path = &self.config.pack.android.output;
+        let jnilibs_path = self.config.android_pack_output();
 
-        std::fs::create_dir_all(jnilibs_path).map_err(|source| {
+        std::fs::create_dir_all(&jnilibs_path).map_err(|source| {
             CliError::CreateDirectoryFailed {
                 path: jnilibs_path.clone(),
                 source,
@@ -39,7 +39,7 @@ impl<'a> AndroidPackager<'a> {
 
         let copied_libraries = android_libs
             .iter()
-            .map(|lib| self.copy_to_jnilibs(lib, jnilibs_path))
+            .map(|lib| self.copy_to_jnilibs(lib, &jnilibs_path))
             .collect::<Result<Vec<_>>>()?;
 
         Ok(AndroidOutput {

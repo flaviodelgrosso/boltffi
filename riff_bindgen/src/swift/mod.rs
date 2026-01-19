@@ -88,10 +88,16 @@ impl Swift {
     }
 
     pub fn render_module(module: &Module) -> String {
+        Self::render_module_with_ffi_module_name(module, None)
+    }
+
+    pub fn render_module_with_ffi_module_name(module: &Module, ffi_module_name: Option<String>) -> String {
         let mut sections = Vec::new();
 
         sections.push(
-            PreambleTemplate::for_module(module)
+            ffi_module_name
+                .map(|name| PreambleTemplate::for_module_with_ffi_module_name(module, name))
+                .unwrap_or_else(|| PreambleTemplate::for_module(module))
                 .render()
                 .expect("preamble template failed"),
         );

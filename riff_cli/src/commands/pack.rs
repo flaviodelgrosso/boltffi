@@ -1,170 +1,284 @@
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
-use riff_verify::{Reporter, Verifier};
-
-use crate::commands::generate::{GenerateTarget, run_generate};
-use crate::config::Config;
+use crate::build::{BuildOptions, Builder, all_successful, failed_targets};
+use crate::commands::generate::{GenerateOptions, GenerateTarget, run_generate_with_output};
+use crate::config::{Config, SpmDistribution, SpmLayout};
 use crate::error::{CliError, Result};
-use crate::pack::{AndroidPackager, SpmPackageGenerator, XcframeworkBuilder};
-use crate::target::BuiltLibrary;
+use crate::pack::{AndroidPackager, SpmPackageGenerator, XcframeworkBuilder, compute_checksum};
+use crate::target::{BuiltLibrary, Platform};
 
-pub enum PackTarget {
-    Xcframework,
-    Spm,
-    Ios,
-    Android,
+pub enum PackCommand {
+    Apple(PackAppleOptions),
+    Android(PackAndroidOptions),
 }
 
-pub struct PackOptions {
-    pub target: PackTarget,
+pub struct PackAppleOptions {
     pub release: bool,
     pub version: Option<String>,
     pub regenerate: bool,
+    pub no_build: bool,
+    pub spm_only: bool,
+    pub xcframework_only: bool,
+    pub layout: Option<SpmLayout>,
 }
 
-pub fn run_pack(config: &Config, options: PackOptions) -> Result<()> {
-    let target_dir = PathBuf::from("target");
-    let libraries = BuiltLibrary::discover(&target_dir, config.library_name(), options.release);
+pub struct PackAndroidOptions {
+    pub release: bool,
+    pub regenerate: bool,
+    pub no_build: bool,
+}
 
-    if libraries.is_empty() {
-        return Err(CliError::NoLibrariesFound {
-            platform: "any".to_string(),
+pub fn run_pack(config: &Config, command: PackCommand) -> Result<()> {
+    match command {
+        PackCommand::Apple(options) => pack_apple(config, options),
+        PackCommand::Android(options) => pack_android(config, options),
+    }
+}
+
+fn pack_apple(config: &Config, options: PackAppleOptions) -> Result<()> {
+    if options.spm_only && options.xcframework_only {
+        return Err(CliError::CommandFailed {
+            command: "cannot combine --spm-only and --xcframework-only".to_string(),
+            status: None,
         });
     }
 
+    if !options.no_build {
+        run_step("Building Apple targets", || build_apple_targets(config, options.release))?;
+    }
+
+    let layout = options.layout.unwrap_or_else(|| config.apple_spm_layout());
+    let package_root = config.apple_spm_output();
+
     if options.regenerate {
-        run_generate(config, GenerateTarget::All)?;
+        run_step("Generating Apple bindings", || {
+            generate_apple_bindings(config, layout, &package_root)
+        })?;
     }
 
-    match options.target {
-        PackTarget::Xcframework => pack_xcframework(config, libraries, options.release),
-        PackTarget::Spm => pack_spm(config, libraries, options.release, options.version),
-        PackTarget::Ios => {
-            pack_xcframework(config, libraries.clone(), options.release)?;
-            pack_spm(config, libraries, options.release, options.version)?;
-            Ok(())
-        }
-        PackTarget::Android => pack_android(config, libraries),
-    }
-}
-
-fn pack_xcframework(config: &Config, libraries: Vec<BuiltLibrary>, release: bool) -> Result<()> {
-    let profile = if release { "release" } else { "debug" };
-
-    let swift_path = PathBuf::from("dist").join(format!("{}.swift", config.swift_module_name()));
-    verify_generated_bindings(&swift_path)?;
-    println!();
-
-    let ios_libs: Vec<_> = libraries
+    let libraries = discover_built_libraries(config.library_name(), options.release);
+    let apple_libraries: Vec<_> = libraries
         .into_iter()
         .filter(|lib| lib.target.platform().is_apple())
         .collect();
 
-    if ios_libs.is_empty() {
+    if apple_libraries.is_empty() {
         return Err(CliError::NoLibrariesFound {
-            platform: format!("iOS ({})", profile),
+            platform: "Apple".to_string(),
         });
     }
 
-    println!("Creating XCFramework ({} build)...", profile);
-
-    ios_libs.iter().for_each(|lib| {
-        println!("  Found: {} ({})", lib.target.triple(), lib.path.display());
-    });
-
-    let headers_dir = PathBuf::from("dist/include");
-
+    let headers_dir = config.apple_header_output();
     if !headers_dir.exists() {
-        println!();
-        println!("Headers not found at dist/include/. Run 'cargo build' first.");
-        return Err(CliError::NoLibrariesFound {
-            platform: "headers".to_string(),
-        });
+        return Err(CliError::FileNotFound(headers_dir));
     }
 
-    let builder = XcframeworkBuilder::new(config, ios_libs, headers_dir);
-    let output = builder.build_with_zip()?;
+    let should_build_xcframework = !options.spm_only;
+    let should_generate_spm = !options.xcframework_only;
 
-    println!();
-    println!("Created: {}", output.xcframework_path.display());
+    let xcframework_output = should_build_xcframework
+        .then(|| {
+            run_step("Creating xcframework", || {
+                XcframeworkBuilder::new(config, apple_libraries.clone(), headers_dir.clone())
+                    .build_with_zip()
+            })
+        })
+        .transpose()?;
 
-    if let Some(zip_path) = &output.zip_path {
-        println!("Created: {}", zip_path.display());
+    if should_generate_spm {
+        let (checksum, version) = match config.apple_spm_distribution() {
+            SpmDistribution::Local => (None, None),
+            SpmDistribution::Remote => {
+                let checksum = xcframework_output
+                    .as_ref()
+                    .and_then(|o| o.checksum.clone())
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        run_step("Computing checksum from existing xcframework.zip", || {
+                            existing_xcframework_checksum(config)
+                        })
+                    })?;
+                let version =
+                    options.version.or_else(detect_version).unwrap_or_else(|| "0.1.0".to_string());
+                (Some(checksum), Some(version))
+            }
+        };
+
+        let generator = match config.apple_spm_distribution() {
+            SpmDistribution::Local => SpmPackageGenerator::new_local(config, layout),
+            SpmDistribution::Remote => {
+                let checksum = checksum.ok_or_else(|| CliError::CommandFailed {
+                    command: "remote SPM requires checksum".to_string(),
+                    status: None,
+                })?;
+                let version = version.ok_or_else(|| CliError::CommandFailed {
+                    command: "remote SPM requires version".to_string(),
+                    status: None,
+                })?;
+                SpmPackageGenerator::new_remote(config, checksum, version, layout)
+            }
+        };
+
+        let package_path = run_step("Generating Package.swift", || generator.generate())?;
+        println!("Created: {}", package_path.display());
     }
 
-    if let Some(checksum) = &output.checksum {
-        println!("Checksum: {}", checksum);
+    if let Some(output) = xcframework_output {
+        println!("Created: {}", output.xcframework_path.display());
+        output
+            .zip_path
+            .as_ref()
+            .iter()
+            .for_each(|path| println!("Created: {}", path.display()));
+        output
+            .checksum
+            .as_ref()
+            .iter()
+            .for_each(|checksum| println!("Checksum: {}", checksum));
     }
 
     Ok(())
 }
 
-fn pack_spm(
-    config: &Config,
-    libraries: Vec<BuiltLibrary>,
-    release: bool,
-    version: Option<String>,
-) -> Result<()> {
-    if !release {
-        println!("Warning: SPM packages are typically built from release artifacts");
+fn pack_android(config: &Config, options: PackAndroidOptions) -> Result<()> {
+    if !options.no_build {
+        run_step("Building Android targets", || build_android_targets(config, options.release))?;
     }
 
-    let headers_dir = PathBuf::from("dist/include");
-
-    let builder = XcframeworkBuilder::new(config, libraries, headers_dir);
-    let xcframework_output = builder.build_with_zip()?;
-
-    let checksum = xcframework_output
-        .checksum
-        .ok_or_else(|| CliError::NoLibrariesFound {
-            platform: "checksum".to_string(),
+    if options.regenerate {
+        run_step("Generating Kotlin bindings", || {
+            run_generate_with_output(
+                config,
+                GenerateOptions {
+                    target: GenerateTarget::Kotlin,
+                    output: Some(config.android_kotlin_output()),
+                },
+            )
         })?;
+        run_step("Generating C header", || {
+            run_generate_with_output(
+                config,
+                GenerateOptions {
+                    target: GenerateTarget::Header,
+                    output: Some(config.android_header_output()),
+                },
+            )
+        })?;
+    }
 
-    let version =
-        version.unwrap_or_else(|| detect_version().unwrap_or_else(|| "0.1.0".to_string()));
-
-    println!("Generating Package.swift...");
-
-    let generator = SpmPackageGenerator::new(config, checksum.clone(), version.clone());
-    let package_path = generator.generate()?;
-
-    println!();
-    println!("Created: {}", package_path.display());
-    println!("Version: {}", version);
-    println!("Checksum: {}", checksum);
-
-    Ok(())
-}
-
-fn pack_android(config: &Config, libraries: Vec<BuiltLibrary>) -> Result<()> {
-    println!("Creating Android jniLibs...");
-
-    let android_libs: Vec<_> = libraries
+    let libraries = discover_built_libraries(config.library_name(), options.release);
+    let android_libraries: Vec<_> = libraries
         .into_iter()
-        .filter(|lib| lib.target.platform() == crate::target::Platform::Android)
+        .filter(|lib| lib.target.platform() == Platform::Android)
         .collect();
 
-    if android_libs.is_empty() {
+    if android_libraries.is_empty() {
         return Err(CliError::NoLibrariesFound {
             platform: "Android".to_string(),
         });
     }
 
-    android_libs.iter().for_each(|lib| {
-        println!("  Found: {} ({})", lib.target.triple(), lib.path.display());
-    });
+    let packager = AndroidPackager::new(config, android_libraries);
+    let output = run_step("Packaging jniLibs", || packager.package())?;
 
-    let packager = AndroidPackager::new(config, android_libs);
-    let output = packager.package()?;
-
-    println!();
     println!("Created: {}", output.jnilibs_path.display());
-
-    output.copied_libraries.iter().for_each(|path| {
-        println!("  {}", path.display());
-    });
+    output
+        .copied_libraries
+        .iter()
+        .for_each(|path| println!("  {}", path.display()));
 
     Ok(())
+}
+
+fn build_apple_targets(config: &Config, release: bool) -> Result<()> {
+    let build_options = BuildOptions {
+        release,
+        package: Some(config.library_name().to_string()),
+    };
+    let builder = Builder::new(config, build_options);
+
+    let mut results = builder.build_ios();
+    if config.apple.include_macos {
+        results.extend(builder.build_macos());
+    }
+
+    if all_successful(&results) {
+        return Ok(());
+    }
+
+    let failed = failed_targets(&results)
+        .iter()
+        .map(|target| target.triple().to_string())
+        .collect::<Vec<_>>();
+
+    Err(CliError::BuildFailed { targets: failed })
+}
+
+fn build_android_targets(config: &Config, release: bool) -> Result<()> {
+    let build_options = BuildOptions {
+        release,
+        package: Some(config.library_name().to_string()),
+    };
+    let builder = Builder::new(config, build_options);
+    let results = builder.build_android();
+
+    if all_successful(&results) {
+        return Ok(());
+    }
+
+    let failed = failed_targets(&results)
+        .iter()
+        .map(|target| target.triple().to_string())
+        .collect::<Vec<_>>();
+
+    Err(CliError::BuildFailed { targets: failed })
+}
+
+fn generate_apple_bindings(config: &Config, layout: SpmLayout, package_root: &Path) -> Result<()> {
+    let swift_output_dir = match layout {
+        SpmLayout::Bundled => config
+            .apple_spm_wrapper_sources()
+            .map(|path| package_root.join(path).join("RiffGenerated"))
+            .unwrap_or_else(|| package_root.join("Sources").join("RiffGenerated")),
+        SpmLayout::FfiOnly => package_root.join("Sources").join("RiffGenerated"),
+        SpmLayout::Split => config.apple_swift_output().join("RiffGenerated"),
+    };
+
+    run_generate_with_output(
+        config,
+        GenerateOptions {
+            target: GenerateTarget::Swift,
+            output: Some(swift_output_dir),
+        },
+    )?;
+
+    run_generate_with_output(
+        config,
+        GenerateOptions {
+            target: GenerateTarget::Header,
+            output: Some(config.apple_header_output()),
+        },
+    )?;
+
+    Ok(())
+}
+
+fn discover_built_libraries(library_name: &str, release: bool) -> Vec<BuiltLibrary> {
+    BuiltLibrary::discover(&PathBuf::from("target"), library_name, release)
+}
+
+fn existing_xcframework_checksum(config: &Config) -> Result<String> {
+    let xcframework_zip = config.apple_xcframework_output().join(format!(
+        "{}.xcframework.zip",
+        config.xcframework_name()
+    ));
+
+    if xcframework_zip.exists() {
+        return compute_checksum(&xcframework_zip);
+    }
+
+    Err(CliError::FileNotFound(xcframework_zip))
 }
 
 fn detect_version() -> Option<String> {
@@ -182,32 +296,11 @@ fn detect_version() -> Option<String> {
         })
 }
 
-fn verify_generated_bindings(swift_path: &PathBuf) -> Result<()> {
-    if !swift_path.exists() {
-        return Ok(());
-    }
-
-    println!("Verifying generated bindings...");
-
-    let mut verifier = Verifier::swift().map_err(|e| CliError::VerifyError(e.to_string()))?;
-
-    let result = verifier
-        .verify_file(swift_path)
-        .map_err(|e| CliError::VerifyError(e.to_string()))?;
-
-    let reporter = Reporter::human();
-
-    if result.is_failed() {
-        println!();
-        println!("{}", reporter.report(&result));
-        return Err(CliError::VerifyError("verification failed".to_string()));
-    }
-
-    println!(
-        "  {} functions verified, {} rules checked",
-        result.unit_count(),
-        result.rule_count()
-    );
-
-    Ok(())
+fn run_step<T>(label: &str, action: impl FnOnce() -> Result<T>) -> Result<T> {
+    print!("{}... ", label);
+    io::stdout().flush().ok();
+    action().map(|value| {
+        println!("✓");
+        value
+    })
 }

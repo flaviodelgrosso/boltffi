@@ -472,13 +472,19 @@ pub struct JniGenerator;
 
 impl JniGenerator {
     pub fn generate(module: &Module, package: &str) -> String {
-        let template = JniGlueTemplate::from_module(module, package);
+        let class_name = NamingConvention::class_name(&module.name);
+        let template = JniGlueTemplate::from_module_with_class_name(module, package, &class_name);
+        template.render().expect("JNI template render failed")
+    }
+
+    pub fn generate_with_class_name(module: &Module, package: &str, class_name: &str) -> String {
+        let template = JniGlueTemplate::from_module_with_class_name(module, package, class_name);
         template.render().expect("JNI template render failed")
     }
 }
 
 impl JniGlueTemplate {
-    pub fn from_module(module: &Module, package: &str) -> Self {
+    pub fn from_module_with_class_name(module: &Module, package: &str, class_name: &str) -> Self {
         let prefix = naming::ffi_prefix().to_string();
         let jni_prefix = package
             .replace('_', "_1")
@@ -534,14 +540,12 @@ impl JniGlueTemplate {
             || classes.iter().any(|c| !c.async_methods.is_empty())
             || !callback_traits.is_empty();
 
-        let class_name = NamingConvention::class_name(&module.name);
-
         Self {
             prefix,
             jni_prefix: jni_prefix.clone(),
             package_path,
             module_name: module.name.clone(),
-            class_name,
+            class_name: class_name.to_string(),
             has_async,
             has_async_callbacks,
             functions,

@@ -47,7 +47,7 @@ impl EnvironmentCheck {
         }
     }
 
-    pub fn is_ready_for_ios(&self) -> bool {
+    pub fn is_ready_for_apple(&self) -> bool {
         self.tools.xcode_cli && self.tools.lipo && self.tools.xcodebuild
     }
 

@@ -4,7 +4,7 @@ use crate::target::RustTarget;
 
 pub struct CheckOptions {
     pub fix: bool,
-    pub ios: bool,
+    pub apple: bool,
     pub android: bool,
 }
 
@@ -12,7 +12,7 @@ impl Default for CheckOptions {
     fn default() -> Self {
         Self {
             fix: false,
-            ios: true,
+            apple: true,
             android: true,
         }
     }
@@ -21,7 +21,7 @@ impl Default for CheckOptions {
 pub fn run_check(options: CheckOptions) -> Result<bool> {
     let mut required_targets = Vec::new();
 
-    if options.ios {
+    if options.apple {
         required_targets.extend(RustTarget::ALL_IOS.iter().cloned());
     }
 
@@ -41,7 +41,7 @@ pub fn run_check(options: CheckOptions) -> Result<bool> {
     }
 
     let all_good = !check.has_missing_targets()
-        && (!options.ios || check.is_ready_for_ios())
+        && (!options.apple || check.is_ready_for_apple())
         && (!options.android || check.is_ready_for_android());
 
     Ok(all_good)
@@ -57,15 +57,15 @@ fn print_environment_status(check: &EnvironmentCheck, options: &CheckOptions) {
 
     println!();
 
-    if options.ios {
-        println!("iOS Targets");
+    if options.apple {
+        println!("Apple Targets");
         RustTarget::ALL_IOS.iter().for_each(|target| {
             let installed = check.installed_targets.iter().any(|t| t == target.triple());
             println!("  {} {}", status_icon(installed), target.triple());
         });
         println!();
 
-        println!("iOS Tools");
+        println!("Apple Tools");
         println!("  {} Xcode CLI tools", status_icon(check.tools.xcode_cli));
         println!("  {} lipo", status_icon(check.tools.lipo));
         println!("  {} xcodebuild", status_icon(check.tools.xcodebuild));

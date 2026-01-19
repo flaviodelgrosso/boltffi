@@ -5,15 +5,9 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub package: PackageConfig,
     #[serde(default)]
-    pub swift: SwiftConfig,
-    #[serde(default)]
-    pub kotlin: KotlinConfig,
-    #[serde(default)]
-    pub ios: IosConfig,
+    pub apple: AppleConfig,
     #[serde(default)]
     pub android: AndroidConfig,
-    #[serde(default)]
-    pub pack: PackConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -40,49 +34,78 @@ pub enum FactoryStyle {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct SwiftConfig {
+pub struct AppleSwiftConfig {
     pub module_name: Option<String>,
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
+    pub ffi_module_name: Option<String>,
     pub tools_version: Option<String>,
     #[serde(default)]
     pub error_style: ErrorStyle,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct KotlinConfig {
-    pub package: String,
-    pub output: PathBuf,
+pub struct AndroidKotlinConfig {
+    pub package: Option<String>,
+    pub output: Option<PathBuf>,
+    pub module_name: Option<String>,
+    pub library_name: Option<String>,
+    #[serde(default)]
+    pub api_style: KotlinApiStyle,
     #[serde(default)]
     pub error_style: ErrorStyle,
     #[serde(default)]
     pub factory_style: FactoryStyle,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KotlinApiStyle {
+    #[default]
+    TopLevel,
+    ModuleObject,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IosConfig {
+pub struct AppleConfig {
+    #[serde(default = "default_apple_output")]
+    pub output: PathBuf,
+    #[serde(default = "default_apple_deployment_target")]
     pub deployment_target: String,
+    #[serde(default)]
     pub include_macos: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct AndroidConfig {
-    pub min_sdk: u32,
-    pub ndk_version: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Default)]
-pub struct PackConfig {
+    #[serde(default)]
+    pub swift: AppleSwiftConfig,
+    #[serde(default)]
+    pub header: HeaderConfig,
     #[serde(default)]
     pub xcframework: XcframeworkConfig,
     #[serde(default)]
     pub spm: SpmConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AndroidConfig {
+    #[serde(default = "default_android_output")]
+    pub output: PathBuf,
+    #[serde(default = "default_android_min_sdk")]
+    pub min_sdk: u32,
+    pub ndk_version: Option<String>,
     #[serde(default)]
-    pub android: AndroidPackConfig,
+    pub kotlin: AndroidKotlinConfig,
+    #[serde(default)]
+    pub header: HeaderConfig,
+    #[serde(default)]
+    pub pack: AndroidPackConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct HeaderConfig {
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct XcframeworkConfig {
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
     pub name: Option<String>,
 }
 
@@ -96,44 +119,66 @@ pub enum SpmDistribution {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SpmConfig {
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
     #[serde(default)]
     pub distribution: SpmDistribution,
     pub repo_url: Option<String>,
+    #[serde(default)]
+    pub layout: SpmLayout,
+    pub package_name: Option<String>,
+    pub wrapper_sources: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AndroidPackConfig {
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
 }
 
-impl Default for SwiftConfig {
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SpmLayout {
+    Bundled,
+    Split,
+    #[default]
+    FfiOnly,
+}
+
+impl Default for AppleSwiftConfig {
     fn default() -> Self {
         Self {
             module_name: None,
-            output: PathBuf::from("bindings/swift"),
+            output: None,
+            ffi_module_name: None,
             tools_version: None,
             error_style: ErrorStyle::default(),
         }
     }
 }
 
-impl Default for KotlinConfig {
+impl Default for AndroidKotlinConfig {
     fn default() -> Self {
         Self {
-            package: String::from("com.example"),
-            output: PathBuf::from("bindings/kotlin"),
+            package: None,
+            output: None,
+            module_name: None,
+            library_name: None,
+            api_style: KotlinApiStyle::default(),
             error_style: ErrorStyle::default(),
             factory_style: FactoryStyle::default(),
         }
     }
 }
 
-impl Default for IosConfig {
+impl Default for AppleConfig {
     fn default() -> Self {
         Self {
-            deployment_target: String::from("16.0"),
+            output: default_apple_output(),
+            deployment_target: default_apple_deployment_target(),
             include_macos: false,
+            swift: AppleSwiftConfig::default(),
+            header: HeaderConfig::default(),
+            xcframework: XcframeworkConfig::default(),
+            spm: SpmConfig::default(),
         }
     }
 }
@@ -141,8 +186,20 @@ impl Default for IosConfig {
 impl Default for AndroidConfig {
     fn default() -> Self {
         Self {
-            min_sdk: 24,
+            output: default_android_output(),
+            min_sdk: default_android_min_sdk(),
             ndk_version: None,
+            kotlin: AndroidKotlinConfig::default(),
+            header: HeaderConfig::default(),
+            pack: AndroidPackConfig::default(),
+        }
+    }
+}
+
+impl Default for HeaderConfig {
+    fn default() -> Self {
+        Self {
+            output: None,
         }
     }
 }
@@ -150,7 +207,7 @@ impl Default for AndroidConfig {
 impl Default for XcframeworkConfig {
     fn default() -> Self {
         Self {
-            output: PathBuf::from("dist"),
+            output: None,
             name: None,
         }
     }
@@ -159,9 +216,12 @@ impl Default for XcframeworkConfig {
 impl Default for SpmConfig {
     fn default() -> Self {
         Self {
-            output: PathBuf::from("dist"),
+            output: None,
             distribution: SpmDistribution::Local,
             repo_url: None,
+            layout: SpmLayout::default(),
+            package_name: None,
+            wrapper_sources: None,
         }
     }
 }
@@ -169,9 +229,25 @@ impl Default for SpmConfig {
 impl Default for AndroidPackConfig {
     fn default() -> Self {
         Self {
-            output: PathBuf::from("dist/jniLibs"),
+            output: None,
         }
     }
+}
+
+fn default_apple_output() -> PathBuf {
+    PathBuf::from("dist/apple")
+}
+
+fn default_apple_deployment_target() -> String {
+    "16.0".to_string()
+}
+
+fn default_android_output() -> PathBuf {
+    PathBuf::from("dist/android")
+}
+
+fn default_android_min_sdk() -> u32 {
+    24
 }
 
 impl Config {
@@ -204,26 +280,130 @@ impl Config {
     }
 
     pub fn swift_module_name(&self) -> String {
-        self.swift
+        self.apple
+            .swift
             .module_name
             .clone()
             .unwrap_or_else(|| to_pascal_case(&self.package.name))
     }
 
     pub fn xcframework_name(&self) -> String {
-        self.pack
+        self.apple
             .xcframework
             .name
             .clone()
             .unwrap_or_else(|| self.swift_module_name())
     }
 
-    pub fn kotlin_package(&self) -> Option<String> {
-        Some(self.kotlin.package.clone())
+    pub fn apple_swift_output(&self) -> PathBuf {
+        self.apple
+            .swift
+            .output
+            .clone()
+            .unwrap_or_else(|| self.apple.output.join("Sources"))
+    }
+
+    pub fn apple_swift_ffi_module_name(&self) -> Option<&str> {
+        self.apple.swift.ffi_module_name.as_deref()
+    }
+
+    pub fn apple_header_output(&self) -> PathBuf {
+        self.apple
+            .header
+            .output
+            .clone()
+            .unwrap_or_else(|| self.apple.output.join("include"))
+    }
+
+    pub fn apple_xcframework_output(&self) -> PathBuf {
+        self.apple
+            .xcframework
+            .output
+            .clone()
+            .unwrap_or_else(|| self.apple.output.clone())
+    }
+
+    pub fn apple_spm_output(&self) -> PathBuf {
+        self.apple
+            .spm
+            .output
+            .clone()
+            .unwrap_or_else(|| self.apple.output.clone())
+    }
+
+    pub fn apple_spm_layout(&self) -> SpmLayout {
+        self.apple.spm.layout
+    }
+
+    pub fn apple_spm_wrapper_sources(&self) -> Option<&Path> {
+        self.apple.spm.wrapper_sources.as_deref()
+    }
+
+    pub fn android_kotlin_package(&self) -> String {
+        self.android
+            .kotlin
+            .package
+            .clone()
+            .unwrap_or_else(|| {
+                let normalized_name = self.package.name.replace('-', "_");
+                format!("com.example.{}", normalized_name)
+            })
+    }
+
+    pub fn android_kotlin_module_name(&self) -> String {
+        self.android
+            .kotlin
+            .module_name
+            .clone()
+            .unwrap_or_else(|| self.kotlin_class_name())
+    }
+
+    pub fn android_kotlin_library_name(&self) -> Option<&str> {
+        self.android.kotlin.library_name.as_deref()
+    }
+
+    pub fn android_kotlin_output(&self) -> PathBuf {
+        self.android
+            .kotlin
+            .output
+            .clone()
+            .unwrap_or_else(|| self.android.output.join("kotlin"))
+    }
+
+    pub fn android_header_output(&self) -> PathBuf {
+        self.android
+            .header
+            .output
+            .clone()
+            .unwrap_or_else(|| self.android.output.join("include"))
+    }
+
+    pub fn android_pack_output(&self) -> PathBuf {
+        self.android
+            .pack
+            .output
+            .clone()
+            .unwrap_or_else(|| self.android.output.join("jniLibs"))
     }
 
     pub fn kotlin_class_name(&self) -> String {
         to_pascal_case(&self.package.name)
+    }
+
+    pub fn apple_spm_distribution(&self) -> SpmDistribution {
+        self.apple.spm.distribution
+    }
+
+    pub fn apple_spm_repo_url(&self) -> Option<&str> {
+        self.apple.spm.repo_url.as_deref()
+    }
+
+    pub fn apple_swift_tools_version(&self) -> Option<&str> {
+        self.apple.swift.tools_version.as_deref()
+    }
+
+    pub fn apple_spm_package_name(&self) -> Option<&str> {
+        self.apple.spm.package_name.as_deref()
     }
 }
 
@@ -262,4 +442,27 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_apple_table() {
+        let cfg: Config = toml::from_str(
+            r#"
+[package]
+name = "mylib"
+
+[apple]
+deployment_target = "16.0"
+include_macos = false
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert_eq!(cfg.apple.deployment_target, "16.0");
+        assert!(!cfg.apple.include_macos);
+    }
 }

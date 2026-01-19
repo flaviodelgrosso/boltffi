@@ -1055,6 +1055,10 @@ pub struct NativeAsyncMethodView {
 
 impl NativeTemplate {
     pub fn from_module(module: &Module) -> Self {
+        Self::from_module_with_library_name(module, None)
+    }
+
+    pub fn from_module_with_library_name(module: &Module, library_name: Option<&str>) -> Self {
         let prefix = naming::ffi_prefix().to_string();
 
         let functions: Vec<NativeFunctionView> = module
@@ -1235,8 +1239,12 @@ impl NativeTemplate {
 
         let async_callback_invokers = Self::collect_async_callback_invokers(module);
 
+        let lib_name = library_name
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| format!("{}_jni", module.name));
+
         Self {
-            lib_name: format!("{}_jni", module.name),
+            lib_name,
             prefix,
             functions,
             wire_functions,

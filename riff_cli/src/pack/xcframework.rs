@@ -24,7 +24,7 @@ impl<'a> XcframeworkBuilder<'a> {
             config,
             libraries,
             headers_dir,
-            output_dir: config.pack.xcframework.output.clone(),
+            output_dir: config.apple_xcframework_output(),
         }
     }
 
@@ -82,7 +82,7 @@ impl<'a> XcframeworkBuilder<'a> {
     }
 
     fn filter_macos_libraries(&self) -> Vec<&BuiltLibrary> {
-        if !self.config.ios.include_macos {
+        if !self.config.apple.include_macos {
             return Vec::new();
         }
 
@@ -330,7 +330,7 @@ fn create_zip(source_dir: &Path, zip_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn compute_checksum(path: &Path) -> Result<String> {
+pub(crate) fn compute_checksum(path: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
 
     let content = std::fs::read(path).map_err(|source| CliError::ReadFailed {

@@ -60,6 +60,9 @@ pub enum CliError {
 
     #[error("verification error: {0}")]
     VerifyError(String),
+
+    #[error("build failed for targets: {targets:?}")]
+    BuildFailed { targets: Vec<String> },
 }
 
 pub type Result<T> = std::result::Result<T, CliError>;

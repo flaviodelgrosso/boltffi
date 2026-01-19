@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    AndroidConfig, Config, ErrorStyle, FactoryStyle, IosConfig, KotlinConfig, PackConfig,
-    PackageConfig, SwiftConfig,
+    AndroidConfig, AndroidKotlinConfig, AndroidPackConfig, AppleConfig, AppleSwiftConfig, Config,
+    ErrorStyle, FactoryStyle, HeaderConfig, PackageConfig, SpmConfig, XcframeworkConfig,
 };
 use crate::error::Result;
 
@@ -33,6 +33,7 @@ pub fn run_init(options: InitOptions) -> Result<PathBuf> {
     println!("  1. riff check     # verify your environment");
     println!("  2. riff generate  # generate bindings");
     println!("  3. riff build     # compile for targets");
+    println!("  4. riff pack apple  # package Apple artifacts");
 
     Ok(config_path)
 }
@@ -60,33 +61,54 @@ fn detect_package_name(path: &Path) -> Option<String> {
 
 fn create_default_config(package_name: &str) -> Config {
     let module_name = to_pascal_case(package_name);
+    let normalized_kotlin_name = package_name.replace('-', "_");
 
     Config {
         package: PackageConfig {
             name: package_name.to_string(),
             crate_name: None,
         },
-        swift: SwiftConfig {
-            module_name: Some(module_name.clone()),
-            output: PathBuf::from("bindings/swift"),
-            tools_version: Some("5.9".to_string()),
-            error_style: ErrorStyle::default(),
-        },
-        kotlin: KotlinConfig {
-            package: format!("com.example.{}", package_name.replace('-', "_")),
-            output: PathBuf::from("bindings/kotlin"),
-            error_style: ErrorStyle::default(),
-            factory_style: FactoryStyle::default(),
-        },
-        ios: IosConfig {
+        apple: AppleConfig {
+            output: PathBuf::from("dist/apple"),
             deployment_target: "16.0".to_string(),
             include_macos: false,
+            swift: AppleSwiftConfig {
+                module_name: Some(module_name),
+                output: None,
+                ffi_module_name: None,
+                tools_version: Some("5.9".to_string()),
+                error_style: ErrorStyle::default(),
+            },
+            header: HeaderConfig { output: None },
+            xcframework: XcframeworkConfig {
+                output: None,
+                name: None,
+            },
+            spm: SpmConfig {
+                output: None,
+                distribution: Default::default(),
+                repo_url: None,
+                layout: Default::default(),
+                package_name: None,
+                wrapper_sources: None,
+            },
         },
         android: AndroidConfig {
+            output: PathBuf::from("dist/android"),
             min_sdk: 24,
             ndk_version: None,
+            kotlin: AndroidKotlinConfig {
+                package: Some(format!("com.example.{}", normalized_kotlin_name)),
+                output: None,
+                module_name: None,
+                library_name: None,
+                api_style: Default::default(),
+                error_style: ErrorStyle::default(),
+                factory_style: FactoryStyle::default(),
+            },
+            header: HeaderConfig { output: None },
+            pack: AndroidPackConfig { output: None },
         },
-        pack: PackConfig::default(),
     }
 }
 
