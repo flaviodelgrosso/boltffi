@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use syn::{
@@ -8,8 +8,9 @@ use walkdir::WalkDir;
 
 use crate::model::{
     CallbackTrait, Class, ClosureSignature as MClosureSignature, Constructor, ConstructorParam,
-    Enumeration, Function, Method, Module, Parameter, Primitive, Receiver, Record, RecordField,
-    ReturnType, StreamMethod, StreamMode, TraitMethod, TraitMethodParam, Type as MType, Variant,
+    CustomType, Enumeration, Function, Method, Module, Parameter, Primitive, Receiver, Record,
+    RecordField, ReturnType, StreamMethod, StreamMode, TraitMethod, TraitMethodParam,
+    Type as MType, Variant,
 };
 
 #[derive(Default)]
@@ -17,6 +18,7 @@ pub struct TypeRegistry {
     enums: HashSet<String>,
     records: HashSet<String>,
     classes: HashSet<String>,
+    custom_types: HashMap<String, MType>,
 }
 
 impl TypeRegistry {
@@ -36,7 +38,18 @@ impl TypeRegistry {
         self.classes.insert(name);
     }
 
+    pub fn register_custom_type(&mut self, name: String, repr: MType) {
+        self.custom_types.insert(name, repr);
+    }
+
     pub fn classify_named_type(&self, name: &str) -> Option<MType> {
+        if let Some(repr) = self.custom_types.get(name) {
+            return Some(MType::Custom {
+                name: name.to_string(),
+                repr: Box::new(repr.clone()),
+            });
+        }
+
         if self.enums.contains(name) {
             return Some(MType::Enum(name.to_string()));
         }
@@ -59,6 +72,7 @@ pub struct SourceScanner {
     enums: Vec<ScannedEnum>,
     functions: Vec<ScannedFunction>,
     callback_traits: Vec<ScannedCallbackTrait>,
+    custom_types: Vec<ScannedCustomType>,
 }
 
 struct ScannedClass {
@@ -116,6 +130,11 @@ struct ScannedCallbackTrait {
     methods: Vec<ScannedTraitMethod>,
 }
 
+struct ScannedCustomType {
+    name: String,
+    repr: MType,
+}
+
 struct ScannedTraitMethod {
     name: String,
     params: Vec<(String, MType)>,
@@ -133,6 +152,7 @@ impl SourceScanner {
             enums: Vec::new(),
             functions: Vec::new(),
             callback_traits: Vec::new(),
+            custom_types: Vec::new(),
         }
     }
 
@@ -144,13 +164,68 @@ impl SourceScanner {
             .map(|e| e.path().to_path_buf())
             .collect();
 
-        for path in &files {
-            self.collect_type_names(path)?;
+        files.iter().try_for_each(|path| self.collect_type_names(path))?;
+        files.iter().try_for_each(|path| self.collect_custom_types(path))?;
+        files.iter().try_for_each(|path| self.scan_file(path))?;
+        Ok(())
+    }
+
+    fn collect_custom_types(&mut self, path: &Path) -> Result<(), String> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+
+        let syntax = syn::parse_file(&content)
+            .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
+
+        syntax
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Impl(item_impl) if has_attribute(&item_impl.attrs, "custom_ffi") => {
+                    Some(item_impl)
+                }
+                _ => None,
+            })
+            .try_for_each(|item_impl| self.collect_custom_type(item_impl))
+    }
+
+    fn collect_custom_type(&mut self, item_impl: &ItemImpl) -> Result<(), String> {
+        let Some(name) = impl_self_type_ident(item_impl) else {
+            return Err("custom_ffi: unsupported self type".to_string());
+        };
+
+        if self.type_registry.records.contains(&name)
+            || self.type_registry.enums.contains(&name)
+            || self.type_registry.classes.contains(&name)
+        {
+            return Err(format!(
+                "custom_ffi: `{}` conflicts with an existing record/enum/class name",
+                name
+            ));
         }
 
-        for path in &files {
-            self.scan_file(path)?;
-        }
+        let repr_syn_type = item_impl
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Type(assoc) if assoc.ident == "FfiRepr" => Some(&assoc.ty),
+                _ => None,
+            })
+            .next()
+            .ok_or_else(|| format!("custom_ffi: `{}` is missing `type FfiRepr = ...;`", name))?;
+
+        let repr = rust_type_to_ffi_type(repr_syn_type, &self.type_registry).ok_or_else(|| {
+            format!(
+                "custom_ffi: `{}` has an unsupported FfiRepr type: {}",
+                name,
+                quote::quote!(#repr_syn_type).to_string()
+            )
+        })?;
+
+        self.type_registry
+            .register_custom_type(name.clone(), repr.clone());
+        self.custom_types.push(ScannedCustomType { name, repr });
+
         Ok(())
     }
 
@@ -184,7 +259,9 @@ impl SourceScanner {
                     }
                 }
                 Item::Impl(item_impl) => {
-                    if has_attribute(&item_impl.attrs, "ffi_class") || has_attribute(&item_impl.attrs, "export") {
+                    if has_attribute(&item_impl.attrs, "ffi_class")
+                        || has_attribute(&item_impl.attrs, "export")
+                    {
                         if let Type::Path(type_path) = item_impl.self_ty.as_ref()
                             && let Some(seg) = type_path.path.segments.last()
                         {
@@ -618,7 +695,10 @@ impl SourceScanner {
     }
 
     pub fn into_module(self) -> Module {
-        let mut module = Module::new(&self.module_name);
+        let mut module = self.custom_types.into_iter().fold(
+            Module::new(&self.module_name),
+            |module, custom_type| module.with_custom_type(CustomType::new(custom_type.name, custom_type.repr)),
+        );
 
         for record in self.records {
             let mut r = Record::new(&record.name);
@@ -738,6 +818,25 @@ fn has_attribute(attrs: &[Attribute], name: &str) -> bool {
                 .last()
                 .is_some_and(|segment| segment.ident == name)
     })
+}
+
+fn impl_self_type_ident(item_impl: &ItemImpl) -> Option<String> {
+    match item_impl.self_ty.as_ref() {
+        Type::Path(type_path) => type_path
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string()),
+        Type::Group(group) => match group.elem.as_ref() {
+            Type::Path(type_path) => type_path
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn has_repr_c(attrs: &[Attribute]) -> bool {
@@ -1002,7 +1101,8 @@ fn rust_type_to_ffi_type(ty: &Type, registry: &TypeRegistry) -> Option<MType> {
 }
 
 fn string_to_ffi_type(s: &str, registry: &TypeRegistry) -> Option<MType> {
-    match s.trim() {
+    let trimmed = s.trim();
+    match trimmed {
         "i8" => Some(MType::Primitive(Primitive::I8)),
         "i16" => Some(MType::Primitive(Primitive::I16)),
         "i32" => Some(MType::Primitive(Primitive::I32)),
@@ -1016,7 +1116,7 @@ fn string_to_ffi_type(s: &str, registry: &TypeRegistry) -> Option<MType> {
         "bool" => Some(MType::Primitive(Primitive::Bool)),
         "usize" => Some(MType::Primitive(Primitive::Usize)),
         "isize" => Some(MType::Primitive(Primitive::Isize)),
-        "String" | "str" => Some(MType::String),
+        "String" | "str" | "std::string::String" | "alloc::string::String" => Some(MType::String),
         s if s.starts_with("Vec<") => {
             let inner = &s[4..s.len() - 1];
             Some(MType::Vec(Box::new(string_to_ffi_type(inner, registry)?)))
@@ -1040,11 +1140,9 @@ fn string_to_ffi_type(s: &str, registry: &TypeRegistry) -> Option<MType> {
                 err: Box::new(err),
             })
         }
-        s => registry.classify_named_type(s).or_else(|| match s {
-            "UtcDateTime" | "DateTime" | "chrono::DateTime" => Some(MType::Primitive(Primitive::I64)),
-            "Length" | "uom::si::f64::Length" => Some(MType::Primitive(Primitive::F64)),
-            _ => None,
-        }),
+        s => registry
+            .classify_named_type(s)
+            .or_else(|| s.rsplit("::").next().and_then(|name| registry.classify_named_type(name))),
     }
 }
 

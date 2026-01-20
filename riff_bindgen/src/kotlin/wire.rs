@@ -85,6 +85,7 @@ pub fn decode_type(ty: &Type, module: &Module) -> KotlinCodec {
         Type::String => KotlinCodec::variable(format!("wire.readString({})", OFFSET_PLACEHOLDER)),
         Type::Record(name) => decode_record(name, module),
         Type::Enum(name) => decode_enum(name, module),
+        Type::Custom { name, .. } => decode_custom(name),
         Type::Vec(inner) => decode_vec(inner, module),
         Type::Option(inner) => decode_option(inner, module),
         Type::Result { ok, err } => decode_result(ok, err, module),
@@ -99,6 +100,14 @@ fn decode_primitive(p: Primitive) -> KotlinCodec {
 }
 
 fn decode_record(name: &str, _module: &Module) -> KotlinCodec {
+    let class_name = NamingConvention::class_name(name);
+    KotlinCodec::variable(format!(
+        "{}.decode(wire, {})",
+        class_name, OFFSET_PLACEHOLDER
+    ))
+}
+
+fn decode_custom(name: &str) -> KotlinCodec {
     let class_name = NamingConvention::class_name(name);
     KotlinCodec::variable(format!(
         "{}.decode(wire, {})",
@@ -203,6 +212,7 @@ pub fn encode_type(ty: &Type, name: &str, module: &Module) -> KotlinEncoder {
         Type::String => encode_string(name),
         Type::Record(record_name) => encode_record(record_name, name, module),
         Type::Enum(enum_name) => encode_enum(enum_name, name, module),
+        Type::Custom { .. } => encode_custom(name),
         Type::Vec(inner) => encode_vec(inner, name, module),
         Type::Option(inner) => encode_option(inner, name, module),
         Type::Result { ok, err } => encode_result(ok, err, name, module),
@@ -234,6 +244,13 @@ fn encode_bytes(name: &str) -> KotlinEncoder {
 }
 
 fn encode_record(_record_name: &str, field_name: &str, _module: &Module) -> KotlinEncoder {
+    KotlinEncoder {
+        size_expr: format!("{}.wireEncodedSize()", field_name),
+        encode_expr: format!("{}.wireEncodeTo(wire)", field_name),
+    }
+}
+
+fn encode_custom(field_name: &str) -> KotlinEncoder {
     KotlinEncoder {
         size_expr: format!("{}.wireEncodedSize()", field_name),
         encode_expr: format!("{}.wireEncodeTo(wire)", field_name),

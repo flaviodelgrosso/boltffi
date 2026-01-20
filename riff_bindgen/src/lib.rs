@@ -57,6 +57,23 @@ mod tests {
             .with_enum(status_enum)
     }
 
+    fn create_test_module_with_custom_type() -> Module {
+        let instant = Type::Custom {
+            name: "UtcDateTime".to_string(),
+            repr: Box::new(Type::Primitive(Primitive::I64)),
+        };
+
+        let event = Record::new("Event").with_field(RecordField::new("at", instant.clone()));
+
+        Module::new("test")
+            .with_custom_type(model::CustomType::new(
+                "UtcDateTime",
+                Type::Primitive(Primitive::I64),
+            ))
+            .with_record(event)
+            .with_function(Function::new("echo_instant").with_param(Parameter::new("value", instant.clone())).with_output(instant))
+    }
+
     #[test]
     fn test_ffi_prefix() {
         use riff_ffi_rules::naming;
@@ -112,6 +129,28 @@ mod tests {
             "[Double]"
         );
         assert_eq!(TypeMapper::map_type(&Type::option(Type::String)), "String?");
+    }
+
+    #[test]
+    fn test_custom_type_codegen_kotlin_preamble() {
+        let module = create_test_module_with_custom_type();
+        let preamble = kotlin::Kotlin::render_preamble(&module);
+        assert!(preamble.contains("value class UtcDateTime"));
+        assert!(preamble.contains("val value: Long"));
+        assert!(preamble.contains("internal fun wireEncodedSize(): Int"));
+        assert!(preamble.contains("internal fun wireEncodeTo(wire: WireWriter)"));
+        assert!(preamble.contains("internal fun decode(wire: WireBuffer, offset: Int)"));
+    }
+
+    #[test]
+    fn test_custom_type_codegen_swift_preamble() {
+        let module = create_test_module_with_custom_type();
+        let preamble = swift::Swift::render_preamble(&module);
+        assert!(preamble.contains("public struct UtcDateTime"));
+        assert!(preamble.contains("public let value: Int64"));
+        assert!(preamble.contains("public init(_ value: Int64)"));
+        assert!(preamble.contains("extension UtcDateTime: WireEncodable"));
+        assert!(preamble.contains("static func decode(wireBuffer wire: WireBuffer, at offset: Int)"));
     }
 
     #[test]

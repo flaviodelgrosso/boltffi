@@ -5,6 +5,7 @@ extern crate self as riff_core;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod handle;
+pub mod custom_ffi;
 pub mod pending;
 pub mod ringbuffer;
 pub mod rustfuture;
@@ -15,9 +16,11 @@ pub mod types;
 pub mod wire;
 
 pub use handle::HandleBox;
+pub use custom_ffi::CustomFfiConvertible;
 pub use pending::{CancellationToken, PendingHandle};
 pub use riff_macros::{
-    Data, FfiType, data, error, export, ffi_class, ffi_export, ffi_stream, ffi_trait, name, skip,
+    Data, FfiType, custom_ffi, data, error, export, ffi_class, ffi_export, ffi_stream, ffi_trait,
+    name, skip,
 };
 pub use ringbuffer::SpscRingBuffer;
 pub use rustfuture::{

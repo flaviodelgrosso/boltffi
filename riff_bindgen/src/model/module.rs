@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::callback_trait::CallbackTrait;
 use super::class::Class;
+use super::custom_type::CustomType;
 use super::enum_layout::DataEnumLayout;
 use super::enumeration::Enumeration;
 use super::function::Function;
@@ -15,6 +16,8 @@ pub struct Module {
     pub enums: Vec<Enumeration>,
     pub functions: Vec<Function>,
     pub callback_traits: Vec<CallbackTrait>,
+    #[serde(default)]
+    pub custom_types: Vec<CustomType>,
 }
 
 impl Module {
@@ -26,6 +29,7 @@ impl Module {
             enums: Vec::new(),
             functions: Vec::new(),
             callback_traits: Vec::new(),
+            custom_types: Vec::new(),
         }
     }
 
@@ -68,10 +72,21 @@ impl Module {
         self
     }
 
+    pub fn with_custom_type(mut self, custom_type: CustomType) -> Self {
+        self.custom_types.push(custom_type);
+        self
+    }
+
     pub fn find_callback_trait(&self, name: &str) -> Option<&CallbackTrait> {
         self.callback_traits
             .iter()
             .find(|callback_trait| callback_trait.name == name)
+    }
+
+    pub fn find_custom_type(&self, name: &str) -> Option<&CustomType> {
+        self.custom_types
+            .iter()
+            .find(|custom_type| custom_type.name == name)
     }
 
     pub fn has_exports(&self) -> bool {
@@ -79,6 +94,7 @@ impl Module {
             || !self.functions.is_empty()
             || !self.enums.is_empty()
             || !self.callback_traits.is_empty()
+            || !self.custom_types.is_empty()
     }
 
     pub fn has_async(&self) -> bool {

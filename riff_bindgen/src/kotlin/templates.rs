@@ -5,8 +5,9 @@ use heck::ToShoutySnakeCase;
 use riff_ffi_rules::naming;
 
 use crate::model::{
-    CallbackTrait, Class, ClosureSignature, DataEnumLayout, Enumeration, Function, Method, Module,
-    Primitive, Record, RecordField, ReturnType, TraitMethod, TraitMethodParam, Type,
+    CallbackTrait, Class, ClosureSignature, CustomType, DataEnumLayout, Enumeration, Function,
+    Method, Module, Primitive, Record, RecordField, ReturnType, TraitMethod, TraitMethodParam,
+    Type,
 };
 
 use super::call_plan::{AsyncCallPlan, ConstructorCallPlan, WireFunctionPlan};
@@ -15,6 +16,7 @@ use super::marshal::OptionView;
 use super::primitives;
 use super::return_abi::ReturnAbi;
 use super::{FactoryStyle, KotlinOptions, NamingConvention, TypeMapper};
+use super::wire;
 
 use self::MethodImpl::{AsyncMethod, SyncMethod};
 
@@ -24,6 +26,7 @@ pub struct PreambleTemplate {
     pub package_name: String,
     pub prefix: String,
     pub extra_imports: Vec<String>,
+    pub custom_types: Vec<CustomTypeView>,
 }
 
 impl PreambleTemplate {
@@ -33,6 +36,11 @@ impl PreambleTemplate {
             package_name: NamingConvention::class_name(&module.name).to_lowercase(),
             prefix: naming::ffi_prefix().to_string(),
             extra_imports,
+            custom_types: module
+                .custom_types
+                .iter()
+                .map(|custom_type| CustomTypeView::from_model(custom_type, module))
+                .collect(),
         }
     }
 
@@ -41,6 +49,7 @@ impl PreambleTemplate {
             package_name: package_name.to_string(),
             prefix: naming::ffi_prefix().to_string(),
             extra_imports: Vec::new(),
+            custom_types: Vec::new(),
         }
     }
 
@@ -50,6 +59,11 @@ impl PreambleTemplate {
             package_name: package_name.to_string(),
             prefix: naming::ffi_prefix().to_string(),
             extra_imports,
+            custom_types: module
+                .custom_types
+                .iter()
+                .map(|custom_type| CustomTypeView::from_model(custom_type, module))
+                .collect(),
         }
     }
 
@@ -67,6 +81,39 @@ impl PreambleTemplate {
             ]
         } else {
             Vec::new()
+        }
+    }
+}
+
+pub struct CustomTypeView {
+    pub class_name: String,
+    pub repr_kotlin_type: String,
+    pub repr_decode_pair_expr: String,
+    pub repr_size_expr: String,
+    pub repr_encode_expr: String,
+}
+
+impl CustomTypeView {
+    fn from_model(custom_type: &CustomType, module: &Module) -> Self {
+        let class_name = NamingConvention::class_name(&custom_type.name);
+        let repr_kotlin_type = TypeMapper::map_type(&custom_type.repr);
+
+        let repr_codec = wire::decode_type(&custom_type.repr, module);
+        let repr_decode_pair_expr = match repr_codec.size_kind {
+            wire::SizeKind::Fixed(size) => format!("({}) to {}", repr_codec.value_at("offset"), size),
+            wire::SizeKind::Variable => repr_codec.reader_expr.replace("OFFSET", "offset"),
+        };
+
+        let repr_encoder = wire::encode_type(&custom_type.repr, "repr", module);
+        let repr_size_expr = repr_encoder.size_expr;
+        let repr_encode_expr = repr_encoder.encode_expr;
+
+        Self {
+            class_name,
+            repr_kotlin_type,
+            repr_decode_pair_expr,
+            repr_size_expr,
+            repr_encode_expr,
         }
     }
 }
@@ -539,6 +586,10 @@ impl<'a> KotlinDefaults<'a> {
             Type::Result { ok, .. } => self
                 .default_expr(ok)
                 .map(|ok_default| format!("RiffResult.Ok({})", ok_default)),
+            Type::Custom { name, repr } => self.default_expr(repr).map(|repr_default| {
+                let class_name = NamingConvention::class_name(name);
+                format!("{}({})", class_name, repr_default)
+            }),
             Type::Record(name) => self
                 .record_is_defaultable(name)
                 .then(|| {
@@ -1442,9 +1493,11 @@ impl NativeTemplate {
                 Type::Vec(inner) => match inner.as_ref() {
                     Type::Primitive(_) => (false, String::new(), TypeMapper::jni_type(ty)),
                     Type::Record(_) => (false, String::new(), "ByteBuffer".to_string()),
+                    Type::Custom { .. } => (false, String::new(), "ByteBuffer".to_string()),
                     _ => (false, String::new(), "Long".to_string()),
                 },
                 Type::Record(_) => (false, String::new(), "ByteBuffer?".to_string()),
+                Type::Custom { .. } => (false, String::new(), "ByteBuffer?".to_string()),
                 Type::Enum(enum_name)
                     if module
                         .enums
@@ -1466,6 +1519,7 @@ impl NativeTemplate {
             Type::Primitive(_) => (false, String::new(), TypeMapper::jni_type(ok)),
             Type::String => (false, String::new(), "String?".to_string()),
             Type::Record(_) => (false, String::new(), "ByteBuffer?".to_string()),
+            Type::Custom { .. } => (false, String::new(), "ByteBuffer?".to_string()),
             Type::Enum(enum_name) => {
                 let is_data_enum = module
                     .enums

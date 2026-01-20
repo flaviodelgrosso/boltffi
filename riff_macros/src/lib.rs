@@ -4,6 +4,7 @@ use syn::{DeriveInput, ItemFn, parse_macro_input};
 
 mod callback_trait;
 mod class;
+mod custom_ffi;
 mod data;
 mod export;
 mod params;
@@ -51,6 +52,11 @@ pub fn ffi_class(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn ffi_trait(_attr: TokenStream, item: TokenStream) -> TokenStream {
     callback_trait::ffi_trait_impl(item)
+}
+
+#[proc_macro_attribute]
+pub fn custom_ffi(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    custom_ffi::custom_ffi_impl(item)
 }
 
 #[proc_macro_attribute]

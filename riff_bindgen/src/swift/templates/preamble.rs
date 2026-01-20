@@ -1,9 +1,10 @@
 use askama::Template;
 use riff_ffi_rules::naming;
 
-use crate::model::Module;
+use crate::model::{CustomType, Module};
 
 use super::super::names::NamingConvention;
+use super::super::{TypeMapper, wire};
 
 #[derive(Template)]
 #[template(path = "swift/preamble.txt", escape = "none")]
@@ -12,6 +13,7 @@ pub struct PreambleTemplate {
     pub ffi_module_name: Option<String>,
     pub has_async: bool,
     pub has_streams: bool,
+    pub custom_types: Vec<CustomTypeView>,
 }
 
 impl PreambleTemplate {
@@ -27,6 +29,11 @@ impl PreambleTemplate {
             ffi_module_name: None,
             has_async,
             has_streams,
+            custom_types: module
+                .custom_types
+                .iter()
+                .map(|custom_type| CustomTypeView::from_model(custom_type, module))
+                .collect(),
         }
     }
 
@@ -43,6 +50,11 @@ impl PreambleTemplate {
             ffi_module_name: Some(ffi_module_name),
             has_async,
             has_streams,
+            custom_types: module
+                .custom_types
+                .iter()
+                .map(|custom_type| CustomTypeView::from_model(custom_type, module))
+                .collect(),
         }
     }
 
@@ -58,6 +70,39 @@ impl PreambleTemplate {
             ffi_module_name: Some(ffi_module_name),
             has_async,
             has_streams,
+            custom_types: module
+                .custom_types
+                .iter()
+                .map(|custom_type| CustomTypeView::from_model(custom_type, module))
+                .collect(),
+        }
+    }
+}
+
+pub struct CustomTypeView {
+    pub class_name: String,
+    pub repr_swift_type: String,
+    pub repr_decode_tuple_expr: String,
+    pub repr_size_expr: String,
+    pub repr_encode_to_data: String,
+    pub repr_encode_to_bytes: String,
+}
+
+impl CustomTypeView {
+    fn from_model(custom_type: &CustomType, module: &Module) -> Self {
+        let class_name = NamingConvention::class_name(&custom_type.name);
+        let repr_swift_type = TypeMapper::map_type(&custom_type.repr);
+
+        let repr_decode_tuple_expr = wire::decode_type(&custom_type.repr, module).decode_as_tuple("offset");
+        let repr_encoder = wire::encode_type(&custom_type.repr, "value", module);
+
+        Self {
+            class_name,
+            repr_swift_type,
+            repr_decode_tuple_expr,
+            repr_size_expr: repr_encoder.size_expr,
+            repr_encode_to_data: repr_encoder.encode_to_data,
+            repr_encode_to_bytes: repr_encoder.encode_to_bytes,
         }
     }
 }

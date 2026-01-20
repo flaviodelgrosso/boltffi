@@ -92,6 +92,7 @@ pub fn decode_type(ty: &Type, module: &Module) -> TypeCodec {
     match ty {
         Type::Primitive(p) => decode_primitive(*p),
         Type::String => TypeCodec::variable(format!("wire.readString(at: {})", OFFSET_PLACEHOLDER)),
+        Type::Custom { name, .. } => decode_custom(name),
         Type::Record(name) => decode_record(name, module),
         Type::Enum(name) => decode_enum(name, module),
         Type::Vec(inner) => decode_vec(inner, module),
@@ -142,6 +143,14 @@ fn decode_record(name: &str, module: &Module) -> TypeCodec {
             class_name, OFFSET_PLACEHOLDER
         ))
     }
+}
+
+fn decode_custom(name: &str) -> TypeCodec {
+    let class_name = NamingConvention::class_name(name);
+    TypeCodec::variable(format!(
+        "{}.decode(wireBuffer: wire, at: {})",
+        class_name, OFFSET_PLACEHOLDER
+    ))
 }
 
 fn decode_enum(name: &str, module: &Module) -> TypeCodec {
@@ -250,11 +259,20 @@ pub fn encode_type(ty: &Type, name: &str, module: &Module) -> TypeEncoder {
         Type::String => encode_string(name),
         Type::Record(name_str) => encode_record(name_str, name, module),
         Type::Enum(enum_name) => encode_enum(enum_name, name, module),
+        Type::Custom { .. } => encode_custom(name),
         Type::Vec(inner) => encode_vec(inner, name, module),
         Type::Option(inner) => encode_option(inner, name, module),
         Type::Result { ok, err } => encode_result(ok, err, name, module),
         Type::Bytes => encode_bytes(name),
         other => panic!("wire encode not supported for type: {:?}", other),
+    }
+}
+
+fn encode_custom(field_name: &str) -> TypeEncoder {
+    TypeEncoder {
+        size_expr: format!("{}.wireEncodedSize()", field_name),
+        encode_to_data: format!("{}.wireEncodeTo(&data)", field_name),
+        encode_to_bytes: format!("{}.wireEncodeToBytes(&bytes)", field_name),
     }
 }
 

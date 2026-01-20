@@ -29,6 +29,7 @@ impl TypeMapper {
                 };
                 format!("({}) -> {}", params, ret)
             }
+            Type::Custom { name, .. } => NamingConvention::class_name(name),
             Type::Object(name) => NamingConvention::class_name(name),
             Type::Record(name) => NamingConvention::class_name(name),
             Type::Enum(name) => NamingConvention::class_name(name),
@@ -75,6 +76,7 @@ impl TypeMapper {
             Type::Bytes => "ByteArray".into(),
             Type::Object(_) | Type::BoxedTrait(_) => "Long".into(),
             Type::Record(name) => NamingConvention::class_name(name),
+            Type::Custom { name, .. } => NamingConvention::class_name(name),
             Type::Enum(_) => "Int".into(),
             Type::Vec(inner) | Type::Slice(inner) | Type::MutSlice(inner) => match inner.as_ref() {
                 Type::Primitive(Primitive::I32) => "IntArray".into(),
@@ -115,6 +117,7 @@ impl TypeMapper {
             Type::Bytes => "jbyteArray".into(),
             Type::Object(_) | Type::BoxedTrait(_) => "jlong".into(),
             Type::Record(_) => "jlong".into(),
+            Type::Custom { .. } => "jlong".into(),
             Type::Enum(_) => "jint".into(),
             Type::Vec(inner) | Type::Slice(inner) | Type::MutSlice(inner) => match inner.as_ref() {
                 Type::Primitive(p) => primitives::info(*p).array_type.into(),
@@ -161,6 +164,7 @@ impl TypeMapper {
             Type::Result { ok, .. } => Self::default_value(ok),
             Type::Object(name) => panic!("no default value for object type '{}'", name),
             Type::Record(name) => panic!("no default value for record type '{}'", name),
+            Type::Custom { name, .. } => panic!("no default value for custom type '{}'", name),
             Type::Enum(name) => panic!("no default value for enum type '{}'", name),
             Type::BoxedTrait(name) => panic!("no default value for trait type '{}'", name),
             Type::Closure(_) => panic!("no default value for closure type"),

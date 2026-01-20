@@ -108,6 +108,7 @@ impl PassThroughType {
                 signature_id: signature.signature_id(),
             }),
             Type::Void
+            | Type::Custom { .. }
             | Type::Record(_)
             | Type::Enum(_)
             | Type::Option(_)
@@ -203,6 +204,7 @@ impl AbiType {
             },
             Type::Record(name) => Self::Record(RecordRepr::for_name(name, module)),
             Type::Enum(name) => Self::Enum(EnumRepr::for_name(name, module)),
+            Type::Custom { repr, .. } => Self::from_model(repr, module),
             Type::Slice(_)
             | Type::MutSlice(_)
             | Type::Object(_)

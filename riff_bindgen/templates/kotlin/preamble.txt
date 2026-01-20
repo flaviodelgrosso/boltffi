@@ -10,8 +10,25 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.jvm.JvmInline
 {%- for import in extra_imports %}
 import {{ import }}
+{%- endfor %}
+
+{%- for custom in custom_types %}
+
+@JvmInline
+value class {{ custom.class_name }}(val value: {{ custom.repr_kotlin_type }}) {
+    internal fun wireEncodedSize(): Int = run { val repr = value; {{ custom.repr_size_expr }} }
+    internal fun wireEncodeTo(wire: WireWriter) { val repr = value; {{ custom.repr_encode_expr }} }
+
+    companion object {
+        internal fun decode(wire: WireBuffer, offset: Int): Pair<{{ custom.class_name }}, Int> {
+            val (repr, size) = {{ custom.repr_decode_pair_expr }}
+            return {{ custom.class_name }}(repr) to size
+        }
+    }
+}
 {%- endfor %}
 
 class FfiException(val code: Int, message: String) : Exception(message)

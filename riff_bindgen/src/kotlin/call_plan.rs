@@ -168,6 +168,7 @@ impl WireFunctionPlan {
             Type::Result { ok, err } => {
                 Self::supports_wire_type(ok, module) && Self::supports_wire_type(err, module)
             }
+            Type::Custom { repr, .. } => Self::supports_wire_type(repr, module),
             Type::Record(_) | Type::Enum(_) => true,
             Type::Slice(_)
             | Type::MutSlice(_)
@@ -412,6 +413,7 @@ impl AsyncCallPlan {
             Type::Result { ok, err } => {
                 Self::supports_value_type(ok, module) && Self::supports_value_type(err, module)
             }
+            Type::Custom { repr, .. } => Self::supports_value_type(repr, module),
             Type::Record(_) | Type::Enum(_) => true,
             Type::Slice(_)
             | Type::MutSlice(_)

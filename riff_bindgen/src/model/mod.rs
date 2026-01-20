@@ -1,6 +1,7 @@
 mod callback_trait;
 mod class;
 mod contract;
+mod custom_type;
 mod enum_layout;
 mod enumeration;
 mod function;
@@ -18,6 +19,7 @@ pub use contract::{
     AbiType, CallContract, EnumRepr, ParamContract, ParamTransport, PassThroughType, RecordRepr,
     ReturnContract, SliceMutability,
 };
+pub use custom_type::CustomType;
 pub use enum_layout::DataEnumLayout;
 pub use enumeration::{Enumeration, Variant};
 pub use function::Function;

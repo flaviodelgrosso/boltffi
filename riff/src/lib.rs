@@ -1,5 +1,5 @@
 pub use riff_core::UnexpectedFfiCallbackError;
-pub use riff_core::{Data, FfiType, data, error, export, name, skip};
+pub use riff_core::{CustomFfiConvertible, Data, FfiType, custom_ffi, data, error, export, name, skip};
 
 #[doc(hidden)]
 pub mod __private {
