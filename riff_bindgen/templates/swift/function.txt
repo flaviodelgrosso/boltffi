@@ -6,11 +6,7 @@
 {%- endif -%}
 {%- endmacro -%}
 
-{%- macro async_resume_throwing_status() -%}
-                                continuation.resume(throwing: FfiError(message: "ffi call failed"))
-{%- endmacro -%}
-
-public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}{{ param.swift_name }}: inout {{ param.swift_type }}{% else %}{{ param.swift_name }}: {{ param.swift_type }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.param_name }}: @escaping ({{ cb.swift_type }}) -> Void{% if !loop.last %}, {% endif %}{% endfor %}){% if is_async %} async throws{% else if throws %} throws{% endif %}{% if let Some(ret) = return_type %} -> {{ ret }}{% endif %} {
+public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}{{ param.swift_name }}: inout {{ param.swift_type }}{% else %}{{ param.swift_name }}: {{ param.swift_type }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}{% if params.len() > 0 && callbacks.len() > 0 %}, {% endif %}{% for cb in callbacks %}{{ cb.param_name }}: @escaping ({{ cb.swift_type }}) -> Void{% if !loop.last %}, {% endif %}{% endfor %}){% if is_async %} async throws{% elif throws %} throws{% endif %}{% if let Some(ret) = return_type %} -> {{ ret }}{% endif %} {
 {%- if is_async %}
 {#- ASYNC FUNCTION #}
     let futureHandle =
@@ -47,34 +43,34 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
                         switch decision {
                         case .finishWithContinuation(let continuation):
                             if status.code != 0 {
-                                {% call async_resume_throwing_status() %}
+                                continuation.resume(throwing: FfiError(message: "ffi call failed"))
                             } else {
                                 continuation.resume(returning: ())
                             }
                         case .finishWithoutContinuation, .alreadyFinished:
                             break
                         }
-{%- else if return_abi.is_direct() %}
+{%- elif return_abi.is_direct() %}
                         let result = {{ ffi_complete }}(ctx.handle, &status)
                         {{ ffi_free }}(ctx.handle)
                         switch decision {
                         case .finishWithContinuation(let continuation):
                             if status.code != 0 {
-                                {% call async_resume_throwing_status() %}
+                                continuation.resume(throwing: FfiError(message: "ffi call failed"))
                             } else {
                                 continuation.resume(returning: result)
                             }
                         case .finishWithoutContinuation, .alreadyFinished:
                             break
                         }
-{%- else if return_abi.is_wire_encoded() %}
+{%- elif return_abi.is_wire_encoded() %}
                         let buf = {{ ffi_complete }}(ctx.handle, &status)
                         {{ ffi_free }}(ctx.handle)
                         switch decision {
                         case .finishWithContinuation(let continuation):
                             if status.code != 0 {
                                 {{ prefix }}_free_buf_u8(buf)
-                                {% call async_resume_throwing_status() %}
+                                continuation.resume(throwing: FfiError(message: "ffi call failed"))
                             } else {
                                 let wire = WireBuffer(ptr: buf.ptr!, len: Int(buf.len))
                                 {{ prefix }}_free_buf_u8(buf)
@@ -143,7 +139,7 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
     Unmanaged<{{ cb.box_type }}>.fromOpaque({{ cb.ptr_name }}).release()
 {%- endfor %}
 {%- endif %}
-{%- else if return_abi.is_direct() %}
+{%- elif return_abi.is_direct() %}
 {%- if has_callbacks %}
     let result = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() && !callback_args.is_empty() %}, {% endif %}{{ callback_args }})
 {%- for cb in callbacks %}
@@ -153,7 +149,7 @@ public func {{ func_name }}({% for param in params %}{% if param.is_mut_slice %}
 {%- else %}
     return {{ direct_call }}
 {%- endif %}
-{%- else if return_abi.is_wire_encoded() %}
+{%- elif return_abi.is_wire_encoded() %}
     let buf = {{ ffi_name }}({{ ffi_args }}{% if !ffi_args.is_empty() && !callback_args.is_empty() %}, {% endif %}{{ callback_args }})
 {%- if has_callbacks %}
 {%- for cb in callbacks %}

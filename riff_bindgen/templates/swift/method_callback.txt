@@ -14,11 +14,11 @@
             let status = {{ ffi_name }}({{ ffi_args }}{% if callback_args.len() > 0 %}, {{ callback_args }}{% endif %})
             ensureOk(status)
         {{ wrappers_close }}
-        {%- else if return_abi.is_direct() %}
+        {%- elif return_abi.is_direct() %}
         return {{ wrappers_open }}
             {{ ffi_name }}({{ ffi_args }}{% if callback_args.len() > 0 %}, {{ callback_args }}{% endif %})
         {{ wrappers_close }}
-        {%- else if return_abi.is_wire_encoded() %}
+        {%- elif return_abi.is_wire_encoded() %}
         return {% if return_abi.throws() %}{{ wrappers_open_throwing }}{% else %}{{ wrappers_open }}{% endif %}
             let buf = {{ ffi_name }}({{ ffi_args }}{% if callback_args.len() > 0 %}, {{ callback_args }}{% endif %})
             defer { {{ prefix }}_free_buf_u8(buf) }
@@ -30,9 +30,9 @@
         {%- if return_abi.is_unit() %}
         let status = {{ ffi_name }}({{ ffi_args }}{% if callback_args.len() > 0 %}, {{ callback_args }}{% endif %})
         ensureOk(status)
-        {%- else if return_abi.is_direct() %}
+        {%- elif return_abi.is_direct() %}
         return {{ ffi_name }}({{ ffi_args }}{% if callback_args.len() > 0 %}, {{ callback_args }}{% endif %})
-        {%- else if return_abi.is_wire_encoded() %}
+        {%- elif return_abi.is_wire_encoded() %}
         let buf = {{ ffi_name }}({{ ffi_args }}{% if callback_args.len() > 0 %}, {{ callback_args }}{% endif %})
         defer { {{ prefix }}_free_buf_u8(buf) }
         let wire = WireBuffer(ptr: buf.ptr!, len: Int(buf.len))

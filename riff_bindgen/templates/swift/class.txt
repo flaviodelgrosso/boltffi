@@ -26,7 +26,7 @@ public final class {{ class_name }} {
         return Self(handle: ptr)
 {%- endif %}
     }
-{%- else if ctor.is_factory %}
+{%- elif ctor.is_factory %}
 
     public convenience init({{ ctor.name }} {{ ctor.first_param_name }}: {{ ctor.first_param_type }}{% for param in ctor.rest_params %}, {{ param.swift_name }}: {{ param.swift_type }}{% endfor %}){% if ctor.is_failable %} throws{% endif %} {
 {%- if ctor.wrappers_open.len() > 0 %}
@@ -70,7 +70,7 @@ public final class {{ class_name }} {
     @available(*, deprecated{% if let Some(msg) = method.deprecated_message %}, message: "{{ msg }}"{% endif %})
 {%- endif %}
 
-    public{% if method.is_static %} static{% endif %} func {{ method.swift_name }}({% for param in method.params %}{{ param.swift_name }}: {% if param.is_mut_slice %}inout {% else if param.is_escaping %}@escaping {% endif %}{{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.is_async %} async{% endif %}{% if method.throws %} throws{% endif %}{% if let Some(ret) = method.return_type %} -> {{ ret }}{% endif %} {
+    public{% if method.is_static %} static{% endif %} func {{ method.swift_name }}({% for param in method.params %}{{ param.swift_name }}: {% if param.is_mut_slice %}inout {% elif param.is_escaping %}@escaping {% endif %}{{ param.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %}){% if method.is_async %} async{% endif %}{% if method.throws %} throws{% endif %}{% if let Some(ret) = method.return_type %} -> {{ ret }}{% endif %} {
         {{ method.body }}
     }
 {%- endfor %}

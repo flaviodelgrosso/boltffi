@@ -37,7 +37,7 @@
                             case .finishWithoutContinuation, .alreadyFinished:
                                 break
                             }
-{%- else if return_abi.is_direct() %}
+{%- elif return_abi.is_direct() %}
                             let result = {{ ffi_complete }}(ctx.handle, &status)
                             {{ ffi_free }}(ctx.handle)
                             switch decision {
@@ -50,7 +50,7 @@
                             case .finishWithoutContinuation, .alreadyFinished:
                                 break
                             }
-{%- else if return_abi.is_wire_encoded() %}
+{%- elif return_abi.is_wire_encoded() %}
                             let buf = {{ ffi_complete }}(ctx.handle, &status)
                             {{ ffi_free }}(ctx.handle)
                             switch decision {

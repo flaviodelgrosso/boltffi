@@ -5,7 +5,7 @@ fun {{ func_name }}({% for param in signature_params %}{{ param.name }}: {{ para
 {%- if wire_writers.is_empty() %}
 {%- if return_abi.is_unit() %}
     Native.{{ ffi_name }}({% for arg in native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
-{%- else if return_abi.is_direct() %}
+{%- elif return_abi.is_direct() %}
     return Native.{{ ffi_name }}({% for arg in native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}){{ return_abi.kotlin_cast() }}
 {%- else %}
     val buf = Native.{{ ffi_name }}({% for arg in native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
@@ -34,7 +34,7 @@ fun {{ func_name }}({% for param in signature_params %}{{ param.name }}: {{ para
 {%- endfor %}
 {%- if return_abi.is_unit() %}
         Native.{{ ffi_name }}({% for arg in native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
-{%- else if return_abi.is_direct() %}
+{%- elif return_abi.is_direct() %}
         return Native.{{ ffi_name }}({% for arg in native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}){{ return_abi.kotlin_cast() }}
 {%- else %}
         val buf = Native.{{ ffi_name }}({% for arg in native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})

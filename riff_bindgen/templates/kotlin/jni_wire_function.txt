@@ -18,9 +18,9 @@ JNIEXPORT {{ return_abi.jni_return_type() }} JNICALL {{ jni_name }}(JNIEnv *env,
 {%- endfor %}
 {%- if return_abi.is_unit() %}
     {{ ffi_name }}({% for param in params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- else if return_abi.is_direct() %}
+{%- elif return_abi.is_direct() %}
     {{ return_abi.jni_c_return_type() }} _result = {{ ffi_name }}({% for param in params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- else if return_abi.is_wire_encoded() %}
+{%- elif return_abi.is_wire_encoded() %}
     FfiBuf_u8 _buf = {{ ffi_name }}({% for param in params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- endif %}
 {%- for param in params %}
@@ -36,7 +36,7 @@ JNIEXPORT {{ return_abi.jni_return_type() }} JNICALL {{ jni_name }}(JNIEnv *env,
 {%- endfor %}
 {%- if return_abi.is_direct() %}
     return {{ return_abi.jni_result_cast() }}_result;
-{%- else if return_abi.is_wire_encoded() %}
+{%- elif return_abi.is_wire_encoded() %}
     if (_buf.ptr == NULL) return NULL;
     return (*env)->NewDirectByteBuffer(env, (void*)_buf.ptr, (jlong)_buf.len);
 {%- endif %}

@@ -2,7 +2,7 @@ public enum {{ class_name }}: Hashable, Equatable, Sendable{% if is_error %}, Er
 {%- for variant in variants %}
 {%- if variant.fields.is_empty() %}
     case {{ variant.swift_name }}
-{%- else if variant.is_single_tuple %}
+{%- elif variant.is_single_tuple %}
     case {{ variant.swift_name }}({{ variant.fields[0].swift_type }})
 {%- else %}
     case {{ variant.swift_name }}({% for field in variant.fields %}{{ field.swift_name }}: {{ field.swift_type }}{% if !loop.last %}, {% endif %}{% endfor %})
@@ -17,7 +17,7 @@ public enum {{ class_name }}: Hashable, Equatable, Sendable{% if is_error %}, Er
         case {{ loop.index0 }}:
 {%- if variant.fields.is_empty() %}
             return (.{{ variant.swift_name }}, pos - offset)
-{%- else if variant.is_single_tuple %}
+{%- elif variant.is_single_tuple %}
             let (v, s) = {{ variant.wire_decode }}
             pos += s
             return (.{{ variant.swift_name }}(v), pos - offset)
@@ -43,7 +43,7 @@ extension {{ class_name }}: WireEncodable {
 {%- if variant.fields.is_empty() %}
         case .{{ variant.swift_name }}:
             return 4
-{%- else if variant.is_single_tuple %}
+{%- elif variant.is_single_tuple %}
         case let .{{ variant.swift_name }}(value):
             return 4 + {{ variant.fields[0].wire_size }}
 {%- else %}
@@ -60,7 +60,7 @@ extension {{ class_name }}: WireEncodable {
 {%- if variant.fields.is_empty() %}
         case .{{ variant.swift_name }}:
             data.appendI32({{ loop.index0 }})
-{%- else if variant.is_single_tuple %}
+{%- elif variant.is_single_tuple %}
         case let .{{ variant.swift_name }}(value):
             data.appendI32({{ loop.index0 }})
             {{ variant.wire_encode_single }}
@@ -81,7 +81,7 @@ extension {{ class_name }}: WireEncodable {
 {%- if variant.fields.is_empty() %}
         case .{{ variant.swift_name }}:
             bytes.appendI32({{ loop.index0 }})
-{%- else if variant.is_single_tuple %}
+{%- elif variant.is_single_tuple %}
         case let .{{ variant.swift_name }}(value):
             bytes.appendI32({{ loop.index0 }})
             {{ variant.wire_encode_bytes_single }}

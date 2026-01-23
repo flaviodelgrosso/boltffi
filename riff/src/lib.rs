@@ -1,7 +1,7 @@
 pub use riff_core::{
-    CallbackHandle, CustomFfiConvertible, CustomTypeConversionError, Data, FfiType,
-    FromCallbackHandle, UnexpectedFfiCallbackError, custom_ffi, custom_type, data, error, export,
-    name, skip,
+    CallbackHandle, CustomFfiConvertible, CustomTypeConversionError, Data, EventSubscription,
+    FfiType, FromCallbackHandle, StreamProducer, UnexpectedFfiCallbackError, custom_ffi,
+    custom_type, data, error, export, ffi_stream, name, skip,
 };
 
 #[doc(hidden)]

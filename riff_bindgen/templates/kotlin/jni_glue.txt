@@ -162,7 +162,7 @@ JNIEXPORT jobject JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni
     memcpy(_buf, &_enum_result, {{ func.data_enum_return_size }});
     return (*env)->NewDirectByteBuffer(env, _buf, (jlong){{ func.data_enum_return_size }});
 }
-{%- else if func.is_vec_record %}
+{%- elif func.is_vec_record %}
 
 JNIEXPORT jobject JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
 {%- for param in func.params %}
@@ -216,7 +216,7 @@ JNIEXPORT jobject JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni
 {%- endfor %}
     return (*env)->NewDirectByteBuffer(env, _buf, (jlong)_byte_size);
 }
-{%- else if func.is_vec %}
+{%- elif func.is_vec %}
 
 JNIEXPORT {{ func.vec_jni_array_type }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
 {%- for param in func.params %}
@@ -271,7 +271,7 @@ JNIEXPORT {{ func.vec_jni_array_type }} JNICALL {{ func.jni_name }}(JNIEnv *env,
 {%- endfor %}
     return _result;
 }
-{%- else if let Some(opt) = func.option %}
+{%- elif let Some(opt) = func.option %}
 
 JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
 {%- for param in func.params %}
@@ -369,7 +369,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endif %}
 {%- endfor %}
     return (*env)->NewDirectByteBuffer(env, _buf, (jlong)_byte_size);
-{%- else if opt.is_vec_primitive() %}
+{%- elif opt.is_vec_primitive() %}
     FfiOption_{{ func.option_vec_buf_type }} _opt = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
     if (!_opt.isSome) {
 {%- for param in func.params %}
@@ -441,7 +441,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endif %}
 {%- endfor %}
     return _result;
-{%- else if opt.is_vec_string() %}
+{%- elif opt.is_vec_string() %}
     FfiOption_{{ func.option_vec_buf_type }} _opt = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
     if (!_opt.isSome) {
 {%- for param in func.params %}
@@ -499,7 +499,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     }
     {{ func.option_vec_free_fn }}(_opt.value);
     return _result;
-{%- else if opt.is_vec_enum() %}
+{%- elif opt.is_vec_enum() %}
     FfiOption_{{ func.option_vec_buf_type }} _opt = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
     if (!_opt.isSome) {
 {%- for param in func.params %}
@@ -613,12 +613,12 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
 {%- endfor %}
 {%- if opt.is_packed() %}
     return ((jlong)_result.isSome << 32) | ((jlong)(uint32_t)*(int32_t*)&_result.value);
-{%- else if opt.is_large_primitive() %}
+{%- elif opt.is_large_primitive() %}
     if (!_result.isSome) return NULL;
     jclass _box_cls = (*env)->FindClass(env, "{{ opt.box_class() }}");
     jmethodID _value_of = (*env)->GetStaticMethodID(env, _box_cls, "valueOf", "{{ opt.box_signature() }}");
     return (*env)->CallStaticObjectMethod(env, _box_cls, _value_of, ({{ opt.box_jni_type() }})_result.value);
-{%- else if opt.is_string() %}
+{%- elif opt.is_string() %}
     if (!_result.isSome) return NULL;
     FfiString _out_value = _result.value;
     char* _tmp = (char*)malloc(_out_value.len + 1);
@@ -629,13 +629,13 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     free(_tmp);
     {{ prefix }}_free_string(_out_value);
     return _str_result;
-{%- else if opt.is_record() || opt.is_data_enum() %}
+{%- elif opt.is_record() || opt.is_data_enum() %}
     if (!_result.isSome) return NULL;
     void* _buf = malloc({{ opt.struct_size }});
     if (!_buf) return NULL;
     memcpy(_buf, &_result.value, {{ opt.struct_size }});
     return (*env)->NewDirectByteBuffer(env, _buf, (jlong){{ opt.struct_size }});
-{%- else if opt.is_enum() %}
+{%- elif opt.is_enum() %}
     return _result.isSome ? (jint)_result.value : (jint)-1;
 {%- endif %}
 {%- endif %}
@@ -725,7 +725,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
         }
 {%- endif %}
     }
-{%- else if res.is_string() %}
+{%- elif res.is_string() %}
     FfiString _out = {0, 0, 0};
     uint8_t _out_err[{{ res.err_struct_size() }}];
     memset(_out_err, 0, {{ res.err_struct_size() }});
@@ -792,7 +792,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     free(_tmp);
     {{ prefix }}_free_string(_out);
     return _result;
-{%- else if res.is_primitive() %}
+{%- elif res.is_primitive() %}
     {{ res.primitive_c_type() }} _out = 0;
     uint8_t _out_err[{{ res.err_struct_size() }}];
     memset(_out_err, 0, {{ res.err_struct_size() }});
@@ -852,7 +852,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
         return 0;
     }
     return _out;
-{%- else if res.is_record() %}
+{%- elif res.is_record() %}
     uint8_t _out[{{ res.record_struct_size() }}];
     memset(_out, 0, {{ res.record_struct_size() }});
     uint8_t _out_err[{{ res.err_struct_size() }}];
@@ -916,7 +916,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     if (!_buf) return NULL;
     memcpy(_buf, _out, {{ res.record_struct_size() }});
     return (*env)->NewDirectByteBuffer(env, _buf, (jlong){{ res.record_struct_size() }});
-{%- else if res.is_enum() %}
+{%- elif res.is_enum() %}
     int32_t _out = 0;
     uint8_t _out_err[{{ res.err_struct_size() }}];
     memset(_out_err, 0, {{ res.err_struct_size() }});
@@ -976,7 +976,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
         return 0;
     }
     return _out;
-{%- else if res.is_data_enum() %}
+{%- elif res.is_data_enum() %}
     uint8_t _out[{{ res.data_enum_struct_size() }}];
     memset(_out, 0, {{ res.data_enum_struct_size() }});
     uint8_t _out_err[{{ res.err_struct_size() }}];
@@ -1040,21 +1040,21 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     if (!_buf) return NULL;
     memcpy(_buf, _out, {{ res.data_enum_struct_size() }});
     return (*env)->NewDirectByteBuffer(env, _buf, (jlong){{ res.data_enum_struct_size() }});
-{%- else if res.is_vec_primitive() %}
+{%- elif res.is_vec_primitive() %}
     uintptr_t _len = {{ res.vec_len_fn() }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- if res.vec_primitive().unwrap().jni_array_type() == "jbyteArray" %}
     jbyteArray _result = (*env)->NewByteArray(env, (jsize)_len);
-{%- else if res.vec_primitive().unwrap().jni_array_type() == "jshortArray" %}
+{%- elif res.vec_primitive().unwrap().jni_array_type() == "jshortArray" %}
     jshortArray _result = (*env)->NewShortArray(env, (jsize)_len);
-{%- else if res.vec_primitive().unwrap().jni_array_type() == "jintArray" %}
+{%- elif res.vec_primitive().unwrap().jni_array_type() == "jintArray" %}
     jintArray _result = (*env)->NewIntArray(env, (jsize)_len);
-{%- else if res.vec_primitive().unwrap().jni_array_type() == "jlongArray" %}
+{%- elif res.vec_primitive().unwrap().jni_array_type() == "jlongArray" %}
     jlongArray _result = (*env)->NewLongArray(env, (jsize)_len);
-{%- else if res.vec_primitive().unwrap().jni_array_type() == "jfloatArray" %}
+{%- elif res.vec_primitive().unwrap().jni_array_type() == "jfloatArray" %}
     jfloatArray _result = (*env)->NewFloatArray(env, (jsize)_len);
-{%- else if res.vec_primitive().unwrap().jni_array_type() == "jdoubleArray" %}
+{%- elif res.vec_primitive().unwrap().jni_array_type() == "jdoubleArray" %}
     jdoubleArray _result = (*env)->NewDoubleArray(env, (jsize)_len);
-{%- else if res.vec_primitive().unwrap().jni_array_type() == "jbooleanArray" %}
+{%- elif res.vec_primitive().unwrap().jni_array_type() == "jbooleanArray" %}
     jbooleanArray _result = (*env)->NewBooleanArray(env, (jsize)_len);
 {%- endif %}
     if (!_result) return NULL;
@@ -1087,7 +1087,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
         return NULL;
     }
     return _result;
-{%- else if res.is_vec_record() %}
+{%- elif res.is_vec_record() %}
     uintptr_t _len = {{ res.vec_len_fn() }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
     size_t _byte_size = _len * {{ res.vec_record_struct_size() }};
     void* _buf = malloc(_byte_size);
@@ -1121,7 +1121,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     }
     return (*env)->NewDirectByteBuffer(env, _buf, (jlong)_byte_size);
 {%- endif %}
-{%- else if func.return_kind.is_string() %}
+{%- elif func.return_kind.is_string() %}
     FfiString _out = {0, 0, 0};
     FfiStatus _status = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}, {% endfor %}&_out);
 {%- for param in func.params %}
@@ -1152,7 +1152,7 @@ JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass 
     free(_tmp);
     {{ prefix }}_free_string(_out);
     return _result;
-{%- else if func.return_kind.is_void() %}
+{%- elif func.return_kind.is_void() %}
     {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- for param in func.params %}
 {%- if param.is_primitive_array() %}
@@ -1252,7 +1252,7 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
 {%- if func.complete_is_void %}
     FfiStatus _status;
     {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
-{%- else if func.complete_is_string %}
+{%- elif func.complete_is_string %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
@@ -1266,7 +1266,7 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
     free(_tmp);
     {{ prefix }}_free_buf_u8(_buf);
     return _result;
-{%- else if func.complete_is_vec %}
+{%- elif func.complete_is_vec %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
@@ -1278,18 +1278,18 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
     }
     {{ prefix }}_free_buf_u8(_buf);
     return _result;
-{%- else if func.complete_is_record %}
+{%- elif func.complete_is_record %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
     return (*env)->NewDirectByteBuffer(env, (void*)_buf.ptr, (jlong)_buf.len);
-{%- else if func.complete_is_result %}
+{%- elif func.complete_is_result %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) {
 {%- if func.result_ok_is_void %}
         return;
-{%- else if func.result_ok_is_string %}
+{%- elif func.result_ok_is_string %}
         return NULL;
 {%- else %}
         return 0;
@@ -1324,7 +1324,7 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
 {%- endif %}
 {%- if func.result_ok_is_void %}
         return;
-{%- else if func.result_ok_is_string %}
+{%- elif func.result_ok_is_string %}
         return NULL;
 {%- else %}
         return 0;
@@ -1332,7 +1332,7 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
     }
 {%- if func.result_ok_is_void %}
     {{ prefix }}_free_buf_u8(_buf);
-{%- else if func.result_ok_is_string %}
+{%- elif func.result_ok_is_string %}
     uint32_t _str_len = *((uint32_t*)(_buf.ptr + 1));
     const char* _str_ptr = (const char*)(_buf.ptr + 1 + sizeof(uint32_t));
     char* _tmp = (char*)malloc(_str_len + 1);
@@ -1402,7 +1402,7 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
 {%- if func.complete_is_void %}
     FfiStatus _status;
     {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
-{%- else if func.complete_is_string %}
+{%- elif func.complete_is_string %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
@@ -1416,7 +1416,7 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
     free(_tmp);
     {{ prefix }}_free_buf_u8(_buf);
     return _result;
-{%- else if func.complete_is_vec %}
+{%- elif func.complete_is_vec %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
@@ -1428,18 +1428,18 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
     }
     {{ prefix }}_free_buf_u8(_buf);
     return _result;
-{%- else if func.complete_is_record %}
+{%- elif func.complete_is_record %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) return NULL;
     return (*env)->NewDirectByteBuffer(env, (void*)_buf.ptr, (jlong)_buf.len);
-{%- else if func.complete_is_result %}
+{%- elif func.complete_is_result %}
     FfiStatus _status;
     FfiBuf_u8 _buf = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
     if (_status.code != 0 || _buf.ptr == NULL) {
 {%- if func.result_ok_is_void %}
         return;
-{%- else if func.result_ok_is_string %}
+{%- elif func.result_ok_is_string %}
         return NULL;
 {%- else %}
         return 0;
@@ -1474,7 +1474,7 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
 {%- endif %}
 {%- if func.result_ok_is_void %}
         return;
-{%- else if func.result_ok_is_string %}
+{%- elif func.result_ok_is_string %}
         return NULL;
 {%- else %}
         return 0;
@@ -1482,7 +1482,7 @@ JNIEXPORT {{ func.jni_complete_return }} JNICALL {{ func.jni_complete_name }}(JN
     }
 {%- if func.result_ok_is_void %}
     {{ prefix }}_free_buf_u8(_buf);
-{%- else if func.result_ok_is_string %}
+{%- elif func.result_ok_is_string %}
     uint32_t _str_len = *((uint32_t*)(_buf.ptr + 1));
     const char* _str_ptr = (const char*)(_buf.ptr + 1 + sizeof(uint32_t));
     char* _tmp = (char*)malloc(_str_len + 1);

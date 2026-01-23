@@ -28,7 +28,7 @@ suspend fun {{ method_name }}({% for param in signature_params %}{{ param.name }
     complete = { future ->
 {%- if return_abi.is_unit() %}
         Native.{{ ffi_complete }}({% if include_handle %}handle, {% endif %}future)
-{%- else if return_abi.is_direct() %}
+{%- elif return_abi.is_direct() %}
         Native.{{ ffi_complete }}({% if include_handle %}handle, {% endif %}future){{ return_abi.kotlin_cast() }}
 {%- else %}
         val buf = Native.{{ ffi_complete }}({% if include_handle %}handle, {% endif %}future) ?: throw FfiException(-1, "Null buffer returned")

@@ -45,7 +45,7 @@ class {{ class_name }} private constructor(internal val handle: Long) : AutoClos
         }
 {%- endif %}
     )
-{%- else if !use_companion_methods && !ctor.signature_params.is_empty() %}
+{%- elif !use_companion_methods && !ctor.signature_params.is_empty() %}
 
     constructor({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : this(
 {%- if ctor.wire_writers.is_empty() %}
