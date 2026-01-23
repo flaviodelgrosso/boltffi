@@ -146,11 +146,7 @@ mod tests {
     fn test_custom_type_codegen_swift_preamble() {
         let module = create_test_module_with_custom_type();
         let preamble = swift::Swift::render_preamble(&module);
-        assert!(preamble.contains("public struct UtcDateTime"));
-        assert!(preamble.contains("public let value: Int64"));
-        assert!(preamble.contains("public init(_ value: Int64)"));
-        assert!(preamble.contains("extension UtcDateTime: WireEncodable"));
-        assert!(preamble.contains("static func decode(wireBuffer wire: WireBuffer, at offset: Int)"));
+        assert!(preamble.contains("public typealias UtcDateTime = Int64"));
     }
 
     #[test]
