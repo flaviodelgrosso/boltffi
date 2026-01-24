@@ -15,8 +15,8 @@ pub fn validate_contract(contract: &FfiContract) -> Result<(), Vec<ValidationErr
     let mut errors = Vec::new();
     let catalog = &contract.catalog;
 
-    for record in catalog.all_records() {
-        for field in &record.fields {
+    catalog.all_records().for_each(|record| {
+        record.fields.iter().for_each(|field| {
             validate_field_type(
                 &field.type_expr,
                 catalog,
@@ -24,12 +24,17 @@ pub fn validate_contract(contract: &FfiContract) -> Result<(), Vec<ValidationErr
                 &field.name,
                 &mut errors,
             );
-        }
-    }
+        });
+    });
 
-    for enumeration in catalog.all_enums() {
-        if let EnumRepr::Data { variants, .. } = &enumeration.repr {
-            for variant in variants {
+    catalog
+        .all_enums()
+        .filter_map(|e| match &e.repr {
+            EnumRepr::Data { variants, .. } => Some((e, variants)),
+            _ => None,
+        })
+        .for_each(|(enumeration, variants)| {
+            variants.iter().for_each(|variant| {
                 validate_variant_payload(
                     &variant.payload,
                     catalog,
@@ -37,22 +42,21 @@ pub fn validate_contract(contract: &FfiContract) -> Result<(), Vec<ValidationErr
                     &variant.name,
                     &mut errors,
                 );
-            }
-        }
-    }
+            });
+        });
 
-    for func in &contract.functions {
+    contract.functions.iter().for_each(|func| {
         validate_callable(&func.id, &func.params, &func.returns, catalog, &mut errors);
-    }
+    });
 
-    for class in catalog.all_classes() {
-        for ctor in &class.constructors {
+    catalog.all_classes().for_each(|class| {
+        class.constructors.iter().for_each(|ctor| {
             let ctx = format!(
                 "{}::{}",
                 class.id,
                 ctor.name.as_ref().map(|n| n.as_str()).unwrap_or("new")
             );
-            for param in &ctor.params {
+            ctor.params.iter().for_each(|param| {
                 validate_param_type(
                     &param.type_expr,
                     &param.passing,
@@ -61,20 +65,21 @@ pub fn validate_contract(contract: &FfiContract) -> Result<(), Vec<ValidationErr
                     &param.name,
                     &mut errors,
                 );
-            }
-        }
-        for method in &class.methods {
+            });
+        });
+
+        class.methods.iter().for_each(|method| {
             let ctx = format!("{}::{}", class.id, method.id);
             validate_callable_inner(&ctx, &method.params, &method.returns, catalog, &mut errors);
-        }
-    }
+        });
+    });
 
-    for callback in catalog.all_callbacks() {
-        for method in &callback.methods {
+    catalog.all_callbacks().for_each(|callback| {
+        callback.methods.iter().for_each(|method| {
             let ctx = format!("{}::{}", callback.id, method.id);
             validate_callable_inner(&ctx, &method.params, &method.returns, catalog, &mut errors);
-        }
-    }
+        });
+    });
 
     if errors.is_empty() {
         Ok(())
@@ -101,7 +106,7 @@ fn validate_callable_inner(
     catalog: &TypeCatalog,
     errors: &mut Vec<ValidationError>,
 ) {
-    for param in params {
+    params.iter().for_each(|param| {
         validate_param_type(
             &param.type_expr,
             &param.passing,
@@ -110,7 +115,7 @@ fn validate_callable_inner(
             &param.name,
             errors,
         );
-    }
+    });
     validate_return_type(returns, catalog, ctx, errors);
 }
 
@@ -131,25 +136,54 @@ fn validate_param_type(
     if let Err(e) = validate_param_passing(expr, passing, param_name) {
         errors.push(e);
     }
-    if let Err(e) = reject_nested_non_encodable(expr, &format!("{}::{}", ctx, param_name)) {
+    if let Err(e) = reject_non_encodable_in_param(expr, &format!("{}::{}", ctx, param_name)) {
         errors.push(e);
     }
 }
 
-fn reject_nested_non_encodable(expr: &TypeExpr, context: &str) -> Result<(), ValidationError> {
+fn reject_non_encodable_in_param(expr: &TypeExpr, context: &str) -> Result<(), ValidationError> {
     match expr {
-        TypeExpr::Vec(inner) | TypeExpr::Option(inner) => {
+        TypeExpr::Option(inner) => {
             if matches!(inner.as_ref(), TypeExpr::Handle(_) | TypeExpr::Callback(_)) {
-                return Err(ValidationError::NonEncodableInData {
-                    context: context.to_string(),
-                    message: "Vec<Handle>/Vec<Callback>/Option<Handle>/Option<Callback> cannot be encoded - use direct Handle or Callback parameters".to_string(),
-                });
+                Ok(())
+            } else {
+                reject_non_encodable_nested(inner, context)
             }
-            reject_nested_non_encodable(inner, context)
+        }
+        TypeExpr::Vec(inner) => {
+            if matches!(inner.as_ref(), TypeExpr::Handle(_) | TypeExpr::Callback(_)) {
+                Err(ValidationError::NonEncodableInData {
+                    context: context.to_string(),
+                    message: "Vec<Handle>/Vec<Callback> cannot be encoded".to_string(),
+                })
+            } else {
+                reject_non_encodable_nested(inner, context)
+            }
         }
         TypeExpr::Result { ok, err } => {
-            reject_nested_non_encodable(ok, context)?;
-            reject_nested_non_encodable(err, context)
+            reject_non_encodable_in_param(ok, context)?;
+            reject_non_encodable_in_param(err, context)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn reject_non_encodable_nested(expr: &TypeExpr, context: &str) -> Result<(), ValidationError> {
+    match expr {
+        TypeExpr::Handle(_) => Err(ValidationError::NonEncodableInData {
+            context: context.to_string(),
+            message: "Handle cannot be nested inside Vec/Option/Result".to_string(),
+        }),
+        TypeExpr::Callback(_) => Err(ValidationError::NonEncodableInData {
+            context: context.to_string(),
+            message: "Callback cannot be nested inside Vec/Option/Result".to_string(),
+        }),
+        TypeExpr::Vec(inner) | TypeExpr::Option(inner) => {
+            reject_non_encodable_nested(inner, context)
+        }
+        TypeExpr::Result { ok, err } => {
+            reject_non_encodable_nested(ok, context)?;
+            reject_non_encodable_nested(err, context)
         }
         _ => Ok(()),
     }
@@ -171,7 +205,7 @@ fn validate_return_type(
                     error: e,
                 });
             }
-            if let Err(e) = reject_nested_non_encodable(ty, &return_ctx) {
+            if let Err(e) = reject_non_encodable_in_param(ty, &return_ctx) {
                 errors.push(e);
             }
         }
@@ -184,7 +218,7 @@ fn validate_return_type(
                     error: e,
                 });
             }
-            if let Err(e) = reject_nested_non_encodable(ok, &ok_ctx) {
+            if let Err(e) = reject_non_encodable_in_param(ok, &ok_ctx) {
                 errors.push(e);
             }
             if let Err(e) = validate_type_expr(err, catalog) {
@@ -193,7 +227,7 @@ fn validate_return_type(
                     error: e,
                 });
             }
-            if let Err(e) = reject_nested_non_encodable(err, &err_ctx) {
+            if let Err(e) = reject_non_encodable_in_param(err, &err_ctx) {
                 errors.push(e);
             }
         }
@@ -210,7 +244,7 @@ fn validate_variant_payload(
     match payload {
         VariantPayload::Unit => {}
         VariantPayload::Tuple(types) => {
-            for (idx, type_expr) in types.iter().enumerate() {
+            types.iter().enumerate().for_each(|(idx, type_expr)| {
                 let ctx = format!("{}::{}::{}", enum_id, variant_name, idx);
                 if let Err(e) = validate_type_expr(type_expr, catalog) {
                     errors.push(ValidationError::UnresolvedType {
@@ -221,18 +255,13 @@ fn validate_variant_payload(
                 if let Err(e) = reject_non_encodable_in_data(type_expr, &ctx) {
                     errors.push(e);
                 }
-            }
+            });
         }
         VariantPayload::Struct(fields) => {
-            for field in fields {
-                validate_field_type(
-                    &field.type_expr,
-                    catalog,
-                    format!("{}::{}", enum_id, variant_name),
-                    &field.name,
-                    errors,
-                );
-            }
+            let parent = format!("{}::{}", enum_id, variant_name);
+            fields.iter().for_each(|field| {
+                validate_field_type(&field.type_expr, catalog, &parent, &field.name, errors);
+            });
         }
     }
 }
