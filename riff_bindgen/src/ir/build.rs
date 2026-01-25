@@ -411,8 +411,8 @@ fn convert_primitive(p: model::Primitive) -> PrimitiveType {
         model::Primitive::U64 => PrimitiveType::U64,
         model::Primitive::F32 => PrimitiveType::F32,
         model::Primitive::F64 => PrimitiveType::F64,
-        model::Primitive::Isize => PrimitiveType::I64,
-        model::Primitive::Usize => PrimitiveType::U64,
+        model::Primitive::Isize => PrimitiveType::ISize,
+        model::Primitive::Usize => PrimitiveType::USize,
     }
 }
 

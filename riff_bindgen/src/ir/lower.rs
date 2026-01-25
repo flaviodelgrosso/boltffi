@@ -408,6 +408,8 @@ impl<'c> Lowerer<'c> {
             AbiType::U32 => PrimitiveType::U32,
             AbiType::I64 => PrimitiveType::I64,
             AbiType::U64 => PrimitiveType::U64,
+            AbiType::ISize => PrimitiveType::ISize,
+            AbiType::USize => PrimitiveType::USize,
             AbiType::F32 => PrimitiveType::F32,
             AbiType::F64 => PrimitiveType::F64,
             AbiType::Void | AbiType::Pointer => {
@@ -1186,9 +1188,10 @@ impl<'c> Lowerer<'c> {
     }
 
     fn is_blittable_record(&self, def: &RecordDef) -> bool {
-        def.fields
-            .iter()
-            .all(|f| matches!(f.type_expr, TypeExpr::Primitive(_)))
+        def.fields.iter().all(|f| match &f.type_expr {
+            TypeExpr::Primitive(p) => !p.is_platform_sized(),
+            _ => false,
+        })
     }
 
     fn build_blittable_record_layout(&self, def: &RecordDef) -> RecordLayout {
@@ -1271,8 +1274,9 @@ impl<'c> Lowerer<'c> {
 
     fn vec_layout(&self, element: &TypeExpr) -> VecLayout {
         match element {
-            TypeExpr::Primitive(p) => VecLayout::Blittable {
-                element_size: p.size_bytes(),
+            TypeExpr::Primitive(p) => match p.size_bytes() {
+                Some(size) => VecLayout::Blittable { element_size: size },
+                None => VecLayout::Encoded,
             },
 
             TypeExpr::Record(id) => {
@@ -1346,6 +1350,8 @@ fn primitive_to_abi(p: PrimitiveType) -> AbiType {
         PrimitiveType::U32 => AbiType::U32,
         PrimitiveType::I64 => AbiType::I64,
         PrimitiveType::U64 => AbiType::U64,
+        PrimitiveType::ISize => AbiType::ISize,
+        PrimitiveType::USize => AbiType::USize,
         PrimitiveType::F32 => AbiType::F32,
         PrimitiveType::F64 => AbiType::F64,
     }
@@ -1364,7 +1370,13 @@ fn compute_blittable_layout(def: &RecordDef) -> (usize, Vec<BlittableField>) {
                     panic!("blittable record should only have primitive fields");
                 };
 
-                let aligned_offset = align_up(offset, p.alignment());
+                let alignment = p
+                    .alignment()
+                    .expect("blittable field must have fixed-size alignment");
+                let size = p
+                    .size_bytes()
+                    .expect("blittable field must have fixed size");
+                let aligned_offset = align_up(offset, alignment);
 
                 fields.push(BlittableField {
                     name: field.name.clone(),
@@ -1372,14 +1384,14 @@ fn compute_blittable_layout(def: &RecordDef) -> (usize, Vec<BlittableField>) {
                     primitive: *p,
                 });
 
-                (aligned_offset + p.size_bytes(), fields)
+                (aligned_offset + size, fields)
             });
 
     let max_align = def
         .fields
         .iter()
         .filter_map(|f| match &f.type_expr {
-            TypeExpr::Primitive(p) => Some(p.alignment()),
+            TypeExpr::Primitive(p) => p.alignment(),
             _ => None,
         })
         .max()

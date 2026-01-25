@@ -34,6 +34,8 @@ pub fn swift_primitive(p: PrimitiveType) -> String {
         PrimitiveType::U32 => "UInt32",
         PrimitiveType::I64 => "Int64",
         PrimitiveType::U64 => "UInt64",
+        PrimitiveType::ISize => "Int",
+        PrimitiveType::USize => "UInt",
         PrimitiveType::F32 => "Float",
         PrimitiveType::F64 => "Double",
     }
@@ -125,23 +127,21 @@ fn decode_expr(codec: &CodecPlan) -> (String, SizeKind) {
 }
 
 fn decode_primitive(p: PrimitiveType) -> (String, SizeKind) {
-    let (read_fn, size) = match p {
-        PrimitiveType::Bool => ("readBool", 1),
-        PrimitiveType::I8 => ("readI8", 1),
-        PrimitiveType::U8 => ("readU8", 1),
-        PrimitiveType::I16 => ("readI16", 2),
-        PrimitiveType::U16 => ("readU16", 2),
-        PrimitiveType::I32 => ("readI32", 4),
-        PrimitiveType::U32 => ("readU32", 4),
-        PrimitiveType::I64 => ("readI64", 8),
-        PrimitiveType::U64 => ("readU64", 8),
-        PrimitiveType::F32 => ("readF32", 4),
-        PrimitiveType::F64 => ("readF64", 8),
-    };
-    (
-        format!("wire.{}(at: {})", read_fn, OFFSET_VAR),
-        SizeKind::Fixed(size),
-    )
+    match p {
+        PrimitiveType::Bool => (format!("wire.readBool(at: {})", OFFSET_VAR), SizeKind::Fixed(1)),
+        PrimitiveType::I8 => (format!("wire.readI8(at: {})", OFFSET_VAR), SizeKind::Fixed(1)),
+        PrimitiveType::U8 => (format!("wire.readU8(at: {})", OFFSET_VAR), SizeKind::Fixed(1)),
+        PrimitiveType::I16 => (format!("wire.readI16(at: {})", OFFSET_VAR), SizeKind::Fixed(2)),
+        PrimitiveType::U16 => (format!("wire.readU16(at: {})", OFFSET_VAR), SizeKind::Fixed(2)),
+        PrimitiveType::I32 => (format!("wire.readI32(at: {})", OFFSET_VAR), SizeKind::Fixed(4)),
+        PrimitiveType::U32 => (format!("wire.readU32(at: {})", OFFSET_VAR), SizeKind::Fixed(4)),
+        PrimitiveType::I64 => (format!("wire.readI64(at: {})", OFFSET_VAR), SizeKind::Fixed(8)),
+        PrimitiveType::U64 => (format!("wire.readU64(at: {})", OFFSET_VAR), SizeKind::Fixed(8)),
+        PrimitiveType::ISize => (format!("Int(wire.readI64(at: {}))", OFFSET_VAR), SizeKind::Fixed(8)),
+        PrimitiveType::USize => (format!("UInt(wire.readU64(at: {}))", OFFSET_VAR), SizeKind::Fixed(8)),
+        PrimitiveType::F32 => (format!("wire.readF32(at: {})", OFFSET_VAR), SizeKind::Fixed(4)),
+        PrimitiveType::F64 => (format!("wire.readF64(at: {})", OFFSET_VAR), SizeKind::Fixed(8)),
+    }
 }
 
 fn decode_builtin(id: &str) -> (String, SizeKind) {
@@ -283,24 +283,21 @@ fn encode_info(codec: &CodecPlan, name: &str) -> (String, String, String) {
 }
 
 fn encode_primitive(p: PrimitiveType, name: &str) -> (String, String, String) {
-    let (append_fn, size) = match p {
-        PrimitiveType::Bool => ("appendBool", 1),
-        PrimitiveType::I8 => ("appendI8", 1),
-        PrimitiveType::U8 => ("appendU8", 1),
-        PrimitiveType::I16 => ("appendI16", 2),
-        PrimitiveType::U16 => ("appendU16", 2),
-        PrimitiveType::I32 => ("appendI32", 4),
-        PrimitiveType::U32 => ("appendU32", 4),
-        PrimitiveType::I64 => ("appendI64", 8),
-        PrimitiveType::U64 => ("appendU64", 8),
-        PrimitiveType::F32 => ("appendF32", 4),
-        PrimitiveType::F64 => ("appendF64", 8),
-    };
-    (
-        size.to_string(),
-        format!("data.{}({})", append_fn, name),
-        format!("bytes.{}({})", append_fn, name),
-    )
+    match p {
+        PrimitiveType::Bool => ("1".into(), format!("data.appendBool({})", name), format!("bytes.appendBool({})", name)),
+        PrimitiveType::I8 => ("1".into(), format!("data.appendI8({})", name), format!("bytes.appendI8({})", name)),
+        PrimitiveType::U8 => ("1".into(), format!("data.appendU8({})", name), format!("bytes.appendU8({})", name)),
+        PrimitiveType::I16 => ("2".into(), format!("data.appendI16({})", name), format!("bytes.appendI16({})", name)),
+        PrimitiveType::U16 => ("2".into(), format!("data.appendU16({})", name), format!("bytes.appendU16({})", name)),
+        PrimitiveType::I32 => ("4".into(), format!("data.appendI32({})", name), format!("bytes.appendI32({})", name)),
+        PrimitiveType::U32 => ("4".into(), format!("data.appendU32({})", name), format!("bytes.appendU32({})", name)),
+        PrimitiveType::I64 => ("8".into(), format!("data.appendI64({})", name), format!("bytes.appendI64({})", name)),
+        PrimitiveType::U64 => ("8".into(), format!("data.appendU64({})", name), format!("bytes.appendU64({})", name)),
+        PrimitiveType::ISize => ("8".into(), format!("data.appendI64(Int64({}))", name), format!("bytes.appendI64(Int64({}))", name)),
+        PrimitiveType::USize => ("8".into(), format!("data.appendU64(UInt64({}))", name), format!("bytes.appendU64(UInt64({}))", name)),
+        PrimitiveType::F32 => ("4".into(), format!("data.appendF32({})", name), format!("bytes.appendF32({})", name)),
+        PrimitiveType::F64 => ("8".into(), format!("data.appendF64({})", name), format!("bytes.appendF64({})", name)),
+    }
 }
 
 fn encode_builtin(id: &str, name: &str) -> (String, String, String) {

@@ -737,8 +737,9 @@ impl<'a> SwiftLowerer<'a> {
 
     fn vec_layout(&self, element: &TypeExpr) -> crate::ir::codec::VecLayout {
         match element {
-            TypeExpr::Primitive(p) => crate::ir::codec::VecLayout::Blittable {
-                element_size: p.size_bytes(),
+            TypeExpr::Primitive(p) => match p.size_bytes() {
+                Some(size) => crate::ir::codec::VecLayout::Blittable { element_size: size },
+                None => crate::ir::codec::VecLayout::Encoded,
             },
             TypeExpr::Record(id) => {
                 let codec = self.abi_index.record_codec(self.abi, id);
@@ -766,6 +767,8 @@ impl<'a> SwiftLowerer<'a> {
             AbiType::U32 => "UInt32",
             AbiType::I64 => "Int64",
             AbiType::U64 => "UInt64",
+            AbiType::ISize => "Int",
+            AbiType::USize => "UInt",
             AbiType::F32 => "Float",
             AbiType::F64 => "Double",
             AbiType::Pointer => "OpaquePointer",
