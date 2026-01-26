@@ -515,7 +515,7 @@ mod records {
     #[test]
     fn fixed_size_record_roundtrip() {
         #[data]
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, Copy, PartialEq)]
         struct Point {
             x: f64,
             y: f64,
@@ -539,7 +539,7 @@ mod records {
     #[test]
     fn fixed_size_record_boundary_values() {
         #[data]
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, Copy, PartialEq)]
         struct Boundaries {
             min_i64: i64,
             max_i64: i64,
@@ -633,7 +633,7 @@ mod records {
     #[test]
     fn nested_fixed_record_roundtrip() {
         #[data]
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, Copy, PartialEq)]
         struct Inner {
             value: i32,
         }
@@ -697,7 +697,7 @@ mod records {
     #[test]
     fn deeply_nested_fixed_record() {
         #[data]
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, Copy, PartialEq)]
         struct Level3 {
             value: i32,
         }
@@ -951,7 +951,7 @@ mod records {
     #[test]
     fn single_field_fixed_record() {
         #[data]
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, Copy, PartialEq)]
         struct Single {
             value: i64,
         }
@@ -990,7 +990,7 @@ mod records {
     #[test]
     fn many_fixed_fields() {
         #[data]
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, Copy, PartialEq)]
         struct ManyFields {
             a: i32,
             b: i32,

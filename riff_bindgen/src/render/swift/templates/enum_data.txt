@@ -43,10 +43,18 @@ extension {{ class_name }}: WireEncodable {
         case .{{ variant.swift_name }}:
             return 4
 {%- elif variant.is_single_tuple() %}
+{%- if variant.tuple_value_fixed_size() %}
+        case .{{ variant.swift_name }}:
+{%- else %}
         case let .{{ variant.swift_name }}(value):
+{%- endif %}
             return 4 + {{ variant.tuple_value_size() }}
 {%- else %}
-        case let .{{ variant.swift_name }}({% for field in variant.fields() %}{{ field.swift_name }}{% if !loop.last %}, {% endif %}{% endfor %}):
+{%- if variant.all_fields_fixed_size() %}
+        case .{{ variant.swift_name }}:
+{%- else %}
+        case let .{{ variant.swift_name }}({% for field in variant.fields() %}{% if field.has_fixed_size() %}_{% else %}{{ field.swift_name }}{% endif %}{% if !loop.last %}, {% endif %}{% endfor %}):
+{%- endif %}
             return 4{% for field in variant.fields() %} + {{ field.wire_size_expr() }}{% endfor %}
 {%- endif %}
 {%- endfor %}

@@ -175,7 +175,9 @@ final class FfiFutureState<T>: @unchecked Sendable {
         return (result, pos - offset)
     }
     @inlinable func readBlittable<T>(at offset: Int, as type: T.Type) -> T {
-        data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) }
+        let end = offset + MemoryLayout<T>.size
+        guard end <= data.count else { fatalError("WireBuffer out of bounds") }
+        return data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: T.self) }
     }
     @inlinable func readBlittableArray<T>(at offset: Int, as type: T.Type) -> [T] {
         let count = Int(readU32(at: offset))

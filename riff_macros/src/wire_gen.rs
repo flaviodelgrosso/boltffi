@@ -4,7 +4,7 @@ use syn::{Fields, ItemEnum, ItemStruct, Type};
 
 use crate::custom_types::{CustomTypeRegistry, contains_custom_types};
 
-fn is_primitive_type(ty: &Type) -> bool {
+pub fn is_primitive_type(ty: &Type) -> bool {
     match ty {
         Type::Path(type_path) => {
             if let Some(ident) = type_path.path.get_ident() {
@@ -33,7 +33,7 @@ fn is_primitive_type(ty: &Type) -> bool {
     }
 }
 
-fn is_struct_blittable(field_types: &[&Type]) -> bool {
+pub fn is_struct_blittable(field_types: &[&Type]) -> bool {
     field_types.iter().all(|ty| is_primitive_type(ty))
 }
 
@@ -92,10 +92,19 @@ pub fn generate_wire_impls(
         is_blittable,
     );
 
+    let blittable_impl = if is_blittable {
+        quote! {
+            unsafe impl #impl_generics ::riff::__private::wire::Blittable for #struct_name #ty_generics #where_clause {}
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         #wire_size_impl
         #wire_encode_impl
         #wire_decode_impl
+        #blittable_impl
     }
 }
 

@@ -10,11 +10,15 @@ public struct {{ class_name }}: Hashable, Equatable, Sendable {
     }
 
     @inlinable static func decode(wireBuffer wire: WireBuffer, at offset: Int) -> (value: {{ class_name }}, size: Int) {
+{%- if is_blittable %}
+        return (wire.readBlittable(at: offset, as: {{ class_name }}.self), MemoryLayout<{{ class_name }}>.stride)
+{%- else %}
         var pos = offset
 {%- for field in fields %}
         let {{ field.swift_name }}_v = {{ field.wire_decode_inline() }}
 {%- endfor %}
         return ({{ class_name }}({% for field in fields %}{{ field.swift_name }}: {{ field.swift_name }}_v{% if !loop.last %}, {% endif %}{% endfor %}), pos - offset)
+{%- endif %}
     }
 }
 

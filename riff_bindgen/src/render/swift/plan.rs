@@ -94,8 +94,8 @@ impl SwiftAsyncResult {
                 codec: codec_plan,
                 ..
             } => {
-                if let CodecPlan::Result { ok, .. } = codec_plan {
-                    Some(codec::decode_result_ok_throw(ok))
+                if let CodecPlan::Result { ok, err } = codec_plan {
+                    Some(codec::decode_result_ok_throw(ok, err))
                 } else {
                     Some(codec::decode_value_at(codec_plan, "0"))
                 }
@@ -160,6 +160,11 @@ impl SwiftField {
 
     pub fn wire_size_expr(&self) -> String {
         codec::size_expr(&self.codec, &self.swift_name)
+    }
+
+    pub fn has_fixed_size(&self) -> bool {
+        let size_expr = self.wire_size_expr();
+        size_expr.chars().all(|c| c.is_ascii_digit())
     }
 
     pub fn wire_encode(&self) -> String {
@@ -240,6 +245,16 @@ impl SwiftVariant {
         self.single_tuple_field()
             .map(|f| codec::encode_bytes(&f.codec, "value"))
             .unwrap_or_default()
+    }
+
+    pub fn all_fields_fixed_size(&self) -> bool {
+        self.fields().iter().all(|f| f.has_fixed_size())
+    }
+
+    pub fn tuple_value_fixed_size(&self) -> bool {
+        self.single_tuple_field()
+            .map(|f| f.has_fixed_size())
+            .unwrap_or(true)
     }
 }
 

@@ -93,11 +93,15 @@ pub fn decode_value_at(codec: &CodecPlan, offset_expr: &str) -> String {
     }
 }
 
-pub fn decode_result_ok_throw(ok_codec: &CodecPlan) -> String {
+pub fn decode_result_ok_throw(ok_codec: &CodecPlan, err_codec: &CodecPlan) -> String {
     let ok_decode = decode_value_at(ok_codec, "$0");
+    let err_decode = match err_codec {
+        CodecPlan::String => "FfiError(message: wire.readString(at: $0).value)".to_string(),
+        _ => decode_value_at(err_codec, "$0"),
+    };
     format!(
-        "try wire.readResultOrThrow(at: 0, ok: {{ {} }}, err: {{ FfiError(message: wire.readString(at: $0).value) }})",
-        ok_decode
+        "try wire.readResultOrThrow(at: 0, ok: {{ {} }}, err: {{ {} }})",
+        ok_decode, err_decode
     )
 }
 
@@ -422,10 +426,14 @@ fn encode_option(inner: &CodecPlan, name: &str) -> (String, String, String) {
 fn encode_result(ok: &CodecPlan, err: &CodecPlan, name: &str) -> (String, String, String) {
     let (ok_size, ok_data, ok_bytes) = encode_info(ok, "okVal");
     let (err_size, err_data, err_bytes) = encode_info(err, "errVal");
+    let ok_size_fixed = ok_size.chars().all(|c| c.is_ascii_digit());
+    let err_size_fixed = err_size.chars().all(|c| c.is_ascii_digit());
+    let ok_size_binding = if ok_size_fixed { "_" } else { "let okVal" };
+    let err_size_binding = if err_size_fixed { "_" } else { "let errVal" };
     (
         format!(
-            "({{ switch {} {{ case .success(let okVal): return 1 + {}; case .failure(let errVal): return 1 + {} }} }}())",
-            name, ok_size, err_size
+            "({{ switch {} {{ case .success({}): return 1 + {}; case .failure({}): return 1 + {} }} }}())",
+            name, ok_size_binding, ok_size, err_size_binding, err_size
         ),
         format!(
             "switch {} {{ case .success(let okVal): data.appendU8(0); {}; case .failure(let errVal): data.appendU8(1); {} }}",

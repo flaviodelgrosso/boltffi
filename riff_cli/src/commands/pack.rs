@@ -21,6 +21,7 @@ pub struct PackAppleOptions {
     pub spm_only: bool,
     pub xcframework_only: bool,
     pub layout: Option<SpmLayout>,
+    pub use_ir: bool,
 }
 
 pub struct PackAndroidOptions {
@@ -55,7 +56,7 @@ fn pack_apple(config: &Config, options: PackAppleOptions) -> Result<()> {
 
     if options.regenerate {
         run_step("Generating Apple bindings", || {
-            generate_apple_bindings(config, layout, &package_root)
+            generate_apple_bindings(config, layout, &package_root, options.use_ir)
         })?;
     }
 
@@ -243,7 +244,7 @@ fn build_android_targets(config: &Config, release: bool) -> Result<()> {
     Err(CliError::BuildFailed { targets: failed })
 }
 
-fn generate_apple_bindings(config: &Config, layout: SpmLayout, package_root: &Path) -> Result<()> {
+fn generate_apple_bindings(config: &Config, layout: SpmLayout, package_root: &Path, use_ir: bool) -> Result<()> {
     let swift_output_dir = match layout {
         SpmLayout::Bundled => config
             .apple_spm_wrapper_sources()
@@ -258,7 +259,7 @@ fn generate_apple_bindings(config: &Config, layout: SpmLayout, package_root: &Pa
         GenerateOptions {
             target: GenerateTarget::Swift,
             output: Some(swift_output_dir),
-            use_ir: false,
+            use_ir,
         },
     )?;
 
@@ -267,7 +268,7 @@ fn generate_apple_bindings(config: &Config, layout: SpmLayout, package_root: &Pa
         GenerateOptions {
             target: GenerateTarget::Header,
             output: Some(config.apple_header_output()),
-            use_ir: false,
+            use_ir,
         },
     )?;
 

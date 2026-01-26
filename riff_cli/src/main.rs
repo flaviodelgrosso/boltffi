@@ -174,6 +174,9 @@ enum PackTargetArg {
 
         #[arg(long, value_enum)]
         layout: Option<PackLayoutArg>,
+
+        #[arg(long, help = "Use IR-based backend for code generation")]
+        use_ir: bool,
     },
 
     #[command(
@@ -292,6 +295,7 @@ fn execute_command(command: Commands) -> Result<()> {
                     spm_only,
                     xcframework_only,
                     layout,
+                    use_ir,
                 } => PackCommand::Apple(PackAppleOptions {
                     release,
                     version,
@@ -304,6 +308,7 @@ fn execute_command(command: Commands) -> Result<()> {
                         PackLayoutArg::Split => crate::config::SpmLayout::Split,
                         PackLayoutArg::FfiOnly => crate::config::SpmLayout::FfiOnly,
                     }),
+                    use_ir,
                 }),
                 PackTargetArg::Android {
                     release,
@@ -396,6 +401,7 @@ fn run_release(config: &Config, platform: Option<BuildPlatformArg>) -> Result<()
                     spm_only: false,
                     xcframework_only: false,
                     layout: None,
+                    use_ir: false,
                 }),
             )?;
         }
