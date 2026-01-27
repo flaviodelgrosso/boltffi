@@ -48,6 +48,15 @@ impl PrimitiveType {
     pub const fn is_platform_sized(self) -> bool {
         matches!(self, Self::ISize | Self::USize)
     }
+
+    pub const fn wire_size_bytes(self) -> usize {
+        match self {
+            Self::Bool | Self::I8 | Self::U8 => 1,
+            Self::I16 | Self::U16 => 2,
+            Self::I32 | Self::U32 | Self::F32 => 4,
+            Self::I64 | Self::U64 | Self::F64 | Self::ISize | Self::USize => 8,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

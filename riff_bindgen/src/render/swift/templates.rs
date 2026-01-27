@@ -197,30 +197,30 @@ impl SwiftEmitter {
         ));
         output.push_str("\n\n");
 
-        for record in &module.records {
+        module.records.iter().for_each(|record| {
             output.push_str(&render_record(record));
             output.push_str("\n\n");
-        }
+        });
 
-        for e in &module.enums {
-            output.push_str(&render_enum(e));
+        module.enums.iter().for_each(|enumeration| {
+            output.push_str(&render_enum(enumeration));
             output.push_str("\n\n");
-        }
+        });
 
-        for callback in &module.callbacks {
+        module.callbacks.iter().for_each(|callback| {
             output.push_str(&render_callback(callback));
             output.push_str("\n\n");
-        }
+        });
 
-        for func in &module.functions {
+        module.functions.iter().for_each(|func| {
             output.push_str(&render_function(func, &self.prefix));
             output.push_str("\n\n");
-        }
+        });
 
-        for cls in &module.classes {
-            output.push_str(&render_class(cls, &self.prefix));
+        module.classes.iter().for_each(|class_def| {
+            output.push_str(&render_class(class_def, &self.prefix));
             output.push_str("\n\n");
-        }
+        });
 
         output
     }
@@ -235,36 +235,241 @@ impl Default for SwiftEmitter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::codec::{CodecPlan, RecordLayout, VecLayout};
+    use crate::ir::codec::VecLayout;
     use crate::ir::ids::RecordId;
-    use crate::ir::types::PrimitiveType;
+    use crate::ir::ops::{
+        OffsetExpr, ReadOp, ReadSeq, SizeExpr, WireShape, WriteOp, WriteSeq,
+    };
+    use crate::ir::types::{PrimitiveType, TypeExpr};
     use crate::render::swift::plan::{
-        SwiftAsyncResult, SwiftCallbackParam, SwiftStream, SwiftStreamMode,
+        SwiftAsyncResult, SwiftCallback, SwiftCallbackMethod, SwiftCallbackParam, SwiftClass,
+        SwiftConstructor, SwiftConversion, SwiftFunction, SwiftMethod, SwiftParam, SwiftReturn,
+        SwiftStream, SwiftStreamMode, SwiftVariantPayload,
     };
-    use crate::render::swift::{
-        SwiftCallback, SwiftCallbackMethod, SwiftClass, SwiftConstructor, SwiftConversion,
-        SwiftFunction, SwiftMethod, SwiftParam, SwiftReturn, SwiftVariantPayload,
-    };
+
+    fn offset(base: &str) -> OffsetExpr {
+        OffsetExpr::Var(base.to_string())
+    }
+
+    fn offset_plus(base: &str, add: usize) -> OffsetExpr {
+        if add == 0 {
+            OffsetExpr::Var(base.to_string())
+        } else {
+            OffsetExpr::VarPlus(base.to_string(), add)
+        }
+    }
+
+    fn read_primitive(primitive: PrimitiveType, offset_expr: OffsetExpr) -> ReadSeq {
+        ReadSeq {
+            size: SizeExpr::Fixed(primitive.wire_size_bytes()),
+            ops: vec![ReadOp::Primitive {
+                primitive,
+                offset: offset_expr,
+            }],
+            shape: WireShape::Value,
+        }
+    }
+
+    fn read_empty() -> ReadSeq {
+        ReadSeq {
+            size: SizeExpr::Fixed(0),
+            ops: Vec::new(),
+            shape: WireShape::Value,
+        }
+    }
+
+    fn write_primitive(primitive: PrimitiveType, value: &str) -> WriteSeq {
+        WriteSeq {
+            size: SizeExpr::Fixed(primitive.wire_size_bytes()),
+            ops: vec![WriteOp::Primitive {
+                primitive,
+                value: value.to_string(),
+            }],
+            shape: WireShape::Value,
+        }
+    }
+
+    fn read_string(offset_expr: OffsetExpr) -> ReadSeq {
+        ReadSeq {
+            size: SizeExpr::Runtime,
+            ops: vec![ReadOp::String { offset: offset_expr }],
+            shape: WireShape::Value,
+        }
+    }
+
+    fn write_string(value: &str) -> WriteSeq {
+        WriteSeq {
+            size: SizeExpr::Sum(vec![
+                SizeExpr::Fixed(4),
+                SizeExpr::StringLen(value.to_string()),
+            ]),
+            ops: vec![WriteOp::String {
+                value: value.to_string(),
+            }],
+            shape: WireShape::Value,
+        }
+    }
+
+    fn read_bytes(offset_expr: OffsetExpr) -> ReadSeq {
+        ReadSeq {
+            size: SizeExpr::Runtime,
+            ops: vec![ReadOp::Bytes { offset: offset_expr }],
+            shape: WireShape::Value,
+        }
+    }
+
+    fn write_bytes(value: &str) -> WriteSeq {
+        WriteSeq {
+            size: SizeExpr::Sum(vec![
+                SizeExpr::Fixed(4),
+                SizeExpr::BytesLen(value.to_string()),
+            ]),
+            ops: vec![WriteOp::Bytes {
+                value: value.to_string(),
+            }],
+            shape: WireShape::Value,
+        }
+    }
+
+    fn read_option(offset_expr: OffsetExpr, inner: ReadSeq) -> ReadSeq {
+        ReadSeq {
+            size: SizeExpr::Runtime,
+            ops: vec![ReadOp::Option {
+                tag_offset: offset_expr,
+                some: Box::new(inner),
+            }],
+            shape: WireShape::Optional,
+        }
+    }
+
+    fn write_option(value: &str, inner: WriteSeq) -> WriteSeq {
+        WriteSeq {
+            size: SizeExpr::OptionSize {
+                value: value.to_string(),
+                inner: Box::new(inner.size.clone()),
+            },
+            ops: vec![WriteOp::Option {
+                value: value.to_string(),
+                some: Box::new(inner),
+            }],
+            shape: WireShape::Optional,
+        }
+    }
+
+    fn read_vec(
+        offset_expr: OffsetExpr,
+        element_type: TypeExpr,
+        element: ReadSeq,
+        layout: VecLayout,
+    ) -> ReadSeq {
+        ReadSeq {
+            size: SizeExpr::Runtime,
+            ops: vec![ReadOp::Vec {
+                len_offset: offset_expr,
+                element_type,
+                element: Box::new(element),
+                layout,
+            }],
+            shape: WireShape::Sequence,
+        }
+    }
+
+    fn write_vec(
+        value: &str,
+        element: WriteSeq,
+        element_type: &TypeExpr,
+        layout: VecLayout,
+    ) -> WriteSeq {
+        let size = if matches!(
+            element_type,
+            TypeExpr::Primitive(PrimitiveType::U8)
+        ) {
+            SizeExpr::Sum(vec![
+                SizeExpr::Fixed(4),
+                SizeExpr::BytesLen(value.to_string()),
+            ])
+        } else {
+            SizeExpr::VecSize {
+                value: value.to_string(),
+                inner: Box::new(element.size.clone()),
+                layout: layout.clone(),
+            }
+        };
+        WriteSeq {
+            size,
+            ops: vec![WriteOp::Vec {
+                value: value.to_string(),
+                element: Box::new(element),
+                element_type: element_type.clone(),
+                layout,
+            }],
+            shape: WireShape::Sequence,
+        }
+    }
+
+    fn read_record(id: &str, offset_expr: OffsetExpr) -> ReadSeq {
+        ReadSeq {
+            size: SizeExpr::Runtime,
+            ops: vec![ReadOp::Record {
+                id: RecordId::new(id),
+                offset: offset_expr,
+                fields: vec![],
+            }],
+            shape: WireShape::Value,
+        }
+    }
+
+    fn write_record(id: &str, value: &str, size: usize) -> WriteSeq {
+        WriteSeq {
+            size: SizeExpr::Fixed(size),
+            ops: vec![WriteOp::Record {
+                id: RecordId::new(id),
+                value: value.to_string(),
+                fields: vec![],
+            }],
+            shape: WireShape::Value,
+        }
+    }
+
+    fn field(
+        name: &str,
+        swift_type: &str,
+        decode: ReadSeq,
+        encode: WriteSeq,
+        c_offset: Option<usize>,
+        default_expr: Option<&str>,
+    ) -> SwiftField {
+        SwiftField {
+            swift_name: name.to_string(),
+            swift_type: swift_type.to_string(),
+            default_expr: default_expr.map(|s| s.to_string()),
+            decode,
+            encode,
+            c_offset,
+        }
+    }
 
     #[test]
     fn snapshot_blittable_point() {
         let record = SwiftRecord {
             class_name: "Point".to_string(),
             fields: vec![
-                SwiftField {
-                    swift_name: "x".to_string(),
-                    swift_type: "Double".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::Primitive(PrimitiveType::F64),
-                    c_offset: Some(0),
-                },
-                SwiftField {
-                    swift_name: "y".to_string(),
-                    swift_type: "Double".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::Primitive(PrimitiveType::F64),
-                    c_offset: Some(8),
-                },
+                field(
+                    "x",
+                    "Double",
+                    read_primitive(PrimitiveType::F64, offset_plus("offset", 0)),
+                    write_primitive(PrimitiveType::F64, "x"),
+                    Some(0),
+                    None,
+                ),
+                field(
+                    "y",
+                    "Double",
+                    read_primitive(PrimitiveType::F64, offset_plus("offset", 8)),
+                    write_primitive(PrimitiveType::F64, "y"),
+                    Some(8),
+                    None,
+                ),
             ],
             is_blittable: true,
             blittable_size: Some(16),
@@ -277,27 +482,30 @@ mod tests {
         let record = SwiftRecord {
             class_name: "Padded".to_string(),
             fields: vec![
-                SwiftField {
-                    swift_name: "a".to_string(),
-                    swift_type: "UInt8".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::Primitive(PrimitiveType::U8),
-                    c_offset: Some(0),
-                },
-                SwiftField {
-                    swift_name: "b".to_string(),
-                    swift_type: "UInt32".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::Primitive(PrimitiveType::U32),
-                    c_offset: Some(4),
-                },
-                SwiftField {
-                    swift_name: "c".to_string(),
-                    swift_type: "UInt8".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::Primitive(PrimitiveType::U8),
-                    c_offset: Some(8),
-                },
+                field(
+                    "a",
+                    "UInt8",
+                    read_primitive(PrimitiveType::U8, offset_plus("offset", 0)),
+                    write_primitive(PrimitiveType::U8, "a"),
+                    Some(0),
+                    None,
+                ),
+                field(
+                    "b",
+                    "UInt32",
+                    read_primitive(PrimitiveType::U32, offset_plus("offset", 4)),
+                    write_primitive(PrimitiveType::U32, "b"),
+                    Some(4),
+                    None,
+                ),
+                field(
+                    "c",
+                    "UInt8",
+                    read_primitive(PrimitiveType::U8, offset_plus("offset", 8)),
+                    write_primitive(PrimitiveType::U8, "c"),
+                    Some(8),
+                    None,
+                ),
             ],
             is_blittable: true,
             blittable_size: Some(12),
@@ -310,20 +518,22 @@ mod tests {
         let record = SwiftRecord {
             class_name: "User".to_string(),
             fields: vec![
-                SwiftField {
-                    swift_name: "id".to_string(),
-                    swift_type: "Int64".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::Primitive(PrimitiveType::I64),
-                    c_offset: None,
-                },
-                SwiftField {
-                    swift_name: "name".to_string(),
-                    swift_type: "String".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::String,
-                    c_offset: None,
-                },
+                field(
+                    "id",
+                    "Int64",
+                    read_primitive(PrimitiveType::I64, offset("pos")),
+                    write_primitive(PrimitiveType::I64, "id"),
+                    None,
+                    None,
+                ),
+                field(
+                    "name",
+                    "String",
+                    read_string(offset("pos")),
+                    write_string("name"),
+                    None,
+                    None,
+                ),
             ],
             is_blittable: false,
             blittable_size: None,
@@ -336,20 +546,22 @@ mod tests {
         let record = SwiftRecord {
             class_name: "Config".to_string(),
             fields: vec![
-                SwiftField {
-                    swift_name: "timeout".to_string(),
-                    swift_type: "Double".to_string(),
-                    default_expr: Some("30.0".to_string()),
-                    codec: CodecPlan::Primitive(PrimitiveType::F64),
-                    c_offset: Some(0),
-                },
-                SwiftField {
-                    swift_name: "retries".to_string(),
-                    swift_type: "Int32".to_string(),
-                    default_expr: Some("3".to_string()),
-                    codec: CodecPlan::Primitive(PrimitiveType::I32),
-                    c_offset: Some(8),
-                },
+                field(
+                    "timeout",
+                    "Double",
+                    read_primitive(PrimitiveType::F64, offset_plus("offset", 0)),
+                    write_primitive(PrimitiveType::F64, "timeout"),
+                    Some(0),
+                    Some("30.0"),
+                ),
+                field(
+                    "retries",
+                    "Int32",
+                    read_primitive(PrimitiveType::I32, offset_plus("offset", 8)),
+                    write_primitive(PrimitiveType::I32, "retries"),
+                    Some(8),
+                    Some("3"),
+                ),
             ],
             is_blittable: true,
             blittable_size: Some(12),
@@ -428,24 +640,26 @@ mod tests {
                 SwiftVariant {
                     swift_name: "text".to_string(),
                     discriminant: 1,
-                    payload: SwiftVariantPayload::Tuple(vec![SwiftField {
-                        swift_name: "value".to_string(),
-                        swift_type: "String".to_string(),
-                        default_expr: None,
-                        codec: CodecPlan::String,
-                        c_offset: None,
-                    }]),
+                    payload: SwiftVariantPayload::Tuple(vec![field(
+                        "value",
+                        "String",
+                        read_string(offset("pos")),
+                        write_string("value"),
+                        None,
+                        None,
+                    )]),
                 },
                 SwiftVariant {
                     swift_name: "number".to_string(),
                     discriminant: 2,
-                    payload: SwiftVariantPayload::Tuple(vec![SwiftField {
-                        swift_name: "value".to_string(),
-                        swift_type: "Int64".to_string(),
-                        default_expr: None,
-                        codec: CodecPlan::Primitive(PrimitiveType::I64),
-                        c_offset: None,
-                    }]),
+                    payload: SwiftVariantPayload::Tuple(vec![field(
+                        "value",
+                        "Int64",
+                        read_primitive(PrimitiveType::I64, offset("pos")),
+                        write_primitive(PrimitiveType::I64, "value"),
+                        None,
+                        None,
+                    )]),
                 },
             ],
             doc: None,
@@ -464,32 +678,35 @@ mod tests {
                     swift_name: "click".to_string(),
                     discriminant: 0,
                     payload: SwiftVariantPayload::Struct(vec![
-                        SwiftField {
-                            swift_name: "x".to_string(),
-                            swift_type: "Int32".to_string(),
-                            default_expr: None,
-                            codec: CodecPlan::Primitive(PrimitiveType::I32),
-                            c_offset: None,
-                        },
-                        SwiftField {
-                            swift_name: "y".to_string(),
-                            swift_type: "Int32".to_string(),
-                            default_expr: None,
-                            codec: CodecPlan::Primitive(PrimitiveType::I32),
-                            c_offset: None,
-                        },
+                        field(
+                            "x",
+                            "Int32",
+                            read_primitive(PrimitiveType::I32, offset("pos")),
+                            write_primitive(PrimitiveType::I32, "x"),
+                            None,
+                            None,
+                        ),
+                        field(
+                            "y",
+                            "Int32",
+                            read_primitive(PrimitiveType::I32, offset("pos")),
+                            write_primitive(PrimitiveType::I32, "y"),
+                            None,
+                            None,
+                        ),
                     ]),
                 },
                 SwiftVariant {
                     swift_name: "keyPress".to_string(),
                     discriminant: 1,
-                    payload: SwiftVariantPayload::Struct(vec![SwiftField {
-                        swift_name: "code".to_string(),
-                        swift_type: "UInt32".to_string(),
-                        default_expr: None,
-                        codec: CodecPlan::Primitive(PrimitiveType::U32),
-                        c_offset: None,
-                    }]),
+                    payload: SwiftVariantPayload::Struct(vec![field(
+                        "code",
+                        "UInt32",
+                        read_primitive(PrimitiveType::U32, offset("pos")),
+                        write_primitive(PrimitiveType::U32, "code"),
+                        None,
+                        None,
+                    )]),
                 },
             ],
             doc: None,
@@ -541,7 +758,8 @@ mod tests {
             }],
             returns: SwiftReturn::FromWireBuffer {
                 swift_type: "String".to_string(),
-                codec: CodecPlan::String,
+                decode: read_string(offset("pos")),
+                encode: write_string("value"),
             },
             doc: None,
         };
@@ -560,24 +778,13 @@ mod tests {
                 name: "point".to_string(),
                 swift_type: "Point".to_string(),
                 conversion: SwiftConversion::ToWireBuffer {
-                    codec: CodecPlan::Record {
-                        id: RecordId::new("Point"),
-                        layout: RecordLayout::Blittable {
-                            size: 16,
-                            fields: vec![],
-                        },
-                    },
+                    encode: write_record("Point", "point", 16),
                 },
             }],
             returns: SwiftReturn::FromWireBuffer {
                 swift_type: "Point".to_string(),
-                codec: CodecPlan::Record {
-                    id: crate::ir::ids::RecordId::new("Point"),
-                    layout: crate::ir::codec::RecordLayout::Blittable {
-                        size: 16,
-                        fields: vec![],
-                    },
-                },
+                decode: read_record("Point", offset("pos")),
+                encode: write_record("Point", "value", 16),
             },
             doc: None,
         };
@@ -597,8 +804,10 @@ mod tests {
                 result: Box::new(SwiftAsyncResult::Encoded {
                     swift_type: "String".to_string(),
                     ok_type: None,
-                    codec: CodecPlan::String,
+                    decode: read_string(offset("pos")),
                     throws: false,
+                    err_decode: read_empty(),
+                    err_is_string: false,
                 }),
             },
             params: vec![SwiftParam {
@@ -706,7 +915,8 @@ mod tests {
                 }],
                 returns: SwiftReturn::FromWireBuffer {
                     swift_type: "String".to_string(),
-                    codec: CodecPlan::String,
+                    decode: read_string(offset("pos")),
+                    encode: write_string("value"),
                 },
                 is_static: false,
                 doc: None,
@@ -728,7 +938,7 @@ mod tests {
                 name: "events".to_string(),
                 mode: SwiftStreamMode::Async,
                 item_type: "String".to_string(),
-                item_decode_expr: "wire.readString(at: 0).value".to_string(),
+                item_decode: read_string(OffsetExpr::Fixed(0)),
                 subscribe: "riff_event_source_events_subscribe".to_string(),
                 poll: "riff_event_source_events_poll".to_string(),
                 pop_batch: "riff_event_source_events_pop_batch".to_string(),
@@ -760,8 +970,10 @@ mod tests {
                     result: Box::new(SwiftAsyncResult::Encoded {
                         swift_type: "Data".to_string(),
                         ok_type: None,
-                        codec: CodecPlan::Bytes,
+                        decode: read_bytes(offset("pos")),
                         throws: false,
+                        err_decode: read_empty(),
+                        err_is_string: false,
                     }),
                 },
                 params: vec![SwiftParam {
@@ -826,7 +1038,8 @@ mod tests {
             ],
             returns: SwiftReturn::FromWireBuffer {
                 swift_type: "String".to_string(),
-                codec: CodecPlan::String,
+                decode: read_string(offset("pos")),
+                encode: write_string("value"),
             },
             doc: None,
         };
@@ -894,20 +1107,22 @@ mod tests {
         let record = SwiftRecord {
             class_name: "UserProfile".to_string(),
             fields: vec![
-                SwiftField {
-                    swift_name: "name".to_string(),
-                    swift_type: "String".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::String,
-                    c_offset: None,
-                },
-                SwiftField {
-                    swift_name: "bio".to_string(),
-                    swift_type: "String?".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::Option(Box::new(CodecPlan::String)),
-                    c_offset: None,
-                },
+                field(
+                    "name",
+                    "String",
+                    read_string(offset("pos")),
+                    write_string("name"),
+                    None,
+                    None,
+                ),
+                field(
+                    "bio",
+                    "String?",
+                    read_option(offset("pos"), read_string(offset("pos"))),
+                    write_option("bio", write_string("v")),
+                    None,
+                    None,
+                ),
             ],
             is_blittable: false,
             blittable_size: None,
@@ -920,23 +1135,32 @@ mod tests {
         let record = SwiftRecord {
             class_name: "Team".to_string(),
             fields: vec![
-                SwiftField {
-                    swift_name: "name".to_string(),
-                    swift_type: "String".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::String,
-                    c_offset: None,
-                },
-                SwiftField {
-                    swift_name: "members".to_string(),
-                    swift_type: "[String]".to_string(),
-                    default_expr: None,
-                    codec: CodecPlan::Vec {
-                        element: Box::new(CodecPlan::String),
-                        layout: VecLayout::Encoded,
-                    },
-                    c_offset: None,
-                },
+                field(
+                    "name",
+                    "String",
+                    read_string(offset("pos")),
+                    write_string("name"),
+                    None,
+                    None,
+                ),
+                field(
+                    "members",
+                    "[String]",
+                    read_vec(
+                        offset("pos"),
+                        TypeExpr::String,
+                        read_string(offset("pos")),
+                        VecLayout::Encoded,
+                    ),
+                    write_vec(
+                        "members",
+                        write_string("item"),
+                        &TypeExpr::String,
+                        VecLayout::Encoded,
+                    ),
+                    None,
+                    None,
+                ),
             ],
             is_blittable: false,
             blittable_size: None,
@@ -959,7 +1183,8 @@ mod tests {
             }],
             returns: SwiftReturn::FromWireBuffer {
                 swift_type: "String?".to_string(),
-                codec: CodecPlan::Option(Box::new(CodecPlan::String)),
+                decode: read_option(offset("pos"), read_string(offset("pos"))),
+                encode: write_option("value", write_string("v")),
             },
             doc: None,
         };
@@ -1004,13 +1229,14 @@ mod tests {
                 SwiftVariant {
                     swift_name: "found".to_string(),
                     discriminant: 0,
-                    payload: SwiftVariantPayload::Tuple(vec![SwiftField {
-                        swift_name: "0".to_string(),
-                        swift_type: "String".to_string(),
-                        default_expr: None,
-                        codec: CodecPlan::String,
-                        c_offset: None,
-                    }]),
+                    payload: SwiftVariantPayload::Tuple(vec![field(
+                        "0",
+                        "String",
+                        read_string(offset("pos")),
+                        write_string("0"),
+                        None,
+                        None,
+                    )]),
                 },
                 SwiftVariant {
                     swift_name: "notFound".to_string(),
@@ -1038,8 +1264,10 @@ mod tests {
                 result: Box::new(SwiftAsyncResult::Encoded {
                     swift_type: "String".to_string(),
                     ok_type: None,
-                    codec: CodecPlan::String,
+                    decode: read_string(offset("pos")),
                     throws: false,
+                    err_decode: read_empty(),
+                    err_is_string: false,
                 }),
             },
             params: vec![

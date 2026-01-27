@@ -1,5 +1,6 @@
 ---
 source: riff_bindgen/src/render/swift/templates.rs
+assertion_line: 944
 expression: "render_class(&cls, \"riff\")"
 ---
 public final class EventSource {
@@ -29,7 +30,6 @@ public final class EventSource {
                 atomicCas: riff_atomic_u8_cas,
                 processItems: { wire in
                     let count = Int(wire.readU32(at: 0))
-                    var offset = 4
                     for _ in 0..<count {
                         let item = wire.readString(at: 0).value
                         _ = continuation.yield(item)

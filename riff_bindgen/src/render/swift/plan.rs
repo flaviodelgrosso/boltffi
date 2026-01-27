@@ -1,5 +1,5 @@
-use crate::ir::codec::CodecPlan;
-use crate::render::swift::codec;
+use crate::ir::ops::{OffsetExpr, ReadOp, ReadSeq, WireShape, WriteSeq};
+use crate::render::swift::emit;
 
 #[derive(Debug, Clone)]
 pub enum SwiftCallMode {
@@ -39,8 +39,10 @@ pub enum SwiftAsyncResult {
     Encoded {
         swift_type: String,
         ok_type: Option<String>,
-        codec: CodecPlan,
+        decode: ReadSeq,
         throws: bool,
+        err_decode: ReadSeq,
+        err_is_string: bool,
     },
 }
 
@@ -91,18 +93,17 @@ impl SwiftAsyncResult {
         match self {
             Self::Encoded {
                 throws: true,
-                codec: codec_plan,
+                decode,
+                err_decode,
+                err_is_string,
                 ..
-            } => {
-                if let CodecPlan::Result { ok, err } = codec_plan {
-                    Some(codec::decode_result_ok_throw(ok, err))
-                } else {
-                    Some(codec::decode_value_at(codec_plan, "0"))
+            } => match decode.ops.first() {
+                Some(ReadOp::Result { ok, .. }) => {
+                    Some(emit::emit_result_ok_throw(ok, err_decode, *err_is_string))
                 }
-            }
-            Self::Encoded {
-                codec: codec_plan, ..
-            } => Some(codec::decode_value_at(codec_plan, "0")),
+                _ => Some(emit::emit_read_value_at(decode, "0")),
+            },
+            Self::Encoded { decode, .. } => Some(emit::emit_read_value_at(decode, "0")),
             _ => None,
         }
     }
@@ -152,17 +153,18 @@ pub struct SwiftField {
     pub swift_name: String,
     pub swift_type: String,
     pub default_expr: Option<String>,
-    pub codec: CodecPlan,
+    pub decode: ReadSeq,
+    pub encode: WriteSeq,
     pub c_offset: Option<usize>,
 }
 
 impl SwiftField {
     pub fn wire_decode_inline(&self) -> String {
-        codec::decode_inline(&self.codec)
+        emit::emit_read_inline(&self.decode, "pos")
     }
 
     pub fn wire_size_expr(&self) -> String {
-        codec::size_expr(&self.codec, &self.swift_name)
+        emit::emit_size_expr(&self.encode.size)
     }
 
     pub fn has_fixed_size(&self) -> bool {
@@ -171,23 +173,19 @@ impl SwiftField {
     }
 
     pub fn wire_encode(&self) -> String {
-        codec::encode_data(&self.codec, &self.swift_name)
+        emit::emit_write_data(&self.encode)
     }
 
     pub fn wire_encode_bytes(&self) -> String {
-        codec::encode_bytes(&self.codec, &self.swift_name)
+        emit::emit_write_bytes(&self.encode)
     }
 
     pub fn decode_at_offset(&self, base: &str) -> String {
-        if let Some(offset) = self.c_offset {
-            codec::decode_at_offset(&self.codec, base, offset)
-        } else {
-            self.wire_decode_inline()
-        }
+        emit::emit_read_with_offset(&self.decode, "offset", base)
     }
 
     pub fn encode_at_offset(&self) -> String {
-        codec::encode_primitive_value(&self.codec, &self.swift_name)
+        emit::emit_write_data(&self.encode)
     }
 }
 
@@ -240,25 +238,25 @@ impl SwiftVariant {
 
     pub fn tuple_value_decode(&self) -> String {
         self.single_tuple_field()
-            .map(|f| codec::decode_inline(&f.codec))
+            .map(|f| f.wire_decode_inline())
             .unwrap_or_default()
     }
 
     pub fn tuple_value_size(&self) -> String {
         self.single_tuple_field()
-            .map(|f| codec::size_expr(&f.codec, "value"))
+            .map(|f| f.wire_size_expr())
             .unwrap_or_default()
     }
 
     pub fn tuple_value_encode(&self) -> String {
         self.single_tuple_field()
-            .map(|f| codec::encode_data(&f.codec, "value"))
+            .map(|f| f.wire_encode())
             .unwrap_or_default()
     }
 
     pub fn tuple_value_encode_bytes(&self) -> String {
         self.single_tuple_field()
-            .map(|f| codec::encode_bytes(&f.codec, "value"))
+            .map(|f| f.wire_encode_bytes())
             .unwrap_or_default()
     }
 
@@ -295,7 +293,7 @@ pub struct SwiftStream {
     pub name: String,
     pub mode: SwiftStreamMode,
     pub item_type: String,
-    pub item_decode_expr: String,
+    pub item_decode: ReadSeq,
     pub subscribe: String,
     pub poll: String,
     pub pop_batch: String,
@@ -304,6 +302,51 @@ pub struct SwiftStream {
     pub free: String,
     pub free_buf: String,
     pub atomic_cas: String,
+}
+
+impl SwiftStream {
+    pub fn item_decode_expr(&self) -> String {
+        emit::emit_read_value_at(&self.item_decode, "offset")
+    }
+
+    pub fn uses_offset(&self) -> bool {
+        uses_offset_in_read_seq(&self.item_decode)
+    }
+}
+
+fn uses_offset_in_read_seq(seq: &ReadSeq) -> bool {
+    seq.ops.iter().any(uses_offset_in_read_op)
+}
+
+fn uses_offset_in_read_op(op: &ReadOp) -> bool {
+    match op {
+        ReadOp::Primitive { offset, .. } => offset_uses(offset),
+        ReadOp::String { offset } => offset_uses(offset),
+        ReadOp::Bytes { offset } => offset_uses(offset),
+        ReadOp::Option { tag_offset, some } => {
+            offset_uses(tag_offset) || uses_offset_in_read_seq(some)
+        }
+        ReadOp::Vec {
+            len_offset,
+            element,
+            ..
+        } => offset_uses(len_offset) || uses_offset_in_read_seq(element),
+        ReadOp::Record { offset, .. } => offset_uses(offset),
+        ReadOp::Enum { offset, .. } => offset_uses(offset),
+        ReadOp::Result { tag_offset, ok, err } => {
+            offset_uses(tag_offset) || uses_offset_in_read_seq(ok) || uses_offset_in_read_seq(err)
+        }
+        ReadOp::Builtin { offset, .. } => offset_uses(offset),
+        ReadOp::Custom { underlying, .. } => uses_offset_in_read_seq(underlying),
+    }
+}
+
+fn offset_uses(offset: &OffsetExpr) -> bool {
+    match offset {
+        OffsetExpr::Fixed(_) => false,
+        OffsetExpr::Base | OffsetExpr::BasePlus(_) => true,
+        OffsetExpr::Var(_) | OffsetExpr::VarPlus(_, _) => false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -468,17 +511,20 @@ impl SwiftMethod {
 
     pub fn sync_closure_opens(&self) -> Vec<String> {
         let has_return = !self.returns.is_void();
+        let return_prefix = if has_return && self.returns.is_throws() {
+            "return try "
+        } else if has_return {
+            "return "
+        } else {
+            "_ = "
+        };
         self.params
             .iter()
             .filter_map(|p| p.closure_wrap_open())
             .enumerate()
             .map(|(i, open)| {
                 let indent = "    ".repeat(i + 2);
-                if has_return {
-                    format!("{}return {}", indent, open)
-                } else {
-                    format!("{}{}", indent, open)
-                }
+                format!("{}{}{}", indent, return_prefix, open)
             })
             .collect()
     }
@@ -542,9 +588,9 @@ impl SwiftCallbackMethod {
     }
 
     pub fn wire_return_encode(&self) -> Option<String> {
-        self.encoded_return_codec().map(|codec| {
-            let size_expr = codec::size_expr(codec, "result");
-            let encode_expr = codec::encode_data(codec, "result");
+        self.encoded_return_encode().map(|encode| {
+            let size_expr = emit::emit_size_expr(&encode.size);
+            let encode_expr = emit::emit_write_data(encode);
             format!(
                 "let encoded = ({{ var data = Data(capacity: {}); {}; return data }})()",
                 size_expr, encode_expr
@@ -552,11 +598,11 @@ impl SwiftCallbackMethod {
         })
     }
 
-    fn encoded_return_codec(&self) -> Option<&CodecPlan> {
+    fn encoded_return_encode(&self) -> Option<&WriteSeq> {
         match &self.returns {
-            SwiftReturn::FromWireBuffer { codec, .. } => Some(codec),
+            SwiftReturn::FromWireBuffer { encode, .. } => Some(encode),
             SwiftReturn::Throws { ok, .. } => match ok.as_ref() {
-                SwiftReturn::FromWireBuffer { codec, .. } => Some(codec),
+                SwiftReturn::FromWireBuffer { encode, .. } => Some(encode),
                 _ => None,
             },
             _ => None,
@@ -628,17 +674,20 @@ impl SwiftFunction {
 
     pub fn sync_closure_opens(&self) -> Vec<String> {
         let has_return = !self.returns.is_void();
+        let return_prefix = if has_return && self.returns.is_throws() {
+            "return try "
+        } else if has_return {
+            "return "
+        } else {
+            "_ = "
+        };
         self.params
             .iter()
             .filter_map(|p| p.closure_wrap_open())
             .enumerate()
             .map(|(i, open)| {
                 let indent = "    ".repeat(i + 1);
-                if has_return {
-                    format!("{}return {}", indent, open)
-                } else {
-                    format!("{}{}", indent, open)
-                }
+                format!("{}{}{}", indent, return_prefix, open)
             })
             .collect()
     }
@@ -689,8 +738,8 @@ impl SwiftParam {
                 "{}.withUnsafeBytes {{ $0.baseAddress }}, UInt({}.count)",
                 self.name, self.name
             ),
-            SwiftConversion::ToWireBuffer { codec } => {
-                if matches!(codec, CodecPlan::Option(_)) {
+            SwiftConversion::ToWireBuffer { encode } => {
+                if encode.shape == WireShape::Optional {
                     format!(
                         "{}Ptr?.baseAddress?.assumingMemoryBound(to: UInt8.self), UInt({}Ptr?.count ?? 0)",
                         self.name, self.name
@@ -750,24 +799,20 @@ impl SwiftParam {
             SwiftConversion::ToString => {
                 Some(format!("{}.withCString {{ {}Ptr in", self.name, self.name))
             }
-            SwiftConversion::ToWireBuffer { codec } => {
-                if matches!(codec, CodecPlan::Vec { .. }) {
-                    Some(format!(
-                        "withWireEncodedArray({}) {{ {}Ptr in",
-                        self.name, self.name
-                    ))
-                } else if matches!(codec, CodecPlan::Option(_)) {
-                    Some(format!(
-                        "withWireEncodedOptional({}) {{ {}Ptr in",
-                        self.name, self.name
-                    ))
-                } else {
-                    Some(format!(
-                        "{}.wireEncode().withUnsafeBytes {{ {}Ptr in",
-                        self.name, self.name
-                    ))
-                }
-            }
+            SwiftConversion::ToWireBuffer { encode } => match encode.shape {
+                WireShape::Sequence => Some(format!(
+                    "withWireEncodedArray({}) {{ {}Ptr in",
+                    self.name, self.name
+                )),
+                WireShape::Optional => Some(format!(
+                    "withWireEncodedOptional({}) {{ {}Ptr in",
+                    self.name, self.name
+                )),
+                WireShape::Value => Some(format!(
+                    "{}.wireEncode().withUnsafeBytes {{ {}Ptr in",
+                    self.name, self.name
+                )),
+            },
             SwiftConversion::PrimitiveBuffer { .. } => Some(format!(
                 "{}.withUnsafeBufferPointer {{ {}Ptr in",
                 self.name, self.name
@@ -842,7 +887,7 @@ pub enum SwiftConversion {
     Direct,
     ToString,
     ToData,
-    ToWireBuffer { codec: CodecPlan },
+    ToWireBuffer { encode: WriteSeq },
     PrimitiveBuffer { element_type: String },
     MutableBuffer { element_type: String },
     WrapCallback { protocol: String },
@@ -877,7 +922,8 @@ pub enum SwiftReturn {
     },
     FromWireBuffer {
         swift_type: String,
-        codec: CodecPlan,
+        decode: ReadSeq,
+        encode: WriteSeq,
     },
     Handle {
         class_name: String,
@@ -886,6 +932,8 @@ pub enum SwiftReturn {
     Throws {
         ok: Box<SwiftReturn>,
         err_type: String,
+        err_decode: ReadSeq,
+        err_is_string: bool,
     },
 }
 
@@ -941,10 +989,23 @@ impl SwiftReturn {
 
     pub fn decode_expr(&self) -> Option<String> {
         match self {
-            SwiftReturn::FromWireBuffer {
-                codec: codec_plan, ..
-            } => Some(codec::decode_value_at(codec_plan, "0")),
-            SwiftReturn::Throws { ok, .. } => ok.decode_expr(),
+            SwiftReturn::FromWireBuffer { decode, .. } => {
+                Some(emit::emit_read_value_at(decode, "0"))
+            }
+            SwiftReturn::Throws {
+                ok,
+                err_decode,
+                err_is_string,
+                ..
+            } => match ok.as_ref() {
+                SwiftReturn::FromWireBuffer { decode, .. } => match decode.ops.first() {
+                    Some(ReadOp::Result { ok, .. }) => {
+                        Some(emit::emit_result_ok_throw(ok, err_decode, *err_is_string))
+                    }
+                    _ => ok.decode_expr(),
+                },
+                _ => ok.decode_expr(),
+            },
             _ => None,
         }
     }

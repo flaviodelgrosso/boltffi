@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 use riff_ffi_rules::naming;
 
 use crate::ir::abi::{
-    AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiParam, AbiStream, AsyncCall,
+    AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
+    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, AbiStream, AsyncCall,
     AsyncResultTransport, CallId, CallMode, ErrorTransport, ParamRole, ReturnTransport,
     StreamItemTransport,
 };
@@ -18,11 +19,14 @@ use crate::ir::codec::{
 };
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
-    CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef, EnumRepr, FunctionDef,
+    CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef, EnumDef, EnumRepr, FunctionDef,
     MethodDef, ParamDef, ParamPassing, Receiver, RecordDef, ReturnDef, StreamDef, VariantPayload,
 };
 use crate::ir::ids::{
-    CallbackId, ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId,
+    BuiltinId, CallbackId, ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId,
+};
+use crate::ir::ops::{
+    FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, WireShape, WriteOp, WriteSeq,
 };
 use crate::ir::plan::{
     AbiType, AsyncPlan, AsyncResult, CallPlan, CallPlanKind, CallTarget, CallbackStyle,
@@ -85,28 +89,18 @@ impl<'c> Lowerer<'c> {
             .map(|callback| self.abi_callback_invocation(callback))
             .collect();
 
-        let record_codecs = self
+        let records = self
             .contract
             .catalog
             .all_records()
-            .map(|record| {
-                (
-                    record.id.clone(),
-                    self.build_codec(&TypeExpr::Record(record.id.clone())),
-                )
-            })
+            .map(|record| self.abi_record(record))
             .collect();
 
-        let enum_codecs = self
+        let enums = self
             .contract
             .catalog
             .all_enums()
-            .map(|enumeration| {
-                (
-                    enumeration.id.clone(),
-                    self.build_codec(&TypeExpr::Enum(enumeration.id.clone())),
-                )
-            })
+            .map(|enumeration| self.abi_enum(enumeration))
             .collect();
 
         let streams = self
@@ -126,8 +120,8 @@ impl<'c> Lowerer<'c> {
             calls,
             callbacks,
             streams,
-            record_codecs,
-            enum_codecs,
+            records,
+            enums,
             free_buf: naming::free_buf_u8(),
             atomic_cas: naming::atomic_u8_cas(),
         }
@@ -228,18 +222,129 @@ impl<'c> Lowerer<'c> {
         let class_name = class_id.as_str();
         let stream_name = stream.id.as_str();
         let item_codec = self.build_codec(&stream.item_type);
+        let decode_ops = self.expand_decode(&item_codec);
 
         AbiStream {
             class_id: class_id.clone(),
             stream_id: stream.id.clone(),
             mode: stream.mode,
-            item: StreamItemTransport::WireEncoded { codec: item_codec },
+            item: StreamItemTransport::WireEncoded { decode_ops },
             subscribe: naming::stream_ffi_subscribe(class_name, stream_name),
             poll: naming::stream_ffi_poll(class_name, stream_name),
             pop_batch: naming::stream_ffi_pop_batch(class_name, stream_name),
             wait: naming::stream_ffi_wait(class_name, stream_name),
             unsubscribe: naming::stream_ffi_unsubscribe(class_name, stream_name),
             free: naming::stream_ffi_free(class_name, stream_name),
+        }
+    }
+
+    fn abi_record(&self, record: &RecordDef) -> AbiRecord {
+        let codec = self.build_codec(&TypeExpr::Record(record.id.clone()));
+        let decode_ops = self.expand_decode(&codec);
+        let encode_ops = self.expand_encode(&codec, "self");
+        let (is_blittable, size) = match codec {
+            CodecPlan::Record {
+                layout: RecordLayout::Blittable { size, .. },
+                ..
+            } => (true, Some(size)),
+            _ => (false, None),
+        };
+
+        AbiRecord {
+            id: record.id.clone(),
+            decode_ops,
+            encode_ops,
+            is_blittable,
+            size,
+        }
+    }
+
+    fn abi_enum(&self, enumeration: &EnumDef) -> AbiEnum {
+        let codec = self.build_codec(&TypeExpr::Enum(enumeration.id.clone()));
+        let decode_ops = self.expand_decode(&codec);
+        let encode_ops = self.expand_encode(&codec, "self");
+        let (is_c_style, variants) = match codec {
+            CodecPlan::Enum {
+                layout: EnumLayout::CStyle { .. },
+                ..
+            } => (
+                true,
+                match &enumeration.repr {
+                    EnumRepr::CStyle { variants, .. } => variants
+                        .iter()
+                        .map(|variant| AbiEnumVariant {
+                            name: variant.name.clone(),
+                            discriminant: variant.discriminant,
+                            payload: AbiEnumPayload::Unit,
+                        })
+                        .collect(),
+                    _ => vec![],
+                },
+            ),
+            CodecPlan::Enum {
+                layout: EnumLayout::Data { variants, .. },
+                ..
+            } => (
+                false,
+                match &enumeration.repr {
+                    EnumRepr::Data { variants: data_variants, .. } => {
+                        let layout_fields = variants
+                            .iter()
+                            .map(|variant| {
+                                let fields = match &variant.payload {
+                                    VariantPayloadLayout::Unit => Vec::new(),
+                                    VariantPayloadLayout::Fields(fields) => fields
+                                        .iter()
+                                        .map(|field| self.abi_enum_field(field))
+                                        .collect(),
+                                };
+                                (variant.name.clone(), fields)
+                            })
+                            .collect::<HashMap<_, _>>();
+
+                        data_variants
+                            .iter()
+                            .map(|variant| {
+                                let fields = layout_fields
+                                    .get(&variant.name)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let payload = match &variant.payload {
+                                    VariantPayload::Unit => AbiEnumPayload::Unit,
+                                    VariantPayload::Tuple(_) => AbiEnumPayload::Tuple(fields),
+                                    VariantPayload::Struct(_) => AbiEnumPayload::Struct(fields),
+                                };
+                                AbiEnumVariant {
+                                    name: variant.name.clone(),
+                                    discriminant: variant.discriminant,
+                                    payload,
+                                }
+                            })
+                            .collect()
+                    }
+                    _ => Vec::new(),
+                },
+            ),
+            _ => (false, vec![]),
+        };
+
+        AbiEnum {
+            id: enumeration.id.clone(),
+            decode_ops,
+            encode_ops,
+            is_c_style,
+            variants,
+        }
+    }
+
+    fn abi_enum_field(&self, field: &EncodedField) -> AbiEnumField {
+        let decode = self.expand_decode(&field.codec);
+        let encode = self.expand_encode(&field.codec, field.name.as_str());
+        AbiEnumField {
+            name: field.name.clone(),
+            type_expr: TypeExpr::from(&field.codec),
+            decode,
+            encode,
         }
     }
 
@@ -326,7 +431,13 @@ impl<'c> Lowerer<'c> {
             AsyncResult::Value(value) => match self.return_transport_from_value(value) {
                 ReturnTransport::Void => AsyncResultTransport::Void,
                 ReturnTransport::Direct(abi) => AsyncResultTransport::Direct(abi),
-                ReturnTransport::Encoded { codec } => AsyncResultTransport::Encoded { codec },
+                ReturnTransport::Encoded {
+                    decode_ops,
+                    encode_ops,
+                } => AsyncResultTransport::Encoded {
+                    decode_ops,
+                    encode_ops,
+                },
                 ReturnTransport::Handle { class_id, nullable } => {
                     AsyncResultTransport::Handle { class_id, nullable }
                 }
@@ -340,11 +451,16 @@ impl<'c> Lowerer<'c> {
             },
             AsyncResult::Fallible { ok, err_codec } => {
                 let ok_codec = self.codec_from_return_value(ok);
-                let codec = CodecPlan::Result {
+                let result_codec = CodecPlan::Result {
                     ok: Box::new(ok_codec),
                     err: Box::new(err_codec.clone()),
                 };
-                AsyncResultTransport::Encoded { codec }
+                let decode_ops = self.expand_decode(&result_codec);
+                let encode_ops = self.expand_encode(&result_codec, "value");
+                AsyncResultTransport::Encoded {
+                    decode_ops,
+                    encode_ops,
+                }
             }
         }
     }
@@ -354,14 +470,19 @@ impl<'c> Lowerer<'c> {
             ReturnPlan::Value(v) => (self.return_transport_from_value(v), ErrorTransport::None),
             ReturnPlan::Fallible { ok, err_codec } => {
                 let ok_codec = self.codec_from_return_value(ok);
-                let codec = CodecPlan::Result {
+                let result_codec = CodecPlan::Result {
                     ok: Box::new(ok_codec),
                     err: Box::new(err_codec.clone()),
                 };
+                let decode_ops = self.expand_decode(&result_codec);
+                let encode_ops = self.expand_encode(&result_codec, "value");
                 (
-                    ReturnTransport::Encoded { codec },
+                    ReturnTransport::Encoded {
+                        decode_ops,
+                        encode_ops,
+                    },
                     ErrorTransport::Encoded {
-                        codec: err_codec.clone(),
+                        decode_ops: self.expand_decode(err_codec),
                     },
                 )
             }
@@ -373,7 +494,8 @@ impl<'c> Lowerer<'c> {
             ReturnValuePlan::Void => ReturnTransport::Void,
             ReturnValuePlan::Direct(d) => ReturnTransport::Direct(d.abi_type),
             ReturnValuePlan::Encoded { codec } => ReturnTransport::Encoded {
-                codec: codec.clone(),
+                decode_ops: self.expand_decode(codec),
+                encode_ops: self.expand_encode(codec, "value"),
             },
             ReturnValuePlan::Handle { class_id, nullable } => ReturnTransport::Handle {
                 class_id: class_id.clone(),
@@ -418,6 +540,346 @@ impl<'c> Lowerer<'c> {
             AbiType::Void | AbiType::Pointer => {
                 panic!("unsupported ABI primitive for wire encoding")
             }
+        }
+    }
+
+    fn expand_decode(&self, codec: &CodecPlan) -> ReadSeq {
+        self.expand_decode_with_offset(codec, "pos")
+    }
+
+    fn expand_decode_with_offset(&self, codec: &CodecPlan, base: &str) -> ReadSeq {
+        let offset = OffsetExpr::Base;
+        match codec {
+            CodecPlan::Void => ReadSeq {
+                size: SizeExpr::Fixed(0),
+                ops: vec![],
+                shape: WireShape::Value,
+            },
+            CodecPlan::Primitive(primitive) => ReadSeq {
+                size: SizeExpr::Fixed(primitive.wire_size_bytes()),
+                ops: vec![ReadOp::Primitive {
+                    primitive: *primitive,
+                    offset,
+                }],
+                shape: WireShape::Value,
+            },
+            CodecPlan::String => ReadSeq {
+                size: SizeExpr::Runtime,
+                ops: vec![ReadOp::String { offset }],
+                shape: WireShape::Value,
+            },
+            CodecPlan::Bytes => ReadSeq {
+                size: SizeExpr::Runtime,
+                ops: vec![ReadOp::Bytes { offset }],
+                shape: WireShape::Value,
+            },
+            CodecPlan::Builtin(id) => {
+                let size = self.builtin_fixed_size(id).map(SizeExpr::Fixed).unwrap_or(SizeExpr::Runtime);
+                ReadSeq {
+                    size,
+                    ops: vec![ReadOp::Builtin {
+                        id: id.clone(),
+                        offset,
+                    }],
+                    shape: WireShape::Value,
+                }
+            }
+            CodecPlan::Option(inner) => ReadSeq {
+                size: SizeExpr::Runtime,
+                ops: vec![ReadOp::Option {
+                    tag_offset: offset,
+                    some: Box::new(self.expand_decode_with_offset(inner, "pos")),
+                }],
+                shape: WireShape::Optional,
+            },
+            CodecPlan::Vec { element, layout } => ReadSeq {
+                size: SizeExpr::Runtime,
+                ops: vec![ReadOp::Vec {
+                    len_offset: offset,
+                    element_type: TypeExpr::from(element.as_ref()),
+                    element: Box::new(self.expand_decode_with_offset(element, "pos")),
+                    layout: layout.clone(),
+                }],
+                shape: WireShape::Sequence,
+            },
+            CodecPlan::Result { ok, err } => ReadSeq {
+                size: SizeExpr::Runtime,
+                ops: vec![ReadOp::Result {
+                    tag_offset: offset,
+                    ok: Box::new(self.expand_decode_with_offset(ok, "pos")),
+                    err: Box::new(self.expand_decode_with_offset(err, "pos")),
+                }],
+                shape: WireShape::Value,
+            },
+            CodecPlan::Record { id, layout } => {
+                let (fields, size) = match layout {
+                    RecordLayout::Blittable { fields, size } => (
+                        fields
+                            .iter()
+                            .map(|field| {
+                                let offset_expr = if field.offset == 0 {
+                                    OffsetExpr::Base
+                                } else {
+                                    OffsetExpr::BasePlus(field.offset)
+                                };
+                                FieldReadOp {
+                                    name: field.name.clone(),
+                                    seq: ReadSeq {
+                                        size: SizeExpr::Fixed(field.primitive.wire_size_bytes()),
+                                        ops: vec![ReadOp::Primitive {
+                                            primitive: field.primitive,
+                                            offset: offset_expr,
+                                        }],
+                                        shape: WireShape::Value,
+                                    },
+                                }
+                            })
+                            .collect(),
+                        SizeExpr::Fixed(*size),
+                    ),
+                    RecordLayout::Encoded { fields } => (
+                        fields
+                            .iter()
+                            .map(|field| FieldReadOp {
+                                name: field.name.clone(),
+                                seq: self.expand_decode_with_offset(&field.codec, "pos"),
+                            })
+                            .collect(),
+                        SizeExpr::Runtime,
+                    ),
+                    RecordLayout::Recursive => (vec![], SizeExpr::Runtime),
+                };
+                ReadSeq {
+                    size,
+                    ops: vec![ReadOp::Record {
+                        id: id.clone(),
+                        offset,
+                        fields,
+                    }],
+                    shape: WireShape::Value,
+                }
+            }
+            CodecPlan::Enum { id, layout } => ReadSeq {
+                size: match layout {
+                    EnumLayout::CStyle { .. } => SizeExpr::Fixed(4),
+                    EnumLayout::Data { .. } | EnumLayout::Recursive => SizeExpr::Runtime,
+                },
+                ops: vec![ReadOp::Enum {
+                    id: id.clone(),
+                    offset,
+                    layout: layout.clone(),
+                }],
+                shape: WireShape::Value,
+            },
+            CodecPlan::Custom { id, underlying } => {
+                let underlying_seq = self.expand_decode_with_offset(underlying, base);
+                ReadSeq {
+                    size: underlying_seq.size.clone(),
+                    ops: vec![ReadOp::Custom {
+                        id: id.clone(),
+                        underlying: Box::new(underlying_seq),
+                    }],
+                    shape: WireShape::Value,
+                }
+            }
+        }
+    }
+
+    fn expand_encode(&self, codec: &CodecPlan, value: &str) -> WriteSeq {
+        match codec {
+            CodecPlan::Void => WriteSeq {
+                size: SizeExpr::Fixed(0),
+                ops: vec![],
+                shape: WireShape::Value,
+            },
+            CodecPlan::Primitive(primitive) => WriteSeq {
+                size: SizeExpr::Fixed(primitive.wire_size_bytes()),
+                ops: vec![WriteOp::Primitive {
+                    primitive: *primitive,
+                    value: value.to_string(),
+                }],
+                shape: WireShape::Value,
+            },
+            CodecPlan::String => WriteSeq {
+                size: SizeExpr::Sum(vec![
+                    SizeExpr::Fixed(4),
+                    SizeExpr::StringLen(value.to_string()),
+                ]),
+                ops: vec![WriteOp::String {
+                    value: value.to_string(),
+                }],
+                shape: WireShape::Value,
+            },
+            CodecPlan::Bytes => WriteSeq {
+                size: SizeExpr::Sum(vec![
+                    SizeExpr::Fixed(4),
+                    SizeExpr::BytesLen(value.to_string()),
+                ]),
+                ops: vec![WriteOp::Bytes {
+                    value: value.to_string(),
+                }],
+                shape: WireShape::Value,
+            },
+            CodecPlan::Builtin(id) => WriteSeq {
+                size: self
+                    .builtin_fixed_size(id)
+                    .map(SizeExpr::Fixed)
+                    .unwrap_or_else(|| {
+                        if id.as_str() == "Url" {
+                            SizeExpr::Sum(vec![
+                                SizeExpr::Fixed(4),
+                                SizeExpr::BuiltinSize {
+                                    id: id.clone(),
+                                    value: value.to_string(),
+                                },
+                            ])
+                        } else {
+                            SizeExpr::WireSize {
+                                value: value.to_string(),
+                            }
+                        }
+                    }),
+                ops: vec![WriteOp::Builtin {
+                    id: id.clone(),
+                    value: value.to_string(),
+                }],
+                shape: WireShape::Value,
+            },
+            CodecPlan::Option(inner) => {
+                let inner_seq = self.expand_encode(inner, "v");
+                WriteSeq {
+                    size: SizeExpr::OptionSize {
+                        value: value.to_string(),
+                        inner: Box::new(inner_seq.size.clone()),
+                    },
+                    ops: vec![WriteOp::Option {
+                        value: value.to_string(),
+                        some: Box::new(inner_seq),
+                    }],
+                    shape: WireShape::Optional,
+                }
+            }
+            CodecPlan::Vec { element, layout } => {
+                let element_seq = self.expand_encode(element, "item");
+                let size_expr = if matches!(element.as_ref(), CodecPlan::Primitive(PrimitiveType::U8)) {
+                    SizeExpr::Sum(vec![
+                        SizeExpr::Fixed(4),
+                        SizeExpr::BytesLen(value.to_string()),
+                    ])
+                } else {
+                    SizeExpr::VecSize {
+                        value: value.to_string(),
+                        inner: Box::new(element_seq.size.clone()),
+                        layout: layout.clone(),
+                    }
+                };
+                WriteSeq {
+                    size: size_expr,
+                    ops: vec![WriteOp::Vec {
+                        value: value.to_string(),
+                        element_type: TypeExpr::from(element.as_ref()),
+                        element: Box::new(element_seq),
+                        layout: layout.clone(),
+                    }],
+                    shape: WireShape::Sequence,
+                }
+            }
+            CodecPlan::Result { ok, err } => {
+                let ok_seq = self.expand_encode(ok, "okVal");
+                let err_seq = self.expand_encode(err, "errVal");
+                WriteSeq {
+                    size: SizeExpr::ResultSize {
+                        value: value.to_string(),
+                        ok: Box::new(ok_seq.size.clone()),
+                        err: Box::new(err_seq.size.clone()),
+                    },
+                    ops: vec![WriteOp::Result {
+                        value: value.to_string(),
+                        ok: Box::new(ok_seq),
+                        err: Box::new(err_seq),
+                    }],
+                    shape: WireShape::Value,
+                }
+            }
+            CodecPlan::Record { id, layout } => {
+                let fields = match layout {
+                    RecordLayout::Blittable { fields, .. } => fields
+                        .iter()
+                        .map(|field| FieldWriteOp {
+                            name: field.name.clone(),
+                            accessor: field.name.as_str().to_string(),
+                            seq: self.expand_encode(
+                                &CodecPlan::Primitive(field.primitive),
+                                &format!("{}.{}", value, field.name.as_str()),
+                            ),
+                        })
+                        .collect(),
+                    RecordLayout::Encoded { fields } => fields
+                        .iter()
+                        .map(|field| FieldWriteOp {
+                            name: field.name.clone(),
+                            accessor: field.name.as_str().to_string(),
+                            seq: self.expand_encode(
+                                &field.codec,
+                                &format!("{}.{}", value, field.name.as_str()),
+                            ),
+                        })
+                        .collect(),
+                    RecordLayout::Recursive => vec![],
+                };
+                let size = match layout {
+                    RecordLayout::Blittable { size, .. } => SizeExpr::Fixed(*size),
+                    _ => SizeExpr::WireSize {
+                        value: value.to_string(),
+                    },
+                };
+                WriteSeq {
+                    size,
+                    ops: vec![WriteOp::Record {
+                        id: id.clone(),
+                        value: value.to_string(),
+                        fields,
+                    }],
+                    shape: WireShape::Value,
+                }
+            }
+            CodecPlan::Enum { id, layout } => {
+                let size = match layout {
+                    EnumLayout::CStyle { .. } => SizeExpr::Fixed(4),
+                    _ => SizeExpr::WireSize {
+                        value: value.to_string(),
+                    },
+                };
+                WriteSeq {
+                    size,
+                    ops: vec![WriteOp::Enum {
+                        id: id.clone(),
+                        value: value.to_string(),
+                        layout: layout.clone(),
+                    }],
+                    shape: WireShape::Value,
+                }
+            }
+            CodecPlan::Custom { id, underlying } => {
+                let underlying_seq = self.expand_encode(underlying, value);
+                WriteSeq {
+                    size: underlying_seq.size.clone(),
+                    ops: vec![WriteOp::Custom {
+                        id: id.clone(),
+                        value: value.to_string(),
+                        underlying: Box::new(underlying_seq),
+                    }],
+                    shape: WireShape::Value,
+                }
+            }
+        }
+    }
+
+    fn builtin_fixed_size(&self, id: &BuiltinId) -> Option<usize> {
+        match id.as_str() {
+            "Duration" | "SystemTime" => Some(12),
+            "Uuid" => Some(16),
+            _ => None,
         }
     }
 
@@ -475,11 +937,12 @@ impl<'c> Lowerer<'c> {
                 let role = match mutability {
                     Mutability::Mutable => ParamRole::OutBuffer {
                         len_param: len_name.clone(),
-                        codec: codec.clone(),
+                        decode_ops: self.expand_decode(codec),
                     },
                     Mutability::Shared => ParamRole::InEncoded {
                         len_param: len_name.clone(),
-                        codec: codec.clone(),
+                        decode_ops: self.expand_decode(codec),
+                        encode_ops: self.expand_encode(codec, param.name.as_str()),
                     },
                 };
                 vec![
@@ -532,13 +995,18 @@ impl<'c> Lowerer<'c> {
             ReturnDef::Result { ok, err } => {
                 let ok_codec = self.build_codec(ok);
                 let err_codec = self.build_codec(err);
-                let codec = CodecPlan::Result {
+                let result_codec = CodecPlan::Result {
                     ok: Box::new(ok_codec),
                     err: Box::new(err_codec.clone()),
                 };
                 (
-                    ReturnTransport::Encoded { codec },
-                    ErrorTransport::Encoded { codec: err_codec },
+                    ReturnTransport::Encoded {
+                        decode_ops: self.expand_decode(&result_codec),
+                        encode_ops: self.expand_encode(&result_codec, "value"),
+                    },
+                    ErrorTransport::Encoded {
+                        decode_ops: self.expand_decode(&err_codec),
+                    },
                 )
             }
         }
@@ -588,7 +1056,8 @@ impl<'c> Lowerer<'c> {
                     ffi_type: AbiType::Pointer,
                     role: ParamRole::InEncoded {
                         len_param: len_name.clone(),
-                        codec,
+                        decode_ops: self.expand_decode(&codec),
+                        encode_ops: self.expand_encode(&codec, param.name.as_str()),
                     },
                 },
                 AbiParam {
@@ -612,13 +1081,13 @@ impl<'c> Lowerer<'c> {
         let (return_transport, _) = self.callback_return_and_error(returns);
 
         match return_transport {
-            ReturnTransport::Encoded { codec } => vec![
+            ReturnTransport::Encoded { decode_ops, .. } => vec![
                 AbiParam {
                     name: out_ptr_name.clone(),
                     ffi_type: AbiType::Pointer,
                     role: ParamRole::OutBuffer {
                         len_param: out_len_name.clone(),
-                        codec,
+                        decode_ops,
                     },
                 },
                 AbiParam {

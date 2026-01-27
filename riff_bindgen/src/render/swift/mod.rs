@@ -1,15 +1,9 @@
-mod codec;
+mod emit;
 mod lower;
 mod plan;
 mod templates;
 
+pub use emit::*;
 pub use lower::SwiftLowerer;
-pub use plan::{
-    SwiftCallback, SwiftCallbackMethod, SwiftClass, SwiftConstructor, SwiftConversion, SwiftEnum,
-    SwiftField, SwiftFunction, SwiftMethod, SwiftModule, SwiftParam, SwiftRecord, SwiftReturn,
-    SwiftVariant, SwiftVariantPayload,
-};
-pub use templates::{
-    CallbackTemplate, EnumCStyleTemplate, EnumDataTemplate, RecordTemplate, SwiftEmitter,
-    render_callback, render_enum, render_record,
-};
+pub use plan::{SwiftCallback, SwiftClass, SwiftEnum, SwiftFunction, SwiftModule, SwiftRecord};
+pub use templates::SwiftEmitter;

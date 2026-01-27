@@ -1,12 +1,14 @@
 use riff_ffi_rules::naming::{CreateFn, GlobalSymbol, Name, RegisterFn, VtableField, VtableType};
 
-use crate::ir::codec::CodecPlan;
 use crate::ir::contract::PackageInfo;
 use crate::ir::definitions::StreamMode;
 use crate::ir::ids::{
-    CallbackId, ClassId, EnumId, FunctionId, MethodId, ParamName, RecordId, StreamId,
+    CallbackId, ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId, StreamId,
+    VariantName,
 };
+use crate::ir::ops::{ReadSeq, WriteSeq};
 use crate::ir::plan::{AbiType, CallbackStyle, Mutability};
+use crate::ir::types::TypeExpr;
 
 #[derive(Debug, Clone)]
 pub struct AbiContract {
@@ -14,15 +16,55 @@ pub struct AbiContract {
     pub calls: Vec<AbiCall>,
     pub callbacks: Vec<AbiCallbackInvocation>,
     pub streams: Vec<AbiStream>,
-    pub record_codecs: Vec<(RecordId, CodecPlan)>,
-    pub enum_codecs: Vec<(EnumId, CodecPlan)>,
+    pub records: Vec<AbiRecord>,
+    pub enums: Vec<AbiEnum>,
     pub free_buf: Name<GlobalSymbol>,
     pub atomic_cas: Name<GlobalSymbol>,
 }
 
 #[derive(Debug, Clone)]
+pub struct AbiRecord {
+    pub id: RecordId,
+    pub decode_ops: ReadSeq,
+    pub encode_ops: WriteSeq,
+    pub is_blittable: bool,
+    pub size: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AbiEnum {
+    pub id: EnumId,
+    pub decode_ops: ReadSeq,
+    pub encode_ops: WriteSeq,
+    pub is_c_style: bool,
+    pub variants: Vec<AbiEnumVariant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AbiEnumVariant {
+    pub name: VariantName,
+    pub discriminant: i64,
+    pub payload: AbiEnumPayload,
+}
+
+#[derive(Debug, Clone)]
+pub enum AbiEnumPayload {
+    Unit,
+    Tuple(Vec<AbiEnumField>),
+    Struct(Vec<AbiEnumField>),
+}
+
+#[derive(Debug, Clone)]
+pub struct AbiEnumField {
+    pub name: FieldName,
+    pub type_expr: TypeExpr,
+    pub decode: ReadSeq,
+    pub encode: WriteSeq,
+}
+
+#[derive(Debug, Clone)]
 pub enum StreamItemTransport {
-    WireEncoded { codec: CodecPlan },
+    WireEncoded { decode_ops: ReadSeq },
 }
 
 #[derive(Debug, Clone)]
@@ -83,7 +125,8 @@ pub enum AsyncResultTransport {
     Void,
     Direct(AbiType),
     Encoded {
-        codec: CodecPlan,
+        decode_ops: ReadSeq,
+        encode_ops: WriteSeq,
     },
     Handle {
         class_id: ClassId,
@@ -115,7 +158,8 @@ pub enum ParamRole {
     },
     InEncoded {
         len_param: ParamName,
-        codec: CodecPlan,
+        decode_ops: ReadSeq,
+        encode_ops: WriteSeq,
     },
     InHandle {
         class_id: ClassId,
@@ -129,7 +173,7 @@ pub enum ParamRole {
     OutDirect,
     OutBuffer {
         len_param: ParamName,
-        codec: CodecPlan,
+        decode_ops: ReadSeq,
     },
     OutLen {
         for_param: ParamName,
@@ -142,7 +186,8 @@ pub enum ReturnTransport {
     Void,
     Direct(AbiType),
     Encoded {
-        codec: CodecPlan,
+        decode_ops: ReadSeq,
+        encode_ops: WriteSeq,
     },
     Handle {
         class_id: ClassId,
@@ -158,7 +203,7 @@ pub enum ReturnTransport {
 pub enum ErrorTransport {
     None,
     StatusCode,
-    Encoded { codec: CodecPlan },
+    Encoded { decode_ops: ReadSeq },
 }
 
 #[derive(Debug, Clone)]

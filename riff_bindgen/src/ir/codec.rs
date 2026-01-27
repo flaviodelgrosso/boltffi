@@ -1,5 +1,5 @@
 use crate::ir::ids::{BuiltinId, CustomTypeId, EnumId, FieldName, RecordId, VariantName};
-use crate::ir::types::PrimitiveType;
+use crate::ir::types::{PrimitiveType, TypeExpr};
 
 #[derive(Debug, Clone)]
 pub enum CodecPlan {
@@ -31,6 +31,31 @@ pub enum CodecPlan {
         id: CustomTypeId,
         underlying: Box<CodecPlan>,
     },
+}
+
+impl From<&CodecPlan> for TypeExpr {
+    fn from(codec: &CodecPlan) -> Self {
+        match codec {
+            CodecPlan::Void => TypeExpr::Void,
+            CodecPlan::Primitive(p) => TypeExpr::Primitive(*p),
+            CodecPlan::String => TypeExpr::String,
+            CodecPlan::Bytes => TypeExpr::Bytes,
+            CodecPlan::Builtin(id) => TypeExpr::Builtin(id.clone()),
+            CodecPlan::Option(inner) => {
+                TypeExpr::Option(Box::new(TypeExpr::from(inner.as_ref())))
+            }
+            CodecPlan::Vec { element, .. } => {
+                TypeExpr::Vec(Box::new(TypeExpr::from(element.as_ref())))
+            }
+            CodecPlan::Result { ok, err } => TypeExpr::Result {
+                ok: Box::new(TypeExpr::from(ok.as_ref())),
+                err: Box::new(TypeExpr::from(err.as_ref())),
+            },
+            CodecPlan::Record { id, .. } => TypeExpr::Record(id.clone()),
+            CodecPlan::Enum { id, .. } => TypeExpr::Enum(id.clone()),
+            CodecPlan::Custom { id, .. } => TypeExpr::Custom(id.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

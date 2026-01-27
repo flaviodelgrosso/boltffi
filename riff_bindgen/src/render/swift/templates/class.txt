@@ -243,9 +243,11 @@ public final class {{ cls.name }} {
                 atomicCas: {{ stream.atomic_cas }},
                 processItems: { wire in
                     let count = Int(wire.readU32(at: 0))
+{%- if stream.uses_offset() %}
                     var offset = 4
+{%- endif %}
                     for _ in 0..<count {
-                        let item = {{ stream.item_decode_expr }}
+                        let item = {{ stream.item_decode_expr() }}
                         _ = continuation.yield(item)
                     }
                 },
@@ -335,9 +337,11 @@ public final class {{ cls.name }} {
                     let wire = WireBuffer(ptr: ptr, len: Int(buf.len))
                     freeBuf(buf)
                     let count = Int(wire.readU32(at: 0))
+{%- if stream.uses_offset() %}
                     var offset = 4
+{%- endif %}
                     for _ in 0..<count {
-                        let item = {{ stream.item_decode_expr }}
+                        let item = {{ stream.item_decode_expr() }}
                         callback(item)
                     }
                 }
@@ -403,11 +407,13 @@ public final class {{ class_name }}{{ method_name_pascal }}Subscription {
         let wire = WireBuffer(ptr: ptr, len: Int(buf.len))
         freeBuf(buf)
         let count = Int(wire.readU32(at: 0))
+{%- if stream.uses_offset() %}
         var offset = 4
+{%- endif %}
         var result: [{{ stream.item_type }}] = []
         result.reserveCapacity(count)
         for _ in 0..<count {
-            let item = {{ stream.item_decode_expr }}
+            let item = {{ stream.item_decode_expr() }}
             result.append(item)
         }
         return result
