@@ -1,17 +1,35 @@
 use crate::ir::codec::{EnumLayout, VecLayout};
 use crate::ir::ids::BuiltinId;
-use crate::ir::ops::{OffsetExpr, ReadOp, ReadSeq, SizeExpr, WriteOp, WriteSeq};
+use crate::ir::ops::{OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq};
 use crate::ir::types::{PrimitiveType, TypeExpr};
+use crate::kotlin::NamingConvention;
+
+pub fn render_value(expr: &ValueExpr) -> String {
+    match expr {
+        ValueExpr::Instance => String::new(),
+        ValueExpr::Var(name) => name.clone(),
+        ValueExpr::Named(name) => NamingConvention::property_name(name),
+        ValueExpr::Field(parent, field) => {
+            let parent_str = render_value(parent);
+            let field_str = NamingConvention::property_name(field.as_str());
+            if parent_str.is_empty() {
+                field_str
+            } else {
+                format!("{}.{}", parent_str, field_str)
+            }
+        }
+    }
+}
 
 pub fn emit_size_expr(size: &SizeExpr) -> String {
     match size {
         SizeExpr::Fixed(value) => value.to_string(),
         SizeExpr::Runtime => "0".to_string(),
-        SizeExpr::StringLen(value) => format!("Utf8Codec.maxBytes({})", value),
-        SizeExpr::BytesLen(value) => format!("{}.size", value),
-        SizeExpr::ValueSize(value) => value.to_string(),
-        SizeExpr::WireSize { value } => format!("{}.wireEncodedSize()", value),
-        SizeExpr::BuiltinSize { id, value } => emit_builtin_size(id, value),
+        SizeExpr::StringLen(value) => format!("Utf8Codec.maxBytes({})", render_value(value)),
+        SizeExpr::BytesLen(value) => format!("{}.size", render_value(value)),
+        SizeExpr::ValueSize(value) => render_value(value),
+        SizeExpr::WireSize { value } => format!("{}.wireEncodedSize()", render_value(value)),
+        SizeExpr::BuiltinSize { id, value } => emit_builtin_size(id, &render_value(value)),
         SizeExpr::Sum(parts) => {
             let rendered = parts
                 .iter()
@@ -22,19 +40,24 @@ pub fn emit_size_expr(size: &SizeExpr) -> String {
         }
         SizeExpr::OptionSize { value, inner } => {
             let inner_expr = emit_size_expr(inner);
-            format!("({}?.let {{ v -> 1 + {} }} ?: 1)", value, inner_expr)
+            format!(
+                "({}?.let {{ v -> 1 + {} }} ?: 1)",
+                render_value(value),
+                inner_expr
+            )
         }
         SizeExpr::VecSize {
             value,
             inner,
             layout,
-        } => emit_vec_size(value, inner, layout),
+        } => emit_vec_size(&render_value(value), inner, layout),
         SizeExpr::ResultSize { value, ok, err } => {
+            let v = render_value(value);
             let ok_expr = emit_size_expr(ok);
             let err_expr = emit_size_expr(err);
             format!(
-                "({}.fold(ok = {{ v -> 1 + {} }}, err = {{ e -> 1 + {} }}))",
-                value, ok_expr, err_expr
+                "(when (val _r = {}) {{ is RiffResult.Ok -> {{ val okVal = _r.value; 1 + {} }}; is RiffResult.Err -> {{ val errVal = _r.error; 1 + {} }} }})",
+                v, ok_expr, err_expr
             )
         }
     }
@@ -185,17 +208,20 @@ pub fn emit_read_value(seq: &ReadSeq, base_name: &str, base_expr: &str) -> Strin
     }
 }
 
-pub fn emit_write_expr(seq: &WriteSeq, _value: &str) -> String {
+pub fn emit_write_expr(seq: &WriteSeq) -> String {
     let op = seq.ops.first().expect("write ops");
     match op {
-        WriteOp::Primitive { primitive, value } => emit_write_primitive(*primitive, value),
-        WriteOp::String { value } => format!("wire.writeString({})", value),
-        WriteOp::Bytes { value } => format!("wire.writeBytes({})", value),
+        WriteOp::Primitive { primitive, value } => {
+            emit_write_primitive(*primitive, &render_value(value))
+        }
+        WriteOp::String { value } => format!("wire.writeString({})", render_value(value)),
+        WriteOp::Bytes { value } => format!("wire.writeBytes({})", render_value(value)),
         WriteOp::Option { value, some } => {
-            let inner = emit_write_expr(some, "v");
+            let inner = emit_write_expr(some);
             format!(
                 "{}?.let {{ v -> wire.writeU8(1u); {} }} ?: wire.writeU8(0u)",
-                value, inner
+                render_value(value),
+                inner
             )
         }
         WriteOp::Vec {
@@ -203,25 +229,28 @@ pub fn emit_write_expr(seq: &WriteSeq, _value: &str) -> String {
             element_type,
             element,
             layout,
-        } => emit_write_vec(value, element_type, element, layout),
-        WriteOp::Record { value, .. } => format!("{}.wireEncodeTo(wire)", value),
+        } => emit_write_vec(&render_value(value), element_type, element, layout),
+        WriteOp::Record { value, .. } => {
+            format!("{}.wireEncodeTo(wire)", render_value(value))
+        }
         WriteOp::Enum { value, layout, .. } => match layout {
-            EnumLayout::CStyle { .. } => format!("wire.writeI32({}.value)", value),
+            EnumLayout::CStyle { .. } => format!("wire.writeI32({}.value)", render_value(value)),
             EnumLayout::Data { .. } | EnumLayout::Recursive => {
-                format!("{}.wireEncodeTo(wire)", value)
+                format!("{}.wireEncodeTo(wire)", render_value(value))
             }
         },
         WriteOp::Result { value, ok, err } => {
-            let ok_expr = emit_write_expr(ok, "okVal");
-            let err_expr = emit_write_expr(err, "errVal");
+            let v = render_value(value);
+            let ok_expr = emit_write_expr(ok);
+            let err_expr = emit_write_expr(err);
             format!(
                 "when ({}) {{ is RiffResult.Ok -> {{ wire.writeU8(0u); val okVal = {}.value; {} }} is RiffResult.Err -> {{ wire.writeU8(1u); val errVal = {}.error; {} }} }}",
-                value, value, ok_expr, value, err_expr
+                v, v, ok_expr, v, err_expr
             )
         }
-        WriteOp::Builtin { id, value } => emit_write_builtin(id, value),
-        WriteOp::Custom { id: _, value, .. } => {
-            format!("{}.wireEncodeTo(wire)", value)
+        WriteOp::Builtin { id, value } => emit_write_builtin(id, &render_value(value)),
+        WriteOp::Custom { value, .. } => {
+            format!("{}.wireEncodeTo(wire)", render_value(value))
         }
     }
 }
@@ -421,7 +450,7 @@ fn emit_write_vec(
                 value
             ),
             _ => {
-                let inner = emit_write_expr(element, "item");
+                let inner = emit_write_expr(element);
                 format!(
                     "wire.writeU32({}.size.toUInt()); {}.forEach {{ item -> {} }}",
                     value, value, inner
@@ -429,7 +458,7 @@ fn emit_write_vec(
             }
         },
         VecLayout::Encoded => {
-            let inner = emit_write_expr(element, "item");
+            let inner = emit_write_expr(element);
             format!(
                 "wire.writeU32({}.size.toUInt()); {}.forEach {{ item -> {} }}",
                 value, value, inner

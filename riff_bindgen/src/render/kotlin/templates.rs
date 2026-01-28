@@ -177,6 +177,7 @@ pub struct CallbackTraitTemplate<'a> {
     pub callbacks_object: &'a str,
     pub bridge_name: &'a str,
     pub doc: &'a Option<String>,
+    pub is_closure: bool,
     pub sync_methods: &'a [super::plan::KotlinCallbackMethod],
     pub async_methods: &'a [super::plan::KotlinAsyncCallbackMethod],
 }
@@ -306,8 +307,8 @@ impl KotlinEmitter {
                     ffi_cancel: &async_call.cancel,
                     ffi_free: &async_call.free,
                     return_abi: &async_call.return_abi,
-                    decode_expr: &function.decode_expr,
-                    is_blittable_return: function.is_blittable_return,
+                    decode_expr: &async_call.decode_expr,
+                    is_blittable_return: async_call.is_blittable_return,
                 }
                 .render()
                 .unwrap()
@@ -356,6 +357,7 @@ impl KotlinEmitter {
                 callbacks_object: &callback.callbacks_object,
                 bridge_name: &callback.bridge_name,
                 doc: &callback.doc,
+                is_closure: callback.is_closure,
                 sync_methods: &callback.sync_methods,
                 async_methods: &callback.async_methods,
             }

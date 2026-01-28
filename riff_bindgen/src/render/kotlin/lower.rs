@@ -306,7 +306,7 @@ impl<'a> KotlinLowerer<'a> {
         let repr_kotlin_type = self.kotlin_type(&custom.repr);
         let repr_decode_pair_expr =
             emit::emit_read_pair(&self.custom_read_seq(custom), "offset", "offset");
-        let repr_encode_expr = emit::emit_write_expr(&self.custom_write_seq(custom), "repr");
+        let repr_encode_expr = emit::emit_write_expr(&self.custom_write_seq(custom));
         let repr_size_expr = emit::emit_size_expr(&self.custom_size_expr(custom));
 
         KotlinCustomType {
@@ -335,11 +335,6 @@ impl<'a> KotlinLowerer<'a> {
     fn lower_enum(&self, enumeration: &EnumDef) -> KotlinEnum {
         let abi_enum = self.abi_enum_for(enumeration);
         let class_name = NamingConvention::class_name(enumeration.id.as_str());
-        let variants = abi_enum
-            .variants
-            .iter()
-            .map(|variant| self.lower_enum_variant(variant))
-            .collect::<Vec<_>>();
         let kind = if enumeration.is_error {
             KotlinEnumKind::Error
         } else if abi_enum.is_c_style {
@@ -347,6 +342,11 @@ impl<'a> KotlinLowerer<'a> {
         } else {
             KotlinEnumKind::Sealed
         };
+        let variants = abi_enum
+            .variants
+            .iter()
+            .map(|variant| self.lower_enum_variant(variant, kind))
+            .collect::<Vec<_>>();
         KotlinEnum {
             class_name,
             variants,
@@ -354,7 +354,11 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
-    fn lower_enum_variant(&self, variant: &AbiEnumVariant) -> KotlinEnumVariant {
+    fn lower_enum_variant(
+        &self,
+        variant: &AbiEnumVariant,
+        kind: KotlinEnumKind,
+    ) -> KotlinEnumVariant {
         let fields = match &variant.payload {
             AbiEnumPayload::Unit => Vec::new(),
             AbiEnumPayload::Tuple(fields) | AbiEnumPayload::Struct(fields) => fields
@@ -362,8 +366,12 @@ impl<'a> KotlinLowerer<'a> {
                 .map(|field| self.lower_enum_field(field))
                 .collect(),
         };
+        let name = match kind {
+            KotlinEnumKind::CStyle => NamingConvention::enum_entry_name(variant.name.as_str()),
+            _ => NamingConvention::class_name(variant.name.as_str()),
+        };
         KotlinEnumVariant {
-            name: NamingConvention::class_name(variant.name.as_str()),
+            name,
             tag: variant.discriminant,
             fields,
         }
@@ -377,7 +385,7 @@ impl<'a> KotlinLowerer<'a> {
             local_name: local_name.clone(),
             wire_decode_inline: emit::emit_inline_decode(&field.decode, &local_name, "pos"),
             wire_size_expr: emit::emit_size_expr(&field.decode.size),
-            wire_encode: emit::emit_write_expr(&field.encode, field.name.as_str()),
+            wire_encode: emit::emit_write_expr(&field.encode),
         }
     }
 
@@ -431,7 +439,7 @@ impl<'a> KotlinLowerer<'a> {
                             ),
                         );
                         Some(KotlinDataEnumField {
-                            param_name: field.name.as_str().to_string(),
+                            param_name: NamingConvention::property_name(field.name.as_str()),
                             value_expr,
                             offset,
                             getter,
@@ -467,6 +475,9 @@ impl<'a> KotlinLowerer<'a> {
         let decode_seq = self
             .record_field_read_seq(&record.id, &field.name)
             .expect("record field decode ops");
+        let encode_seq = self
+            .record_field_write_seq(&record.id, &field.name)
+            .expect("record field encode ops");
         KotlinRecordField {
             name: kotlin_name.clone(),
             kotlin_type: self.kotlin_type(&field.type_expr),
@@ -474,19 +485,14 @@ impl<'a> KotlinLowerer<'a> {
             read_expr: emit::emit_read_value(&decode_seq, "offset", "offset"),
             local_name: local_name.clone(),
             wire_decode_inline: emit::emit_inline_decode(&decode_seq, &local_name, "pos"),
-            wire_size_expr: emit::emit_size_expr(&decode_seq.size),
-            wire_encode: emit::emit_write_expr(
-                &self
-                    .record_field_write_seq(&record.id, &field.name)
-                    .expect("record field encode ops"),
-                &kotlin_name,
-            ),
+            wire_size_expr: emit::emit_size_expr(&encode_seq.size),
+            wire_encode: emit::emit_write_expr(&encode_seq),
             padding_after: self.field_padding_after(&record.id, &field.name),
         }
     }
 
     fn lower_record_readers(&self) -> Vec<KotlinRecordReader> {
-        let record_ids = self.blittable_vec_return_records();
+        let record_ids = self.blittable_return_record_ids();
         self.contract
             .catalog
             .all_records()
@@ -697,7 +703,8 @@ impl<'a> KotlinLowerer<'a> {
     }
 
     fn lower_method(&self, class: &ClassDef, method: &MethodDef) -> KotlinMethod {
-        let call = self.abi_call_for_method(class, method);
+        let call = Self::strip_receiver(self.abi_call_for_method(class, method));
+        let call = &call;
         let wire_writers = self.wire_writers_for_params(call);
         let wire_writer_closes: Vec<String> = wire_writers
             .iter()
@@ -721,8 +728,6 @@ impl<'a> KotlinLowerer<'a> {
         let err_type = self.error_type_name(&method.returns);
         let rendered = if method.is_async {
             let async_call = self.async_call_for_method(class, method, call);
-            let async_decode_expr = self.async_call_decode_expr(method, call);
-            let is_blittable_async = self.is_blittable_async_return(call);
             AsyncMethodTemplate {
                 method_name: &NamingConvention::method_name(method.id.as_str()),
                 signature_params: &signature_params,
@@ -739,8 +744,8 @@ impl<'a> KotlinLowerer<'a> {
                 ffi_cancel: &async_call.cancel,
                 ffi_free: &async_call.free,
                 return_abi: &async_call.return_abi,
-                decode_expr: &async_decode_expr,
-                is_blittable_return: is_blittable_async,
+                decode_expr: &async_call.decode_expr,
+                is_blittable_return: async_call.is_blittable_return,
             }
             .render()
             .unwrap()
@@ -942,6 +947,7 @@ impl<'a> KotlinLowerer<'a> {
             callbacks_object,
             bridge_name,
             doc: callback.doc.clone(),
+            is_closure: matches!(callback.kind, CallbackKind::Closure),
             sync_methods,
             async_methods,
         }
@@ -953,23 +959,17 @@ impl<'a> KotlinLowerer<'a> {
         method: &CallbackMethodDef,
     ) -> KotlinCallbackMethod {
         let abi_method = self.abi_callback_method(&callback.id, &method.id);
-        let param_map = method
+        let abi_param_map: HashMap<_, _> = abi_method
             .params
             .iter()
             .map(|param| (param.name.clone(), param))
-            .collect::<HashMap<_, _>>();
-        let params = abi_method
+            .collect();
+        let params = method
             .params
             .iter()
-            .filter(|param| {
-                matches!(
-                    param.role,
-                    ParamRole::InDirect | ParamRole::InEncoded { .. }
-                )
-            })
-            .map(|param| {
-                let def = param_map.get(&param.name).expect("param def");
-                self.lower_callback_param(def, param)
+            .filter_map(|def| {
+                let abi_param = abi_param_map.get(&def.name)?;
+                Some(self.lower_callback_param(def, abi_param))
             })
             .collect();
         let return_info = self.callback_return_info(&method.returns, &abi_method.return_);
@@ -987,23 +987,17 @@ impl<'a> KotlinLowerer<'a> {
         method: &CallbackMethodDef,
     ) -> KotlinAsyncCallbackMethod {
         let abi_method = self.abi_callback_method(&callback.id, &method.id);
-        let param_map = method
+        let abi_param_map: HashMap<_, _> = abi_method
             .params
             .iter()
             .map(|param| (param.name.clone(), param))
-            .collect::<HashMap<_, _>>();
-        let params = abi_method
+            .collect();
+        let params = method
             .params
             .iter()
-            .filter(|param| {
-                matches!(
-                    param.role,
-                    ParamRole::InDirect | ParamRole::InEncoded { .. }
-                )
-            })
-            .map(|param| {
-                let def = param_map.get(&param.name).expect("param def");
-                self.lower_callback_param(def, param)
+            .filter_map(|def| {
+                let abi_param = abi_param_map.get(&def.name)?;
+                Some(self.lower_callback_param(def, abi_param))
             })
             .collect();
         let return_info = self.callback_return_info(&method.returns, &abi_method.return_);
@@ -1186,7 +1180,7 @@ impl<'a> KotlinLowerer<'a> {
 
     fn callback_return_wire_encode(&self, encode_ops: &WriteSeq, wrap_ok: bool) -> String {
         let size_expr = emit::emit_size_expr(&encode_ops.size);
-        let encode_expr = emit::emit_write_expr(encode_ops, "value");
+        let encode_expr = emit::emit_write_expr(encode_ops);
         let value_binding = if wrap_ok {
             "val value = RiffResult.Ok(value); "
         } else {
@@ -1205,11 +1199,14 @@ impl<'a> KotlinLowerer<'a> {
             .iter()
             .map(|func| self.lower_native_function(func))
             .collect::<Vec<_>>();
+        let declared_symbols: HashSet<&str> =
+            functions.iter().map(|f| f.ffi_name.as_str()).collect();
         let wire_functions = self
             .abi
             .calls
             .iter()
             .filter(|call| matches!(call.return_, ReturnTransport::Encoded { .. }))
+            .filter(|call| !declared_symbols.contains(call.symbol.as_str()))
             .map(|call| KotlinNativeWireFunction {
                 ffi_name: call.symbol.as_str().to_string(),
                 params: {
@@ -1333,7 +1330,7 @@ impl<'a> KotlinLowerer<'a> {
             .iter()
             .filter(|m| m.is_async)
             .map(|method| {
-                let call = self.abi_call_for_method(class, method);
+                let call = Self::strip_receiver(self.abi_call_for_method(class, method));
                 let async_call = match &call.mode {
                     CallMode::Async(async_call) => async_call,
                     CallMode::Sync => panic!("async method missing async call"),
@@ -1346,7 +1343,7 @@ impl<'a> KotlinLowerer<'a> {
                     ffi_free: async_call.free.as_str().to_string(),
                     include_handle: true,
                     params: {
-                        let len_params = self.len_param_names(call);
+                        let len_params = self.len_param_names(&call);
                         call.params
                             .iter()
                             .filter(|param| self.include_native_param(param, &len_params))
@@ -1371,12 +1368,12 @@ impl<'a> KotlinLowerer<'a> {
             .iter()
             .filter(|m| !m.is_async)
             .map(|method| {
-                let call = self.abi_call_for_method(class, method);
+                let call = Self::strip_receiver(self.abi_call_for_method(class, method));
                 KotlinNativeSyncMethod {
                     ffi_name: call.symbol.as_str().to_string(),
                     include_handle: true,
                     params: {
-                        let len_params = self.len_param_names(call);
+                        let len_params = self.len_param_names(&call);
                         call.params
                             .iter()
                             .filter(|param| self.include_native_param(param, &len_params))
@@ -1451,6 +1448,7 @@ impl<'a> KotlinLowerer<'a> {
             ParamRole::InEncoded { .. } => "ByteBuffer".to_string(),
             ParamRole::InHandle { .. } => "Long".to_string(),
             ParamRole::InCallback { .. } => "Long".to_string(),
+            ParamRole::OutBuffer { .. } => "ByteBuffer".to_string(),
             _ => self.jni_type_for_abi(&param.ffi_type),
         }
     }
@@ -1479,7 +1477,13 @@ impl<'a> KotlinLowerer<'a> {
             TypeExpr::Enum(id) => NamingConvention::class_name(id.as_str()),
             TypeExpr::Vec(inner) => self.kotlin_vec_type(inner),
             TypeExpr::Option(inner) => format!("{}?", self.kotlin_type(inner)),
-            TypeExpr::Result { ok, .. } => self.kotlin_type(ok),
+            TypeExpr::Result { ok, err } => {
+                format!(
+                    "RiffResult<{}, {}>",
+                    self.kotlin_type(ok),
+                    self.kotlin_type(err)
+                )
+            }
             TypeExpr::Handle(class_id) => NamingConvention::class_name(class_id.as_str()),
             TypeExpr::Callback(callback_id) => NamingConvention::class_name(callback_id.as_str()),
             TypeExpr::Void => "Unit".to_string(),
@@ -1744,7 +1748,7 @@ impl<'a> KotlinLowerer<'a> {
                 ParamRole::InEncoded { encode_ops, .. } => Some(KotlinWireWriter {
                     binding_name: format!("wire_writer_{}", param.name.as_str()),
                     size_expr: emit::emit_size_expr(&encode_ops.size),
-                    encode_expr: emit::emit_write_expr(encode_ops, param.name.as_str()),
+                    encode_expr: emit::emit_write_expr(encode_ops),
                 }),
                 _ => None,
             })
@@ -1763,7 +1767,7 @@ impl<'a> KotlinLowerer<'a> {
                     .map(|w| format!("{}.buffer", w.binding_name))
                     .unwrap_or_else(|| "wire.buffer".to_string()),
                 ParamRole::InHandle { nullable, .. } => {
-                    let name = param.name.as_str();
+                    let name = NamingConvention::param_name(param.name.as_str());
                     if *nullable {
                         format!("{}?.handle ?: 0L", name)
                     } else {
@@ -1779,14 +1783,27 @@ impl<'a> KotlinLowerer<'a> {
                         "{}Bridge",
                         NamingConvention::class_name(callback_id.as_str())
                     );
-                    let name = param.name.as_str();
+                    let name = NamingConvention::param_name(param.name.as_str());
                     if *nullable {
                         format!("{}?.let {{ {}.create(it) }} ?: 0L", name, bridge)
                     } else {
                         format!("{}.create({})", bridge, name)
                     }
                 }
-                _ => param.name.as_str().to_string(),
+                ParamRole::OutBuffer { .. } => {
+                    let name = NamingConvention::param_name(param.name.as_str());
+                    self.writer_pack_expr_for_param(param, &name)
+                }
+                _ => {
+                    let name = NamingConvention::param_name(param.name.as_str());
+                    match &param.ffi_type {
+                        AbiType::U64 | AbiType::USize => format!("{}.toLong()", name),
+                        AbiType::U32 => format!("{}.toInt()", name),
+                        AbiType::U16 => format!("{}.toShort()", name),
+                        AbiType::U8 => format!("{}.toByte()", name),
+                        _ => name,
+                    }
+                }
             })
             .collect()
     }
@@ -1810,6 +1827,22 @@ impl<'a> KotlinLowerer<'a> {
                 param.role,
                 ParamRole::OutLen { .. } | ParamRole::OutDirect | ParamRole::StatusOut
             )
+    }
+
+    fn is_instance_receiver(param: &AbiParam) -> bool {
+        param.name.as_str() == "self" && matches!(param.role, ParamRole::InHandle { .. })
+    }
+
+    fn strip_receiver(call: &AbiCall) -> AbiCall {
+        AbiCall {
+            params: call
+                .params
+                .iter()
+                .filter(|p| !Self::is_instance_receiver(p))
+                .cloned()
+                .collect(),
+            ..call.clone()
+        }
     }
 
     fn decode_expr_for_call_return(
@@ -1850,13 +1883,9 @@ impl<'a> KotlinLowerer<'a> {
             _ => emit::emit_read_pair(ok_seq, "pos", "pos"),
         };
         let err_expr = emit::emit_read_pair(err_seq, "pos", "pos");
-        let err_to_throwable = match returns {
-            ReturnDef::Result { err, .. } => self.err_to_throwable(err),
-            _ => "FfiException(-1, \"Error: $err\")".to_string(),
-        };
         format!(
-            "wire.readResult(0, {{ pos -> {} }}, {{ pos -> {} }}).first.unwrapOrThrow {{ err -> {} }}",
-            ok_expr, err_expr, err_to_throwable
+            "wire.readResult(0, {{ pos -> {} }}, {{ pos -> {} }}).first.getOrThrow()",
+            ok_expr, err_expr
         )
     }
 
@@ -1921,28 +1950,24 @@ impl<'a> KotlinLowerer<'a> {
     fn async_call_for_method(
         &self,
         _class: &ClassDef,
-        _method: &MethodDef,
+        method: &MethodDef,
         call: &AbiCall,
     ) -> KotlinAsyncCall {
         let async_call = match &call.mode {
             CallMode::Async(async_call) => async_call,
             CallMode::Sync => panic!("async method missing async call"),
         };
+        let decode_expr = self.decode_expr_for_async_result(&async_call.result, &method.returns);
+        let is_blittable_return = self.is_blittable_async_result(&async_call.result);
         KotlinAsyncCall {
             poll: async_call.poll.as_str().to_string(),
             complete: async_call.complete.as_str().to_string(),
             cancel: async_call.cancel.as_str().to_string(),
             free: async_call.free.as_str().to_string(),
             return_abi: self.kotlin_return_abi_for_async(&async_call.result),
+            decode_expr,
+            is_blittable_return,
         }
-    }
-
-    fn async_call_decode_expr(&self, method: &MethodDef, call: &AbiCall) -> String {
-        let async_call = match &call.mode {
-            CallMode::Async(async_call) => async_call,
-            CallMode::Sync => panic!("async method missing async call"),
-        };
-        self.decode_expr_for_async_result(&async_call.result, &method.returns)
     }
 
     fn decode_expr_for_async_result(
@@ -2007,18 +2032,22 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
-    fn async_call_for_function(&self, _func: &FunctionDef, call: &AbiCall) -> KotlinAsyncCall {
+    fn async_call_for_function(&self, func: &FunctionDef, call: &AbiCall) -> KotlinAsyncCall {
         let async_call = match &call.mode {
             CallMode::Async(async_call) => async_call,
             CallMode::Sync => panic!("async function missing async call"),
         };
         let return_abi = self.kotlin_return_abi_for_async(&async_call.result);
+        let decode_expr = self.decode_expr_for_async_result(&async_call.result, &func.returns);
+        let is_blittable_return = self.is_blittable_async_result(&async_call.result);
         KotlinAsyncCall {
             poll: async_call.poll.as_str().to_string(),
             complete: async_call.complete.as_str().to_string(),
             cancel: async_call.cancel.as_str().to_string(),
             free: async_call.free.as_str().to_string(),
             return_abi,
+            decode_expr,
+            is_blittable_return,
         }
     }
 
@@ -2628,38 +2657,62 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
-    fn blittable_vec_return_records(&self) -> HashSet<&str> {
-        self.contract
-            .functions
+    fn blittable_return_record_ids(&self) -> HashSet<&str> {
+        let sync_returns = self
+            .abi
+            .calls
             .iter()
-            .filter_map(|func| {
-                let call = self.abi_call_for_function(func);
-                match &call.return_ {
-                    ReturnTransport::Encoded { decode_ops, .. } => match decode_ops.ops.first() {
-                        Some(ReadOp::Vec {
-                            element_type,
-                            layout,
-                            ..
-                        }) => match element_type {
-                            TypeExpr::Record(id)
-                                if matches!(layout, VecLayout::Blittable { .. })
-                                    && self
-                                        .contract
-                                        .catalog
-                                        .resolve_record(id)
-                                        .map(|record| record.is_blittable())
-                                        .unwrap_or(false) =>
-                            {
-                                Some(id.as_str())
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    },
-                    _ => None,
+            .filter_map(|call| self.blittable_record_from_decode_ops(&call.return_));
+
+        let async_returns = self.abi.calls.iter().filter_map(|call| match &call.mode {
+            CallMode::Async(async_call) => match &async_call.result {
+                AsyncResultTransport::Encoded { decode_ops, .. } => {
+                    self.blittable_record_id_from_read_seq(decode_ops)
                 }
-            })
-            .collect()
+                _ => None,
+            },
+            CallMode::Sync => None,
+        });
+
+        sync_returns.chain(async_returns).collect()
+    }
+
+    fn blittable_record_from_decode_ops<'b>(
+        &'b self,
+        transport: &'b ReturnTransport,
+    ) -> Option<&'b str> {
+        match transport {
+            ReturnTransport::Encoded { decode_ops, .. } => {
+                self.blittable_record_id_from_read_seq(decode_ops)
+            }
+            _ => None,
+        }
+    }
+
+    fn blittable_record_id_from_read_seq<'b>(&'b self, seq: &'b ReadSeq) -> Option<&'b str> {
+        match seq.ops.first() {
+            Some(ReadOp::Record { id, .. }) if self.is_record_blittable(id.as_str()) => {
+                Some(id.as_str())
+            }
+            Some(ReadOp::Vec {
+                element_type: TypeExpr::Record(id),
+                layout,
+                ..
+            }) if matches!(layout, VecLayout::Blittable { .. })
+                && self.is_record_blittable(id.as_str()) =>
+            {
+                Some(id.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    fn is_record_blittable(&self, record_id: &str) -> bool {
+        self.contract
+            .catalog
+            .resolve_record(&RecordId::new(record_id))
+            .map(|record| record.is_blittable())
+            .unwrap_or(false)
     }
 
     fn blittable_vec_param_records(&self) -> HashSet<&str> {
@@ -2735,6 +2788,32 @@ impl<'a> KotlinLowerer<'a> {
                     .any(|record| record.id.as_str() == *record_name && record.is_blittable())
             })
             .collect()
+    }
+
+    fn writer_pack_expr_for_param(&self, param: &AbiParam, kotlin_name: &str) -> String {
+        let record_id = self.out_buffer_record_id(param);
+        match record_id {
+            Some(id) => format!(
+                "{}Writer.pack({})",
+                NamingConvention::class_name(id),
+                kotlin_name,
+            ),
+            None => kotlin_name.to_string(),
+        }
+    }
+
+    fn out_buffer_record_id<'b>(&'b self, param: &'b AbiParam) -> Option<&'b str> {
+        match &param.role {
+            ParamRole::OutBuffer { decode_ops, .. } => match decode_ops.ops.first() {
+                Some(ReadOp::Vec {
+                    element_type: TypeExpr::Record(id),
+                    ..
+                }) => Some(id.as_str()),
+                Some(ReadOp::Record { id, .. }) => Some(id.as_str()),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 }
 

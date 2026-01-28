@@ -259,6 +259,7 @@ pub struct KotlinCallbackTrait {
     pub callbacks_object: String,
     pub bridge_name: String,
     pub doc: Option<String>,
+    pub is_closure: bool,
     pub sync_methods: Vec<KotlinCallbackMethod>,
     pub async_methods: Vec<KotlinAsyncCallbackMethod>,
 }
@@ -529,6 +530,8 @@ pub struct KotlinAsyncCall {
     pub cancel: String,
     pub free: String,
     pub return_abi: KotlinReturnAbi,
+    pub decode_expr: String,
+    pub is_blittable_return: bool,
 }
 
 #[derive(Clone)]
