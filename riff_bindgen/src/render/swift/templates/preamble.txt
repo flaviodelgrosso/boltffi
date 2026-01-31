@@ -180,20 +180,25 @@ final class FfiFutureState<T>: @unchecked Sendable {
     @inlinable func readBlittableArray<T>(at offset: Int, as type: T.Type) -> [T] {
         let count = Int(readU32(at: offset))
         guard count > 0 else { return [] }
+        let byteCount = count * MemoryLayout<T>.stride
         return data.withUnsafeBytes { rawBuffer in
-            let ptr = rawBuffer.baseAddress!.advanced(by: offset + 4).assumingMemoryBound(to: T.self)
-            return Array(UnsafeBufferPointer(start: ptr, count: count))
+            Array<T>(unsafeUninitializedCapacity: count) { buffer, initialized in
+                memcpy(buffer.baseAddress!, rawBuffer.baseAddress!.advanced(by: offset + 4), byteCount)
+                initialized = count
+            }
         }
     }
     @inlinable func readBlittableArrayWithSize<T>(at offset: Int, as type: T.Type) -> (value: [T], size: Int) {
         let count = Int(readU32(at: offset))
         guard count > 0 else { return ([], 4) }
-        let size = 4 + count * MemoryLayout<T>.stride
+        let byteCount = count * MemoryLayout<T>.stride
         let arr = data.withUnsafeBytes { rawBuffer in
-            let ptr = rawBuffer.baseAddress!.advanced(by: offset + 4).assumingMemoryBound(to: T.self)
-            return Array(UnsafeBufferPointer(start: ptr, count: count))
+            Array<T>(unsafeUninitializedCapacity: count) { buffer, initialized in
+                memcpy(buffer.baseAddress!, rawBuffer.baseAddress!.advanced(by: offset + 4), byteCount)
+                initialized = count
+            }
         }
-        return (arr, size)
+        return (arr, 4 + byteCount)
     }
     @inlinable func readBytes(at offset: Int) -> Data {
         let count = Int(readU32(at: offset))
