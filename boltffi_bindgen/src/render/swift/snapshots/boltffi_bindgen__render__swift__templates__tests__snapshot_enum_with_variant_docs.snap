@@ -1,0 +1,19 @@
+---
+source: boltffi_bindgen/src/render/swift/templates.rs
+expression: render_enum(&e)
+---
+/// A cardinal compass direction.
+public enum Direction: Int32, Hashable, Sendable, CaseIterable {
+    /// Pointing toward the north pole.
+    case north = 0
+    case south = 1
+
+    @usableFromInline init(fromC c: Int32) { self = Direction(rawValue: c)! }
+    @usableFromInline var cValue: Int32 { rawValue }
+
+}
+
+extension Direction: WireCodable {
+    @inlinable static func decode(from reader: inout WireReader) -> Direction { Direction(rawValue: reader.readI32())! }
+    @inlinable func encode(to writer: inout WireWriter) { writer.writeI32(rawValue) }
+}

@@ -1,9 +1,0 @@
----
-source: riff_bindgen/src/render/swift/templates.rs
-expression: "render_function(&func, \"riff\")"
----
-public func findUser(id: Int64) -> String? {
-    let buf = riff_find_user(id)
-    defer { riff_free_buf_u8(buf) }
-    return riffDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in reader.readOptional { reader in reader.readString() } }
-}

@@ -1,0 +1,24 @@
+---
+source: boltffi_bindgen/src/render/swift/templates.rs
+expression: "render_class(&cls, \"boltffi\")"
+---
+public final class Connection {
+    let handle: OpaquePointer
+
+    init(handle: OpaquePointer) {
+        self.handle = handle
+    }
+
+    public init(url: String) throws {
+        var url = url
+        guard let ptr = url.withUTF8 { urlBuf -> OpaquePointer? in boltffi_connection_open(urlBuf.baseAddress!, UInt(urlBuf.count)) } else {
+            throw FfiError(message: takeLastErrorMessage())
+        }
+        self.handle = ptr
+    }
+
+    deinit {
+        boltffi_connection_free(handle)
+    }
+
+}

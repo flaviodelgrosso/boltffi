@@ -1,0 +1,29 @@
+---
+source: boltffi_bindgen/src/render/kotlin/templates.rs
+expression: template.render().unwrap()
+---
+class Connection private constructor(internal val handle: Long) : AutoCloseable {
+    private val closed = AtomicBoolean(false)
+
+    constructor(url: String) : this(
+        kotlin.run {
+            val urlWire = WireWriterPool.acquire(BoltFFIWire.sizeString(url))
+            try {
+                kotlin.run {
+                    val wire = urlWire.writer
+                    BoltFFIWire.writeString(url)
+                }
+                val handle = Native.boltffi_connection_open(urlWire.ptr, urlWire.len)
+                if (handle == 0L) throw FfiException(1, Native.boltffi_last_error_message())
+                handle
+            } finally {
+                urlWire.close().close()
+            }
+        }
+    )
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        Native.boltffi_connection_free(handle)
+    }
+}

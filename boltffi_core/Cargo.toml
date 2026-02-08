@@ -1,0 +1,25 @@
+[package]
+name = "boltffi_core"
+version = "0.1.0"
+edition = "2024"
+authors = ["Ali A. Hilal <me@alihilal.com>"]
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = ["uuid", "url"]
+fast-alloc = ["mimalloc"]
+uuid = ["dep:uuid"]
+chrono = ["dep:chrono"]
+url = ["dep:url"]
+
+[dependencies]
+boltffi_macros = { path = "../boltffi_macros" }
+mimalloc = { version = "0.1", default-features = false, optional = true }
+uuid = { version = "1.10.0", default-features = false, features = ["std"], optional = true }
+chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+url = { version = "2.5.4", default-features = false, features = ["std"], optional = true }
+
+[lints]
+workspace = true

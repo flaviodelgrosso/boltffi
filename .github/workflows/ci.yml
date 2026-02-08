@@ -70,7 +70,7 @@ jobs:
         with:
           cache-on-failure: true
           key: ${{ matrix.target }}
-      - run: cargo build --release --target ${{ matrix.target }} -p riff_cli
+      - run: cargo build --release --target ${{ matrix.target }} -p boltffi_cli
 
   verify:
     name: Verify
@@ -82,7 +82,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - run: cargo build --release -p riff_cli
+      - run: cargo build --release -p boltffi_cli
       - run: ./target/release/riff --version
 
   docs:

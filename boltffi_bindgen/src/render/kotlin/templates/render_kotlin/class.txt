@@ -1,0 +1,279 @@
+{{ self::kdoc_block(doc, "") }}class {{ class_name }} private constructor(internal val handle: Long) : AutoCloseable {
+    private val closed = AtomicBoolean(false)
+{%- for ctor in constructors %}{% if !ctor.is_factory %}
+
+{{ self::kdoc_block(ctor.doc, "    ") }}    constructor({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : this(
+{%- if ctor.wire_writers.is_empty() %}
+{%- if ctor.is_fallible %}
+        kotlin.run {
+            val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+            if (handle == 0L) throw FfiException(1, Native.{{ prefix }}_last_error_message())
+            handle
+        }
+{%- else %}
+        Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- endif %}
+{%- else %}
+        kotlin.run {
+{%- for binding in ctor.wire_writers %}
+            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+{%- endfor %}
+            try {
+{%- for binding in ctor.wire_writers %}
+                kotlin.run {
+                    val wire = {{ binding.binding_name }}.writer
+                    {{ binding.encode_expr }}
+                }
+{%- endfor %}
+{%- if ctor.is_fallible %}
+                val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+                if (handle == 0L) throw FfiException(1, Native.{{ prefix }}_last_error_message())
+                handle
+{%- else %}
+                Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- endif %}
+            } finally {
+{%- for binding_name in ctor.wire_writer_closes %}
+                {{ binding_name }}.close()
+{%- endfor %}
+            }
+        }
+{%- endif %}
+    )
+{%- elif !use_companion_methods && !ctor.signature_params.is_empty() %}
+
+    constructor({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : this(
+{%- if ctor.wire_writers.is_empty() %}
+{%- if ctor.is_fallible %}
+        kotlin.run {
+            val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+            if (handle == 0L) throw FfiException(1, Native.{{ prefix }}_last_error_message())
+            handle
+        }
+{%- else %}
+        Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- endif %}
+{%- else %}
+        kotlin.run {
+{%- for binding in ctor.wire_writers %}
+            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+{%- endfor %}
+            try {
+{%- for binding in ctor.wire_writers %}
+                kotlin.run {
+                    val wire = {{ binding.binding_name }}.writer
+                    {{ binding.encode_expr }}
+                }
+{%- endfor %}
+{%- if ctor.is_fallible %}
+                val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+                if (handle == 0L) throw FfiException(1, Native.{{ prefix }}_last_error_message())
+                handle
+{%- else %}
+                Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- endif %}
+            } finally {
+{%- for binding_name in ctor.wire_writer_closes %}
+                {{ binding_name }}.close()
+{%- endfor %}
+            }
+        }
+{%- endif %}
+    )
+{%- endif %}{% endfor %}
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        Native.{{ ffi_free }}(handle)
+    }
+{%- if has_factory_ctors || has_static_methods %}
+
+    companion object {
+{%- for ctor in constructors %}{% if ctor.is_factory && (use_companion_methods || ctor.signature_params.is_empty()) %}
+{{ self::kdoc_block(ctor.doc, "        ") }}        fun {{ ctor.name }}({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}): {{ class_name }} {
+{%- if ctor.wire_writers.is_empty() %}
+{%- if ctor.is_fallible %}
+            val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+            if (handle == 0L) throw FfiException(1, Native.{{ prefix }}_last_error_message())
+            return {{ class_name }}(handle)
+{%- else %}
+            return {{ class_name }}(Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}))
+{%- endif %}
+{%- else %}
+{%- for binding in ctor.wire_writers %}
+            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+{%- endfor %}
+            try {
+{%- for binding in ctor.wire_writers %}
+                kotlin.run {
+                    val wire = {{ binding.binding_name }}.writer
+                    {{ binding.encode_expr }}
+                }
+{%- endfor %}
+{%- if ctor.is_fallible %}
+                val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+                if (handle == 0L) throw FfiException(1, Native.{{ prefix }}_last_error_message())
+                return {{ class_name }}(handle)
+{%- else %}
+                return {{ class_name }}(Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}))
+{%- endif %}
+            } finally {
+{%- for binding_name in ctor.wire_writer_closes %}
+                {{ binding_name }}.close()
+{%- endfor %}
+            }
+{%- endif %}
+        }
+{%- endif %}{% endfor %}
+{%- for method in methods %}{% if method.is_static %}
+{%- match method.impl_ %}
+{%- when AsyncMethod with (async_method) %}
+
+        {{ async_method }}
+{%- when SyncMethod with (wire_method) %}
+
+        {{ wire_method }}
+{%- endmatch %}
+{%- endif %}{% endfor %}
+    }
+{%- endif %}
+{%- for method in methods %}{% if !method.is_static %}
+{%- match method.impl_ %}
+{%- when AsyncMethod with (async_method) %}
+
+    {{ async_method }}
+{%- when SyncMethod with (wire_method) %}
+
+    {{ wire_method }}
+{%- endmatch %}
+{%- endif %}{% endfor %}
+{%- for stream in streams %}
+{%- match stream.mode %}
+{%- when KotlinStreamMode::Async %}
+
+    fun {{ stream.name }}(): Flow<{{ stream.item_type }}> = callbackFlow {
+        val subscription = Native.{{ stream.subscribe }}(handle)
+        if (subscription == 0L) {
+            close()
+            return@callbackFlow
+        }
+        val context = BoltFFIStreamContext(
+            scope = this,
+            subscription = subscription,
+            batchSize = 16L,
+            popBatch = Native::{{ stream.pop_batch }},
+            poll = Native::{{ stream.poll }},
+            unsubscribe = Native::{{ stream.unsubscribe }},
+            freeFn = Native::{{ stream.free }},
+            processItems = { reader ->
+                val count = reader.readI32()
+                repeat(count) {
+                    val item = {{ stream.item_decode_expr() }}
+                    trySend(item)
+                }
+            },
+            finish = { close() }
+        )
+        context.start()
+        awaitClose { context.requestTermination() }
+    }
+{%- when KotlinStreamMode::Batch { class_name, method_name_pascal } %}
+
+    fun {{ stream.name }}(): {{ class_name }}{{ method_name_pascal }}Subscription =
+        {{ class_name }}{{ method_name_pascal }}Subscription(
+            handle = Native.{{ stream.subscribe }}(handle),
+            popBatch = Native::{{ stream.pop_batch }},
+            wait = Native::{{ stream.wait }},
+            unsubscribe = Native::{{ stream.unsubscribe }},
+            freeFn = Native::{{ stream.free }}
+        )
+{%- when KotlinStreamMode::Callback { class_name, method_name_pascal } %}
+
+    fun {{ stream.name }}(callback: ({{ stream.item_type }}) -> Unit): {{ class_name }}{{ method_name_pascal }}Cancellable {
+        val subscription = Native.{{ stream.subscribe }}(handle)
+        if (subscription == 0L) return {{ class_name }}{{ method_name_pascal }}Cancellable {}
+        val context = BoltFFIStreamContext(
+            scope = BoltFFIScope,
+            subscription = subscription,
+            batchSize = 16L,
+            popBatch = Native::{{ stream.pop_batch }},
+            poll = Native::{{ stream.poll }},
+            unsubscribe = Native::{{ stream.unsubscribe }},
+            freeFn = Native::{{ stream.free }},
+            processItems = { reader ->
+                val count = reader.readI32()
+                repeat(count) {
+                    val item = {{ stream.item_decode_expr() }}
+                    callback(item)
+                }
+            },
+            finish = {}
+        )
+        context.start()
+        return {{ class_name }}{{ method_name_pascal }}Cancellable { context.requestTermination() }
+    }
+{%- endmatch %}
+{%- endfor %}
+}
+{%- for stream in streams %}
+{%- match stream.mode %}
+{%- when KotlinStreamMode::Batch { class_name, method_name_pascal } %}
+
+class {{ class_name }}{{ method_name_pascal }}Subscription(
+    private val handle: SubscriptionHandle,
+    private val popBatchFn: (SubscriptionHandle, Long) -> ByteArray?,
+    private val waitFn: (SubscriptionHandle, Int) -> Int,
+    private val unsubscribeFn: (SubscriptionHandle) -> Unit,
+    private val freeFn: (SubscriptionHandle) -> Unit
+) : AutoCloseable {
+    private val closed = AtomicBoolean(false)
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        if (handle == 0L) return
+        freeFn(handle)
+    }
+
+    fun popBatch(maxCount: Long = 16L): List<{{ stream.item_type }}> {
+        if (handle == 0L) return emptyList()
+        val bytes = popBatchFn(handle, maxCount) ?: return emptyList()
+        if (bytes.isEmpty()) return emptyList()
+        val reader = WireReader(bytes)
+        val count = reader.readI32()
+        val result = ArrayList<{{ stream.item_type }}>(count)
+        repeat(count) {
+            val item = {{ stream.item_decode_expr() }}
+            result.add(item)
+        }
+        return result
+    }
+
+    fun wait(timeout: Int): Int {
+        if (handle == 0L) return -1
+        return waitFn(handle, timeout)
+    }
+
+    fun unsubscribe() {
+        if (handle == 0L) return
+        unsubscribeFn(handle)
+    }
+}
+{%- when KotlinStreamMode::Callback { class_name, method_name_pascal } %}
+
+class {{ class_name }}{{ method_name_pascal }}Cancellable(
+    private val onCancel: () -> Unit = {}
+) : AutoCloseable {
+    private val cancelled = AtomicBoolean(false)
+
+    fun cancel() {
+        if (!cancelled.compareAndSet(false, true)) return
+        onCancel()
+    }
+
+    override fun close() {
+        cancel()
+    }
+}
+{%- when KotlinStreamMode::Async %}
+{%- endmatch %}
+{%- endfor %}

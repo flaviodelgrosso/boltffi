@@ -1,0 +1,20 @@
+---
+source: boltffi_bindgen/src/render/kotlin/templates.rs
+expression: template.render().unwrap()
+---
+fun processPoint(point: Point): Point {
+    val pointWire = WireWriterPool.acquire(Point.WIRE_SIZE)
+    try {
+        run {
+            val wire = pointWire.writer
+            PointWriter.write(point)
+        }
+        val buf = Native.boltffi_process_point(pointWire.ptr, pointWire.len)
+            ?: throw FfiException(-1, "Null buffer returned")
+        return useWireBytes(buf) { buffer ->
+            PointReader.read(reader)
+        }
+    } finally {
+        pointWire.close().close()
+    }
+}

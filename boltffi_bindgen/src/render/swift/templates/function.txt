@@ -1,0 +1,75 @@
+{{ self::swift_doc_block(func.doc, "") }}public func {{ func.name }}({% for p in func.params %}{{ p.signature() }}{% if !loop.last %}, {% endif %}{% endfor %}){% if func.mode.is_async() %} async throws{% if let Some(result) = func.mode.async_result() %}{% if let Some(ret) = result.swift_type() %} -> {{ ret }}{% endif %}{% endif %}{% else %}{% if func.returns.is_throws() %} throws{% endif %}{% if let Some(ret) = func.returns.swift_type() %} -> {{ ret }}{% endif %}{% endif %} {
+{%- match func.mode %}
+{%- when SwiftCallMode::Async { start, poll, complete, cancel, free, result } %}
+{%- for param in func.params %}
+{%- if let Some(wrapper) = param.wrapper_code() %}
+    {{ wrapper }}
+{%- endif %}
+{%- endfor %}
+    let futureHandle = {% for w in func.closure_wrappers() %}{{ w }} {% endfor %}{{ func.start_call_expr() }}{% for _ in func.closure_wrappers() %} }{% endfor %}
+
+    return try await boltffiAsyncCall(
+        futureHandle: futureHandle,
+        pollFn: {{ poll }},
+        completeFn: {{ complete }},
+        cancelFn: {{ cancel }},
+        freeFn: {{ free }}
+    ) { buf, status in
+{%- if result.is_unit() %}
+        guard status.code == 0 else { throw FfiError(message: "ffi call failed") }
+{%- elif result.is_direct() %}
+        guard status.code == 0 else { throw FfiError(message: "ffi call failed") }
+        return buf
+{%- elif result.is_wire_encoded() %}
+        guard status.code == 0 else { {{ prefix }}_free_buf_u8(buf); throw FfiError(message: "ffi call failed") }
+{%- if result.throws() %}
+        defer { {{ prefix }}_free_buf_u8(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ result.reader_decode_expr().unwrap() }} }
+{%- else %}
+        defer { {{ prefix }}_free_buf_u8(buf) }
+        return boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ result.reader_decode_expr().unwrap() }} }
+{%- endif %}
+{%- endif %}
+    }
+{%- when SwiftCallMode::Sync { symbol } %}
+{%- for param in func.params %}
+{%- if let Some(wrapper) = param.wrapper_code() %}
+    {{ wrapper }}
+{%- endif %}
+{%- endfor %}
+{%- for open in func.sync_closure_opens() %}
+{{ open }}
+{%- endfor %}
+{%- if func.returns.is_void() %}
+{{ func.body_indent() }}{{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- elif func.returns.is_wire_encoded() %}
+{{ func.body_indent() }}let buf = {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
+{{ func.body_indent() }}defer { {{ prefix }}_free_buf_u8(buf) }
+{%- if let Some(reader_expr) = func.returns.reader_decode_expr() %}
+{%- if func.returns.is_throws() %}
+{{ func.body_indent() }}return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ reader_expr }} }
+{%- else %}
+{{ func.body_indent() }}return boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in {{ reader_expr }} }
+{%- endif %}
+{%- elif let Some(decode_expr) = func.returns.decode_expr() %}
+{{ func.body_indent() }}let wire = WireBuffer(ptr: buf.ptr!, len: Int(buf.len))
+{{ func.body_indent() }}return {{ decode_expr }}
+{%- endif %}
+{%- elif func.returns.is_throws() %}
+{{ func.body_indent() }}fatalError("throwing functions not yet implemented in IR backend")
+{%- elif let Some((class_name, nullable)) = func.returns.handle_info() %}
+{%- if nullable %}
+{{ func.body_indent() }}guard let ptr = {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %}) else { return nil }
+{{ func.body_indent() }}return {{ class_name }}(handle: ptr)
+{%- else %}
+{{ func.body_indent() }}let ptr = {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})!
+{{ func.body_indent() }}return {{ class_name }}(handle: ptr)
+{%- endif %}
+{%- else %}
+{{ func.body_indent() }}return {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- endif %}
+{%- for close in func.sync_closure_closes() %}
+{{ close }}
+{%- endfor %}
+{%- endmatch %}
+}

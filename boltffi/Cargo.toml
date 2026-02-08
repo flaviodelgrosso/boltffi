@@ -1,0 +1,21 @@
+[package]
+name = "boltffi"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["uuid", "url"]
+fast-alloc = ["boltffi_core/fast-alloc"]
+uuid = ["boltffi_core/uuid"]
+chrono = ["boltffi_core/chrono"]
+url = ["boltffi_core/url"]
+
+[dependencies]
+boltffi_core = { path = "../boltffi_core" }
+boltffi_macros = { path = "../boltffi_macros" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[lints]
+workspace = true
