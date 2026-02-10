@@ -1,28 +1,35 @@
-# BoltFFI - a fast multi-language bindings generator for Rust
+# BoltFFI
 
-BoltFFI (Pronounced bolt-eff-eff-eye) generates native bindings from Rust libraries. Write your code once in Rust, ship it everywhere.
+A high-performance multi-language bindings generator for Rust, up to 1,000x faster than UniFFI
+
+<p align="center">
+  <img src="docs/assets/demo.gif" width="700" />
+</p>
 
 Quick links: [User Guide](https://boltffi.dev/docs/overview) | [Tutorial](https://boltffi.dev/docs/tutorial) | [Getting Started](https://boltffi.dev/docs/getting-started)
 
+## Performance
+
+| Benchmark | BoltFFI | UniFFI | Speedup |
+|-----------|--------:|-------:|--------:|
+| noop | <1 ns | 1,416 ns | >1000x |
+| echo_i32 | <1 ns | 1,416 ns | >1000x |
+| counter_increment (1k calls) | 1,083 ns | 1,388,895 ns | 1,282x |
+| generate_locations (1k structs) | 4,167 ns | 1,276,333 ns | 306x |
+| generate_locations (10k structs) | 62,542 ns | 12,817,000 ns | 205x |
+
+Full benchmark code: [benchmarks](./benchmarks)
+
+
 ## Why BoltFFI?
 
-BoltFFI was built because serialization-based FFI is slow. Tools like UniFFI serialize every value to a byte buffer on each call. That overhead shows up when you're making thousands of FFI calls per second.
+Serialization-based FFI is slow. Tools like UniFFI serialize every value to a byte buffer on each call. That overhead shows up when you're making thousands of FFI calls per second.
 
 BoltFFI uses zero-copy where possible. Primitives pass as raw values. Structs with primitive fields pass as pointers to memory both sides can read directly. Only strings and collections go through encoding.
 
-The result:
-
-| Operation | BoltFFI | UniFFI | Speedup |
-|-----------|---------|--------|---------|
-| Primitives | <1 ns | 625 ns | ∞ |
-| 1,000 structs | 1,958 ns | 1,195,354 ns | 611x |
-| 10,000 i32 values | 1,291 ns | 1,991,146 ns | 1,542x |
-
-Full benchmark code in [benchmarks](./benchmarks).
-
 ## What it does
 
-Mark your Rust types with `#[data]` and functions, objects or traits with `#[export]`:
+Mark your Rust types with `#[data]` and functions with `#[export]`:
 
 ```rust
 use boltffi::*;
@@ -41,24 +48,37 @@ pub fn distance(a: Point, b: Point) -> f64 {
 }
 ```
 
-Run `boltffi pack` and get native libraries ready to import:
+Run `boltffi pack`:
 
 ```bash
-boltffi pack apple      # XCFramework for Swift
-boltffi pack android    # JNI libraries for Kotlin
+boltffi pack apple
+# Produces: ./dist/YourCrate.xcframework + Package.swift
+
+boltffi pack android
+# Produces: ./dist/android/libs/*.so + Kotlin bindings
+```
+
+Use it from Swift or Kotlin:
+
+```swift
+let d = distance(a: Point(x: 0, y: 0), b: Point(x: 3, y: 4)) // 5.0
+```
+
+```kotlin
+val d = distance(a = Point(x = 0.0, y = 0.0), b = Point(x = 3.0, y = 4.0)) // 5.0
 ```
 
 The generated bindings use each language's idioms. Swift gets async/await. Kotlin gets coroutines. Errors become native exceptions.
 
 ## Supported languages
 
-| Language | Status |
-|----------|--------|
-| Swift | Full support |
-| Kotlin | Full support |
-| WASM | In progress |
-| Python | Soon |
-| C# | Soon |
+| Language | Status       |
+|----------|--------------|
+| Swift    | Full support |
+| Kotlin   | Full support |
+| WASM     | In progress  |
+| Python   | Soon         |
+| C#       | Soon         |
 
 Want another language? [Open an issue](https://github.com/boltffi/boltffi/issues).
 
