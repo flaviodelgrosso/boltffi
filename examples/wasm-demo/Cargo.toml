@@ -9,3 +9,5 @@ crate-type = ["cdylib"]
 [dependencies]
 boltffi = { path = "../../boltffi" }
 boltffi_core = { path = "../../boltffi_core" }
+uuid = "1"
+url = "2"

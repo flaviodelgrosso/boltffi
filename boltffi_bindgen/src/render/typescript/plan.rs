@@ -137,6 +137,10 @@ impl TsParam {
                 "const {}_alloc = _module.allocString({});",
                 self.name, self.name
             )),
+            TsParamConversion::Bytes => Some(format!(
+                "const {}_alloc = _module.allocBytes({});",
+                self.name, self.name
+            )),
             TsParamConversion::CodecEncoded { codec_name } => {
                 let writer_name = format!("{}_writer", self.name);
                 Some(format!(
@@ -158,7 +162,7 @@ impl TsParam {
     pub fn ffi_args(&self) -> Vec<String> {
         match &self.conversion {
             TsParamConversion::Direct => vec![self.name.clone()],
-            TsParamConversion::String => {
+            TsParamConversion::String | TsParamConversion::Bytes => {
                 vec![
                     format!("{}_alloc.ptr", self.name),
                     format!("{}_alloc.len", self.name),
@@ -176,7 +180,9 @@ impl TsParam {
     pub fn cleanup_code(&self) -> Option<String> {
         match &self.conversion {
             TsParamConversion::Direct => None,
-            TsParamConversion::String => Some(format!("_module.freeAlloc({}_alloc);", self.name)),
+            TsParamConversion::String | TsParamConversion::Bytes => {
+                Some(format!("_module.freeAlloc({}_alloc);", self.name))
+            }
             TsParamConversion::CodecEncoded { .. } | TsParamConversion::OtherEncoded { .. } => {
                 Some(format!("_module.freeWriter({}_writer);", self.name))
             }
@@ -192,6 +198,7 @@ impl TsParam {
 pub enum TsParamConversion {
     Direct,
     String,
+    Bytes,
     CodecEncoded { codec_name: String },
     OtherEncoded { encode: WriteSeq },
 }

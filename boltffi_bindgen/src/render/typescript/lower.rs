@@ -271,6 +271,11 @@ impl<'a> TypeScriptLowerer<'a> {
                 ts_type: "string".to_string(),
                 conversion: TsParamConversion::String,
             },
+            ParamRole::InBuffer { .. } => TsParam {
+                name: emit::escape_ts_keyword(&name),
+                ts_type: "Uint8Array".to_string(),
+                conversion: TsParamConversion::Bytes,
+            },
             ParamRole::InEncoded { encode_ops, .. } => {
                 let ts_type = param_def
                     .map(|p| emit::ts_type(&p.type_expr))
