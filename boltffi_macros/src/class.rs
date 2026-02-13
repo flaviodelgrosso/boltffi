@@ -656,16 +656,12 @@ fn generate_async_method_export(
     let method_name = &method.sig.ident;
     let method_name_str = method_name.to_string();
 
-    let has_self = method
-        .sig
-        .inputs
-        .first()
-        .map(|arg| matches!(arg, FnArg::Receiver(_)))
-        .unwrap_or(false);
+    let receiver = match method.sig.inputs.first() {
+        Some(FnArg::Receiver(r)) => r,
+        _ => return None,
+    };
 
-    if !has_self {
-        return None;
-    }
+    let needs_mut = receiver.mutability.is_some();
 
     let base_name = naming::method_ffi_name(class_name, &method_name_str);
     let entry_ident = syn::Ident::new(base_name.as_str(), method_name.span());
@@ -699,13 +695,19 @@ fn generate_async_method_export(
         instance.#method_name(#(#call_args),*).await
     };
 
+    let instance_binding = if needs_mut {
+        quote! { let instance = &mut *handle; }
+    } else {
+        quote! { let instance = &*handle; }
+    };
+
     let entry_fn = if ffi_params.is_empty() {
         quote! {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #entry_ident(
                 handle: *mut #type_name
             ) -> ::boltffi::__private::RustFutureHandle {
-                let instance = &*handle;
+                #instance_binding
                 ::boltffi::__private::rustfuture::rust_future_new(async move {
                     #future_body
                 })
@@ -718,7 +720,7 @@ fn generate_async_method_export(
                 handle: *mut #type_name,
                 #(#ffi_params),*
             ) -> ::boltffi::__private::RustFutureHandle {
-                let instance = &*handle;
+                #instance_binding
                 #(#pre_spawn)*
                 #(let _ = &#move_vars;)*
                 ::boltffi::__private::rustfuture::rust_future_new(async move {
@@ -964,5 +966,155 @@ fn generate_stream_exports(
                 )
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_impl(code: &str) -> syn::ItemImpl {
+        syn::parse_str(code).expect("failed to parse impl block")
+    }
+
+    fn extract_receiver_mutability(method: &syn::ImplItemFn) -> Option<bool> {
+        match method.sig.inputs.first() {
+            Some(FnArg::Receiver(r)) => Some(r.mutability.is_some()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn receiver_detection_ref_self() {
+        let impl_block = parse_impl(
+            r#"
+            impl Counter {
+                pub fn get(&self) -> i32 { self.value }
+            }
+            "#,
+        );
+        let method = impl_block
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(m) => Some(m),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(extract_receiver_mutability(method), Some(false));
+    }
+
+    #[test]
+    fn receiver_detection_ref_mut_self() {
+        let impl_block = parse_impl(
+            r#"
+            impl Counter {
+                pub fn increment(&mut self) { self.value += 1; }
+            }
+            "#,
+        );
+        let method = impl_block
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(m) => Some(m),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(extract_receiver_mutability(method), Some(true));
+    }
+
+    #[test]
+    fn receiver_detection_static_method() {
+        let impl_block = parse_impl(
+            r#"
+            impl Counter {
+                pub fn new(initial: i32) -> Self { Self { value: initial } }
+            }
+            "#,
+        );
+        let method = impl_block
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(m) => Some(m),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(extract_receiver_mutability(method), None);
+    }
+
+    #[test]
+    fn async_method_ref_self_detected() {
+        let impl_block = parse_impl(
+            r#"
+            impl Database {
+                pub async fn query(&self, sql: String) -> String { sql }
+            }
+            "#,
+        );
+        let method = impl_block
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(m) => Some(m),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!(method.sig.asyncness.is_some());
+        assert_eq!(extract_receiver_mutability(method), Some(false));
+    }
+
+    #[test]
+    fn async_method_ref_mut_self_detected() {
+        let impl_block = parse_impl(
+            r#"
+            impl Counter {
+                pub async fn async_increment(&mut self) -> i32 { self.value += 1; self.value }
+            }
+            "#,
+        );
+        let method = impl_block
+            .items
+            .iter()
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(m) => Some(m),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!(method.sig.asyncness.is_some());
+        assert_eq!(extract_receiver_mutability(method), Some(true));
+    }
+
+    #[test]
+    fn instance_binding_generation_immutable() {
+        let needs_mut = false;
+        let instance_binding = if needs_mut {
+            quote! { let instance = &mut *handle; }
+        } else {
+            quote! { let instance = &*handle; }
+        };
+
+        let output = instance_binding.to_string();
+        assert!(output.contains("& * handle"));
+        assert!(!output.contains("& mut"));
+    }
+
+    #[test]
+    fn instance_binding_generation_mutable() {
+        let needs_mut = true;
+        let instance_binding = if needs_mut {
+            quote! { let instance = &mut *handle; }
+        } else {
+            quote! { let instance = &*handle; }
+        };
+
+        let output = instance_binding.to_string();
+        assert!(output.contains("& mut * handle"));
     }
 }

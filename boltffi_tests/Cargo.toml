@@ -8,5 +8,8 @@ publish = false
 boltffi = { path = "../boltffi" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
 
+[dev-dependencies]
+boltffi_core = { path = "../boltffi_core" }
+
 [lints]
 workspace = true
