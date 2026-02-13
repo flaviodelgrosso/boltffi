@@ -1,33 +1,44 @@
 [package]
 name = "bench_boltffi"
 
-[swift]
+[targets.apple]
+enabled = true
+deployment_target = "16.0"
+include_macos = true
+
+[targets.apple.swift]
 module_name = "BenchBoltFFI"
 output = "bindings/swift"
 tools_version = "5.9"
 
-[kotlin]
+[targets.apple.experimental]
+tuple_storage = false
+
+[targets.apple.xcframework]
+output = "dist"
+
+[targets.apple.spm]
+output = "dist"
+distribution = "local"
+
+[targets.android]
+enabled = true
+min_sdk = 24
+
+[targets.android.kotlin]
 package = "com.example.bench_boltffi"
 output = "bindings/kotlin"
 factory_style = "constructors"
 
-[apple]
-deployment_target = "16.0"
-include_macos = true
-
-[apple.experimental]
-tuple_storage = false
-
-[android]
-min_sdk = 24
-
-[pack.xcframework]
-output = "dist"
-
-[pack.spm]
-output = "dist"
-distribution = "local"  # "local" or "remote"
-# repo_url = "https://github.com/user/repo"  # required for remote
-
-[pack.android]
+[targets.android.pack]
 output = "dist/jniLibs"
+
+[targets.wasm]
+enabled = true
+
+[targets.wasm.optimize]
+enabled = true
+
+[targets.wasm.npm]
+package_name = "@boltffi/bench"
+targets = ["nodejs"]

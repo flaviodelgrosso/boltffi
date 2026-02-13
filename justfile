@@ -134,6 +134,24 @@ bench-build-android:
     @echo ""
     @echo "jniLibs ready. Open benchmarks/android-app/ in Android Studio."
 
+# WASM benchmark (Node.js) - builds wasm, runs benchmark
+bench-wasm:
+    #!/usr/bin/env bash
+    set -e
+    echo "=== Building BoltFFI WASM ==="
+    cd benchmarks/rust-boltffi && cargo run -p boltffi_cli --manifest-path ../../Cargo.toml -- pack wasm --release --regenerate
+    
+    echo "=== Building wasm-bindgen baseline ==="
+    cd ../rust-wasm-bindgen && cargo build --target wasm32-unknown-unknown --release
+    wasm-bindgen --target experimental-nodejs-module --out-dir dist target/wasm32-unknown-unknown/release/bench_wasm_bindgen.wasm
+    
+    echo "=== Copying to benchmark runner ==="
+    cp -r ../rust-boltffi/dist/wasm/pkg/* ../wasm-bench/boltffi/
+    cp -r dist/* ../wasm-bench/wasmbindgen/
+    
+    echo "=== Running benchmarks ==="
+    cd ../wasm-bench && node bench.mjs
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Clean
 # ─────────────────────────────────────────────────────────────────────────────
@@ -148,8 +166,13 @@ clean-benchmarks:
     rm -rf benchmarks/rust-boltffi/dist
     rm -rf benchmarks/rust-uniffi/target
     rm -rf benchmarks/rust-uniffi/dist
+    rm -rf benchmarks/rust-wasm-bindgen/target
+    rm -rf benchmarks/rust-wasm-bindgen/dist
     rm -rf benchmarks/swift-macos-bench/.build
     rm -rf benchmarks/kotlin-jvm-bench/build
+    rm -rf benchmarks/wasm-bench/boltffi
+    rm -rf benchmarks/wasm-bench/wasmbindgen
+    rm -rf benchmarks/wasm-bench/node_modules
 
 # Clean everything
 clean-all: clean clean-benchmarks
