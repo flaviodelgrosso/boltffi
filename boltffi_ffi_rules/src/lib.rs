@@ -824,6 +824,16 @@ pub mod transport {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum EncodedReturnStrategy {
+        Utf8String,
+        PrimitiveVec,
+        OptionScalar,
+        ResultScalar,
+        BlittableRecordOrWire,
+        WireEncoded,
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;

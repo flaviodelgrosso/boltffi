@@ -6,11 +6,7 @@ use syn::{FnArg, ReturnType, Type};
 use crate::callback_registry;
 use crate::custom_types;
 use crate::params::{FfiParams, transform_method_params, transform_method_params_async};
-use crate::returns::{
-    OptionReturnAbi, ReturnKind, classify_async_return_abi, classify_return,
-    get_async_complete_conversion, get_async_default_ffi_value, get_async_ffi_return_type,
-    get_async_rust_return_type,
-};
+use crate::returns::{ReturnAbi, classify_return, encoded_return_body, lower_return_abi};
 
 pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let thread_unsafe = attr.to_string().contains("thread_unsafe");
@@ -120,53 +116,6 @@ pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
-}
-
-fn should_wire_encode(kind: &ReturnKind) -> bool {
-    matches!(
-        kind,
-        ReturnKind::String
-            | ReturnKind::Vec(_)
-            | ReturnKind::Option(_)
-            | ReturnKind::ResultString { .. }
-            | ReturnKind::ResultPrimitive { .. }
-            | ReturnKind::ResultUnit { .. }
-    )
-}
-
-fn convert_to_wire_encoded(kind: ReturnKind) -> ReturnKind {
-    match kind {
-        ReturnKind::String => {
-            let ty: syn::Type = syn::parse_quote!(String);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::Vec(inner) => {
-            let ty: syn::Type = syn::parse_quote!(Vec<#inner>);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::Option(abi) => {
-            let inner_ty = match &abi {
-                OptionReturnAbi::OutValue { inner } => inner.clone(),
-                OptionReturnAbi::OutFfiString => syn::parse_quote!(String),
-                OptionReturnAbi::Vec { inner } => syn::parse_quote!(Vec<#inner>),
-            };
-            let ty: syn::Type = syn::parse_quote!(Option<#inner_ty>);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::ResultString { err } => {
-            let ty: syn::Type = syn::parse_quote!(Result<String, #err>);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::ResultPrimitive { ok, err } => {
-            let ty: syn::Type = syn::parse_quote!(Result<#ok, #err>);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::ResultUnit { err } => {
-            let ty: syn::Type = syn::parse_quote!(Result<(), #err>);
-            ReturnKind::WireEncoded(ty)
-        }
-        other => other,
-    }
 }
 
 fn build_instance_encoded_return_exports(
@@ -440,16 +389,10 @@ fn generate_method_export(
 
     let call_expr = quote! { (*handle).#method_name(#(#call_args),*) };
 
-    let raw_return_kind = classify_return(&method.sig.output);
+    let return_abi = lower_return_abi(classify_return(&method.sig.output));
 
-    let return_kind = if should_wire_encode(&raw_return_kind) {
-        convert_to_wire_encoded(raw_return_kind)
-    } else {
-        raw_return_kind
-    };
-
-    let (body, return_type, is_wire_encoded) = match return_kind {
-        ReturnKind::Unit => {
+    let (body, return_type, is_wire_encoded) = match return_abi {
+        ReturnAbi::Unit => {
             let body = if has_conversions {
                 quote! {
                     #(#conversions)*
@@ -464,7 +407,7 @@ fn generate_method_export(
             };
             (body, quote! { -> ::boltffi::__private::FfiStatus }, false)
         }
-        ReturnKind::Primitive => {
+        ReturnAbi::Scalar { .. } => {
             let fn_output = &method.sig.output;
             let body = if has_conversions {
                 quote! {
@@ -476,36 +419,21 @@ fn generate_method_export(
             };
             (body, quote! { #fn_output }, false)
         }
-        ReturnKind::WireEncoded(inner_ty) => {
-            let needs_custom = custom_types::contains_custom_types(&inner_ty, custom_types);
+        ReturnAbi::Encoded {
+            rust_type: inner_ty,
+            strategy,
+        } => {
             let result_ident = syn::Ident::new("result", method_name.span());
-
-            let body = if needs_custom {
-                let wire_ty = custom_types::wire_type_for(&inner_ty, custom_types);
-                let wire_value_ident = syn::Ident::new("__boltffi_wire_value", method_name.span());
-                let to_wire =
-                    custom_types::to_wire_expr_owned(&inner_ty, custom_types, &result_ident);
-                quote! {
-                    #(#conversions)*
-                    let #result_ident: #inner_ty = #call_expr;
-                    let #wire_value_ident: #wire_ty = { #to_wire };
-                    ::boltffi::__private::FfiBuf::wire_encode(&#wire_value_ident)
-                }
-            } else {
-                quote! {
-                    #(#conversions)*
-                    let #result_ident: #inner_ty = #call_expr;
-                    ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                }
-            };
+            let body = encoded_return_body(
+                &inner_ty,
+                strategy,
+                &result_ident,
+                quote! { #call_expr },
+                &conversions,
+                custom_types,
+            );
             (body, quote! { -> ::boltffi::__private::FfiBuf<u8> }, true)
         }
-        ReturnKind::String
-        | ReturnKind::ResultString { .. }
-        | ReturnKind::ResultPrimitive { .. }
-        | ReturnKind::ResultUnit { .. }
-        | ReturnKind::Vec(_)
-        | ReturnKind::Option(_) => unreachable!("converted to WireEncoded"),
     };
 
     if is_wire_encoded {
@@ -562,16 +490,10 @@ fn generate_static_method_export(
     let has_conversions = !conversions.is_empty();
     let call_expr = quote! { #type_name::#method_name(#(#call_args),*) };
 
-    let raw_return_kind = classify_return(&method.sig.output);
+    let return_abi = lower_return_abi(classify_return(&method.sig.output));
 
-    let return_kind = if should_wire_encode(&raw_return_kind) {
-        convert_to_wire_encoded(raw_return_kind)
-    } else {
-        raw_return_kind
-    };
-
-    let (body, return_type, is_wire_encoded) = match return_kind {
-        ReturnKind::Unit => {
+    let (body, return_type, is_wire_encoded) = match return_abi {
+        ReturnAbi::Unit => {
             let body = if has_conversions {
                 quote! {
                     #(#conversions)*
@@ -586,7 +508,7 @@ fn generate_static_method_export(
             };
             (body, quote! { -> ::boltffi::__private::FfiStatus }, false)
         }
-        ReturnKind::Primitive => {
+        ReturnAbi::Scalar { .. } => {
             let fn_output = &method.sig.output;
             let body = if has_conversions {
                 quote! {
@@ -598,42 +520,21 @@ fn generate_static_method_export(
             };
             (body, quote! { #fn_output }, false)
         }
-        ReturnKind::WireEncoded(inner_ty) => {
-            let needs_custom = custom_types::contains_custom_types(&inner_ty, custom_types);
+        ReturnAbi::Encoded {
+            rust_type: inner_ty,
+            strategy,
+        } => {
             let result_ident = syn::Ident::new("result", method_name.span());
-
-            let body = if needs_custom {
-                let wire_ty = custom_types::wire_type_for(&inner_ty, custom_types);
-                let wire_value_ident = syn::Ident::new("__boltffi_wire_value", method_name.span());
-                if has_conversions {
-                    quote! {
-                        #(#conversions)*
-                        let #result_ident = #call_expr;
-                        let #wire_value_ident: #wire_ty = ::boltffi::__private::IntoWire::into_wire(#result_ident);
-                        ::boltffi::__private::FfiBuf::wire_encode(&#wire_value_ident)
-                    }
-                } else {
-                    quote! {
-                        let #result_ident = #call_expr;
-                        let #wire_value_ident: #wire_ty = ::boltffi::__private::IntoWire::into_wire(#result_ident);
-                        ::boltffi::__private::FfiBuf::wire_encode(&#wire_value_ident)
-                    }
-                }
-            } else if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    let #result_ident = #call_expr;
-                    ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                }
-            } else {
-                quote! {
-                    let #result_ident = #call_expr;
-                    ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                }
-            };
+            let body = encoded_return_body(
+                &inner_ty,
+                strategy,
+                &result_ident,
+                quote! { #call_expr },
+                &conversions,
+                custom_types,
+            );
             (body, quote! { -> ::boltffi::__private::FfiBuf<u8> }, true)
         }
-        _ => return None,
     };
 
     if is_wire_encoded {
@@ -692,12 +593,12 @@ fn generate_async_method_export(
     let params = transform_method_params_async(other_inputs, custom_types, callback_registry);
 
     let fn_output = &method.sig.output;
-    let return_abi = classify_async_return_abi(fn_output);
+    let return_abi = ReturnAbi::from_output(fn_output);
 
-    let ffi_return_type = get_async_ffi_return_type(&return_abi);
-    let rust_return_type = get_async_rust_return_type(&return_abi);
-    let complete_conversion = get_async_complete_conversion(&return_abi);
-    let default_value = get_async_default_ffi_value(&return_abi);
+    let ffi_return_type = return_abi.async_ffi_return_type();
+    let rust_return_type = return_abi.async_rust_return_type();
+    let complete_conversion = return_abi.async_complete_conversion();
+    let default_value = return_abi.async_default_ffi_value();
 
     let ffi_params = &params.ffi_params;
     let pre_spawn = &params.pre_spawn;

@@ -37,9 +37,20 @@ pub enum ParamTransform {
     OptionArcDynTrait(syn::Path),
     ImplTrait(syn::Path),
     VecPrimitive(syn::Type),
-    VecWireEncoded(syn::Type),
-    OptionWireEncoded(syn::Type),
-    RecordWireEncoded(syn::Type),
+    WireEncoded(WireEncodedParam),
+}
+
+#[derive(Clone)]
+pub struct WireEncodedParam {
+    pub kind: WireEncodedParamKind,
+    pub rust_type: syn::Type,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WireEncodedParamKind {
+    Vec,
+    Option,
+    Record,
 }
 
 pub fn extract_closure_signature(ty: &Type) -> Option<(Vec<syn::Type>, Option<syn::Type>)> {
@@ -409,7 +420,10 @@ pub fn classify_param_transform(ty: &Type) -> ParamTransform {
         if is_primitive_vec_inner(&inner_str) {
             return ParamTransform::VecPrimitive(inner_ty);
         } else {
-            return ParamTransform::VecWireEncoded(inner_ty);
+            return ParamTransform::WireEncoded(WireEncodedParam {
+                kind: WireEncodedParamKind::Vec,
+                rust_type: ty.clone(),
+            });
         }
     }
 
@@ -417,7 +431,10 @@ pub fn classify_param_transform(ty: &Type) -> ParamTransform {
         if let Some(trait_path) = extract_dyn_trait_in_container(&inner_ty, "Arc") {
             return ParamTransform::OptionArcDynTrait(trait_path);
         }
-        return ParamTransform::OptionWireEncoded(inner_ty);
+        return ParamTransform::WireEncoded(WireEncodedParam {
+            kind: WireEncodedParamKind::Option,
+            rust_type: ty.clone(),
+        });
     }
 
     if type_str == "&str" || (type_str.starts_with("&'") && type_str.ends_with("str")) {
@@ -425,7 +442,10 @@ pub fn classify_param_transform(ty: &Type) -> ParamTransform {
     } else if type_str == "String" || type_str == "std::string::String" {
         ParamTransform::OwnedString
     } else if is_record_type(&type_str) {
-        ParamTransform::RecordWireEncoded(ty.clone())
+        ParamTransform::WireEncoded(WireEncodedParam {
+            kind: WireEncodedParamKind::Record,
+            rust_type: ty.clone(),
+        })
     } else {
         ParamTransform::PassThrough
     }

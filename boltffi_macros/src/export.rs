@@ -1,81 +1,13 @@
 use boltffi_ffi_rules::naming;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ItemFn, Type};
+use syn::ItemFn;
 
 use crate::callback_registry;
 use crate::custom_types;
 use crate::params::{FfiParams, transform_params, transform_params_async};
-use crate::returns::{
-    OptionReturnAbi, ReturnKind, classify_async_return_abi, classify_return, extract_vec_inner,
-    get_async_complete_conversion, get_async_default_ffi_value, get_async_ffi_return_type,
-    get_async_rust_return_type,
-};
+use crate::returns::{ReturnAbi, classify_return, encoded_return_body, lower_return_abi};
 use crate::safety;
-use crate::wire_gen::is_primitive_type;
-
-fn is_blittable_vec(ty: &Type) -> bool {
-    extract_vec_inner(ty).is_some_and(|inner| is_primitive_type(&inner))
-}
-
-fn is_string_type(ty: &Type) -> bool {
-    match ty {
-        Type::Path(type_path) => type_path
-            .path
-            .segments
-            .last()
-            .map(|seg| seg.ident == "String")
-            .unwrap_or(false),
-        _ => false,
-    }
-}
-
-fn should_wire_encode(kind: &ReturnKind) -> bool {
-    matches!(
-        kind,
-        ReturnKind::String
-            | ReturnKind::Vec(_)
-            | ReturnKind::Option(_)
-            | ReturnKind::ResultString { .. }
-            | ReturnKind::ResultPrimitive { .. }
-            | ReturnKind::ResultUnit { .. }
-    )
-}
-
-fn convert_to_wire_encoded(kind: ReturnKind) -> ReturnKind {
-    match kind {
-        ReturnKind::String => {
-            let ty: syn::Type = syn::parse_quote!(String);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::Vec(inner) => {
-            let ty: syn::Type = syn::parse_quote!(Vec<#inner>);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::Option(abi) => {
-            let inner_ty = match &abi {
-                OptionReturnAbi::OutValue { inner } => inner.clone(),
-                OptionReturnAbi::OutFfiString => syn::parse_quote!(String),
-                OptionReturnAbi::Vec { inner } => syn::parse_quote!(Vec<#inner>),
-            };
-            let ty: syn::Type = syn::parse_quote!(Option<#inner_ty>);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::ResultString { err } => {
-            let ty: syn::Type = syn::parse_quote!(Result<String, #err>);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::ResultPrimitive { ok, err } => {
-            let ty: syn::Type = syn::parse_quote!(Result<#ok, #err>);
-            ReturnKind::WireEncoded(ty)
-        }
-        ReturnKind::ResultUnit { err } => {
-            let ty: syn::Type = syn::parse_quote!(Result<(), #err>);
-            ReturnKind::WireEncoded(ty)
-        }
-        other => other,
-    }
-}
 
 fn build_encoded_return_exports(
     input: &ItemFn,
@@ -171,16 +103,10 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
     let has_params = !ffi_params.is_empty();
     let has_conversions = !conversions.is_empty();
 
-    let raw_return_kind = classify_return(fn_output);
+    let return_abi = lower_return_abi(classify_return(fn_output));
 
-    let return_kind = if should_wire_encode(&raw_return_kind) {
-        convert_to_wire_encoded(raw_return_kind)
-    } else {
-        raw_return_kind
-    };
-
-    let expanded = match return_kind {
-        ReturnKind::Unit => {
+    let expanded = match return_abi {
+        ReturnAbi::Unit => {
             let body = if has_conversions {
                 quote! {
                     #(#conversions)*
@@ -216,7 +142,7 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                 }
             }
         }
-        ReturnKind::Primitive => {
+        ReturnAbi::Scalar { .. } => {
             let fn_output = &input.sig.output;
             let body = if has_conversions {
                 quote! {
@@ -249,60 +175,20 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                 }
             }
         }
-        ReturnKind::WireEncoded(inner_ty) => {
-            let needs_custom = custom_types::contains_custom_types(&inner_ty, &custom_types);
+        ReturnAbi::Encoded {
+            rust_type: inner_ty,
+            strategy,
+        } => {
             let result_ident = syn::Ident::new("result", fn_name.span());
 
-            // fast paths that reuse memory directly without allocating/copying:
-            // - vec<primitive>: from_raw_vec reuses the vec's buffer
-            // - string: from_vec(into_bytes()) reuses the string's buffer
-            let encode_body = if is_blittable_vec(&inner_ty) {
-                quote! {
-                    #(#conversions)*
-                    let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        ::boltffi::__private::FfiBuf::from_raw_vec(#result_ident)
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                    }
-                }
-            } else if is_string_type(&inner_ty) {
-                quote! {
-                    #(#conversions)*
-                    let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        ::boltffi::__private::FfiBuf::from_vec(#result_ident.into_bytes())
-                    }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                    }
-                }
-            // custom types like UtcDateTime have to be converted to their
-            // underlying repr (e.g. i64) before wire encoding, the wire
-            // format does not know about the custom type itself
-            } else if needs_custom {
-                let wire_ty = custom_types::wire_type_for(&inner_ty, &custom_types);
-                let wire_value_ident = syn::Ident::new("__boltffi_wire_value", fn_name.span());
-                let to_wire =
-                    custom_types::to_wire_expr_owned(&inner_ty, &custom_types, &result_ident);
-                quote! {
-                    #(#conversions)*
-                    let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
-                    let #wire_value_ident: #wire_ty = { #to_wire };
-                    ::boltffi::__private::FfiBuf::wire_encode(&#wire_value_ident)
-                }
-            } else {
-                quote! {
-                    #(#conversions)*
-                    let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
-                    ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                }
-            };
+            let encode_body = encoded_return_body(
+                &inner_ty,
+                strategy,
+                &result_ident,
+                quote! { #fn_name(#(#call_args),*) },
+                &conversions,
+                &custom_types,
+            );
 
             return build_encoded_return_exports(
                 &input,
@@ -312,12 +198,6 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                 encode_body,
             );
         }
-        ReturnKind::String
-        | ReturnKind::ResultString { .. }
-        | ReturnKind::ResultPrimitive { .. }
-        | ReturnKind::ResultUnit { .. }
-        | ReturnKind::Vec(_)
-        | ReturnKind::Option(_) => unreachable!("converted to WireEncoded"),
     };
 
     TokenStream::from(expanded)
@@ -345,12 +225,12 @@ fn generate_async_export(
     let free_ident = syn::Ident::new(&format!("{}_free", base_name), fn_name.span());
 
     let params = transform_params_async(fn_inputs, custom_types, callback_registry);
-    let return_abi = classify_async_return_abi(fn_output);
+    let return_abi = ReturnAbi::from_output(fn_output);
 
-    let ffi_return_type = get_async_ffi_return_type(&return_abi);
-    let rust_return_type = get_async_rust_return_type(&return_abi);
-    let complete_conversion = get_async_complete_conversion(&return_abi);
-    let default_value = get_async_default_ffi_value(&return_abi);
+    let ffi_return_type = return_abi.async_ffi_return_type();
+    let rust_return_type = return_abi.async_rust_return_type();
+    let complete_conversion = return_abi.async_complete_conversion();
+    let default_value = return_abi.async_default_ffi_value();
 
     let ffi_params = &params.ffi_params;
     let pre_spawn = &params.pre_spawn;

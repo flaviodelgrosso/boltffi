@@ -1,3 +1,4 @@
+pub use boltffi_ffi_rules::transport::EncodedReturnStrategy;
 use proc_macro2::Span;
 use quote::quote;
 use syn::{ReturnType, Type};
@@ -13,7 +14,7 @@ pub enum OptionReturnAbi {
 #[allow(clippy::large_enum_variant)]
 pub enum ReturnKind {
     Unit,
-    Primitive,
+    Primitive(syn::Type),
     String,
     ResultPrimitive { ok: syn::Type, err: syn::Type },
     ResultString { err: syn::Type },
@@ -23,10 +24,15 @@ pub enum ReturnKind {
     WireEncoded(syn::Type),
 }
 
-pub enum AsyncReturnAbi {
+pub enum ReturnAbi {
     Unit,
-    Direct { rust_type: proc_macro2::TokenStream },
-    WireEncoded { rust_type: proc_macro2::TokenStream },
+    Scalar {
+        rust_type: syn::Type,
+    },
+    Encoded {
+        rust_type: syn::Type,
+        strategy: EncodedReturnStrategy,
+    },
 }
 
 pub fn extract_vec_inner(ty: &Type) -> Option<syn::Type> {
@@ -133,7 +139,7 @@ pub fn classify_return(output: &ReturnType) -> ReturnKind {
             }
 
             if is_primitive_type(&type_str) {
-                ReturnKind::Primitive
+                ReturnKind::Primitive(ty.as_ref().clone())
             } else {
                 ReturnKind::WireEncoded(ty.as_ref().clone())
             }
@@ -141,101 +147,244 @@ pub fn classify_return(output: &ReturnType) -> ReturnKind {
     }
 }
 
-pub fn classify_async_return_abi(output: &ReturnType) -> AsyncReturnAbi {
-    match output {
-        ReturnType::Default => AsyncReturnAbi::Unit,
-        ReturnType::Type(_, ty) => {
-            let type_str = quote!(#ty).to_string().replace(' ', "");
+fn option_rust_type(abi: OptionReturnAbi) -> syn::Type {
+    match abi {
+        OptionReturnAbi::OutValue { inner } => syn::parse_quote!(Option<#inner>),
+        OptionReturnAbi::OutFfiString => syn::parse_quote!(Option<String>),
+        OptionReturnAbi::Vec { inner } => syn::parse_quote!(Option<Vec<#inner>>),
+    }
+}
 
-            if type_str == "()" {
-                return AsyncReturnAbi::Unit;
+fn result_rust_type(ok: syn::Type, err: syn::Type) -> syn::Type {
+    syn::parse_quote!(Result<#ok, #err>)
+}
+
+fn type_is_primitive(ty: &Type) -> bool {
+    let type_str = quote!(#ty).to_string().replace(' ', "");
+    is_primitive_type(&type_str)
+}
+
+pub fn lower_return_abi(kind: ReturnKind) -> ReturnAbi {
+    match kind {
+        ReturnKind::Unit => ReturnAbi::Unit,
+        ReturnKind::Primitive(rust_type) => ReturnAbi::Scalar { rust_type },
+        ReturnKind::String => ReturnAbi::Encoded {
+            rust_type: syn::parse_quote!(String),
+            strategy: EncodedReturnStrategy::Utf8String,
+        },
+        ReturnKind::Vec(inner) => ReturnAbi::Encoded {
+            rust_type: syn::parse_quote!(Vec<#inner>),
+            strategy: if type_is_primitive(&inner) {
+                EncodedReturnStrategy::PrimitiveVec
+            } else {
+                EncodedReturnStrategy::WireEncoded
+            },
+        },
+        ReturnKind::Option(abi) => match abi {
+            OptionReturnAbi::OutValue { inner } if type_is_primitive(&inner) => {
+                ReturnAbi::Encoded {
+                    rust_type: syn::parse_quote!(Option<#inner>),
+                    strategy: EncodedReturnStrategy::OptionScalar,
+                }
             }
-
-            if type_str == "String"
-                || type_str == "std::string::String"
-                || type_str.starts_with("Vec<")
-                || type_str.starts_with("Option<")
-                || type_str.starts_with("Result<")
-            {
-                return AsyncReturnAbi::WireEncoded {
-                    rust_type: quote! { #ty },
-                };
-            }
-
-            if is_primitive_type(&type_str) {
-                AsyncReturnAbi::Direct {
-                    rust_type: quote! { #ty },
+            other => ReturnAbi::Encoded {
+                rust_type: option_rust_type(other),
+                strategy: EncodedReturnStrategy::WireEncoded,
+            },
+        },
+        ReturnKind::ResultString { err } => ReturnAbi::Encoded {
+            rust_type: result_rust_type(syn::parse_quote!(String), err),
+            strategy: EncodedReturnStrategy::WireEncoded,
+        },
+        ReturnKind::ResultPrimitive { ok, err } => {
+            if type_is_primitive(&ok) && type_is_primitive(&err) {
+                ReturnAbi::Encoded {
+                    rust_type: result_rust_type(ok.clone(), err.clone()),
+                    strategy: EncodedReturnStrategy::ResultScalar,
                 }
             } else {
-                AsyncReturnAbi::WireEncoded {
-                    rust_type: quote! { #ty },
+                ReturnAbi::Encoded {
+                    rust_type: result_rust_type(ok, err),
+                    strategy: EncodedReturnStrategy::WireEncoded,
                 }
             }
         }
+        ReturnKind::ResultUnit { err } => ReturnAbi::Encoded {
+            rust_type: result_rust_type(syn::parse_quote!(()), err),
+            strategy: EncodedReturnStrategy::WireEncoded,
+        },
+        ReturnKind::WireEncoded(rust_type) => ReturnAbi::Encoded {
+            rust_type,
+            strategy: EncodedReturnStrategy::BlittableRecordOrWire,
+        },
     }
 }
 
-pub fn get_async_ffi_return_type(abi: &AsyncReturnAbi) -> proc_macro2::TokenStream {
-    match abi {
-        AsyncReturnAbi::Unit => quote! { () },
-        AsyncReturnAbi::Direct { rust_type } => quote! { #rust_type },
-        AsyncReturnAbi::WireEncoded { .. } => quote! { ::boltffi::__private::FfiBuf<u8> },
+impl ReturnAbi {
+    pub fn from_output(output: &ReturnType) -> Self {
+        lower_return_abi(classify_return(output))
     }
-}
 
-pub fn get_async_rust_return_type(abi: &AsyncReturnAbi) -> proc_macro2::TokenStream {
-    match abi {
-        AsyncReturnAbi::Unit => quote! { () },
-        AsyncReturnAbi::Direct { rust_type } | AsyncReturnAbi::WireEncoded { rust_type } => {
-            quote! { #rust_type }
+    pub fn async_ffi_return_type(&self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Unit => quote! { () },
+            Self::Scalar { rust_type } => quote! { #rust_type },
+            Self::Encoded { .. } => quote! { ::boltffi::__private::FfiBuf<u8> },
         }
     }
-}
 
-pub fn get_async_complete_conversion(abi: &AsyncReturnAbi) -> proc_macro2::TokenStream {
-    match abi {
-        AsyncReturnAbi::Unit => quote! {
-            if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
-            ()
-        },
-        AsyncReturnAbi::Direct { .. } => quote! {
-            if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
-            result
-        },
-        AsyncReturnAbi::WireEncoded { rust_type } => {
-            let registry = custom_types::registry_for_current_crate().ok();
-            let rust_type: syn::Type = syn::parse2(rust_type.clone())
-                .unwrap_or_else(|_| syn::parse_quote!(::core::ffi::c_void));
-            let needs_custom = registry
-                .as_ref()
-                .is_some_and(|r| custom_types::contains_custom_types(&rust_type, r));
+    pub fn async_rust_return_type(&self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Unit => quote! { () },
+            Self::Scalar { rust_type } | Self::Encoded { rust_type, .. } => {
+                quote! { #rust_type }
+            }
+        }
+    }
 
-            if needs_custom {
-                let registry = registry.expect("custom types registry missing");
-                let wire_ty = custom_types::wire_type_for(&rust_type, &registry);
+    pub fn async_complete_conversion(&self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Unit => quote! {
+                if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
+                ()
+            },
+            Self::Scalar { .. } => quote! {
+                if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
+                result
+            },
+            Self::Encoded {
+                rust_type,
+                strategy,
+            } => {
+                let registry = custom_types::registry_for_current_crate().ok();
                 let result_ident = syn::Ident::new("result", Span::call_site());
-                let wire_value_ident = syn::Ident::new("__boltffi_wire_value", Span::call_site());
-                let to_wire =
-                    custom_types::to_wire_expr_owned(&rust_type, &registry, &result_ident);
+                let encode_expression = encoded_return_buffer_expression(
+                    rust_type,
+                    *strategy,
+                    &result_ident,
+                    registry.as_ref(),
+                );
                 quote! {
                     if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
-                    let #wire_value_ident: #wire_ty = { #to_wire };
-                    ::boltffi::__private::FfiBuf::wire_encode(&#wire_value_ident)
-                }
-            } else {
-                quote! {
-                    if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
-                    ::boltffi::__private::FfiBuf::wire_encode(&result)
+                    #encode_expression
                 }
             }
         }
     }
+
+    pub fn async_default_ffi_value(&self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Unit => quote! { () },
+            Self::Scalar { .. } => quote! { Default::default() },
+            Self::Encoded { .. } => quote! { ::boltffi::__private::FfiBuf::default() },
+        }
+    }
 }
 
-pub fn get_async_default_ffi_value(abi: &AsyncReturnAbi) -> proc_macro2::TokenStream {
-    match abi {
-        AsyncReturnAbi::Unit => quote! { () },
-        AsyncReturnAbi::Direct { .. } => quote! { Default::default() },
-        AsyncReturnAbi::WireEncoded { .. } => quote! { ::boltffi::__private::FfiBuf::default() },
+pub fn encoded_return_body(
+    rust_type: &syn::Type,
+    strategy: EncodedReturnStrategy,
+    result_ident: &syn::Ident,
+    evaluate_result_expression: proc_macro2::TokenStream,
+    conversions: &[proc_macro2::TokenStream],
+    custom_type_registry: &custom_types::CustomTypeRegistry,
+) -> proc_macro2::TokenStream {
+    let encode_expression = encoded_return_buffer_expression(
+        rust_type,
+        strategy,
+        result_ident,
+        Some(custom_type_registry),
+    );
+
+    quote! {
+        #(#conversions)*
+        let #result_ident: #rust_type = #evaluate_result_expression;
+        #encode_expression
+    }
+}
+
+fn encoded_return_buffer_expression(
+    rust_type: &syn::Type,
+    strategy: EncodedReturnStrategy,
+    result_ident: &syn::Ident,
+    custom_type_registry: Option<&custom_types::CustomTypeRegistry>,
+) -> proc_macro2::TokenStream {
+    match strategy {
+        EncodedReturnStrategy::PrimitiveVec => quote! {
+            #[cfg(target_arch = "wasm32")]
+            {
+                ::boltffi::__private::FfiBuf::from_raw_vec(#result_ident)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+            }
+        },
+        EncodedReturnStrategy::Utf8String => quote! {
+            #[cfg(target_arch = "wasm32")]
+            {
+                ::boltffi::__private::FfiBuf::from_vec(#result_ident.into_bytes())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+            }
+        },
+        EncodedReturnStrategy::BlittableRecordOrWire => {
+            if let Some(registry) = custom_type_registry {
+                if custom_types::contains_custom_types(rust_type, registry) {
+                    return wire_encode_expression(rust_type, result_ident, Some(registry));
+                }
+            }
+
+            quote! {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    if <#rust_type as ::boltffi::__private::wire::WireEncode>::IS_BLITTABLE
+                        && !::core::mem::needs_drop::<#rust_type>()
+                    {
+                        let mut values = ::std::vec::Vec::<#rust_type>::with_capacity(1);
+                        values.push(#result_ident);
+                        ::boltffi::__private::FfiBuf::from_raw_vec(values)
+                    } else {
+                        ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+                }
+            }
+        }
+        EncodedReturnStrategy::OptionScalar => quote! {
+            ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+        },
+        EncodedReturnStrategy::ResultScalar => quote! {
+            ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+        },
+        EncodedReturnStrategy::WireEncoded => {
+            wire_encode_expression(rust_type, result_ident, custom_type_registry)
+        }
+    }
+}
+
+fn wire_encode_expression(
+    rust_type: &syn::Type,
+    result_ident: &syn::Ident,
+    custom_type_registry: Option<&custom_types::CustomTypeRegistry>,
+) -> proc_macro2::TokenStream {
+    match custom_type_registry {
+        Some(registry) if custom_types::contains_custom_types(rust_type, registry) => {
+            let wire_ty = custom_types::wire_type_for(rust_type, registry);
+            let wire_value_ident = syn::Ident::new("__boltffi_wire_value", result_ident.span());
+            let to_wire = custom_types::to_wire_expr_owned(rust_type, registry, result_ident);
+            quote! {
+                let #wire_value_ident: #wire_ty = { #to_wire };
+                ::boltffi::__private::FfiBuf::wire_encode(&#wire_value_ident)
+            }
+        }
+        _ => quote! {
+            ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+        },
     }
 }
