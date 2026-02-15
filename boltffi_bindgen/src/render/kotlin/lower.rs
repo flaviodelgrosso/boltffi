@@ -1277,7 +1277,7 @@ impl<'a> KotlinLowerer<'a> {
                 jni_type: "ByteBuffer".to_string(),
                 conversion: self.callback_encoded_conversion(&decode_ops, &name),
             },
-            _ => panic!(
+            _ => unreachable!(
                 "unsupported callback param role: {:?}",
                 param_binding(param)
             ),
@@ -1652,7 +1652,7 @@ impl<'a> KotlinLowerer<'a> {
                 let call = Self::strip_receiver(self.abi_call_for_method(class, method));
                 let async_call = match &call.mode {
                     CallMode::Async(async_call) => async_call,
-                    CallMode::Sync => panic!("async method missing async call"),
+                    CallMode::Sync => unreachable!("async method missing async call"),
                 };
                 KotlinNativeAsyncMethod {
                     ffi_name: call.symbol.as_str().to_string(),
@@ -2368,7 +2368,7 @@ impl<'a> KotlinLowerer<'a> {
     ) -> KotlinAsyncCall {
         let async_call = match &call.mode {
             CallMode::Async(async_call) => async_call,
-            CallMode::Sync => panic!("async method missing async call"),
+            CallMode::Sync => unreachable!("async method missing async call"),
         };
         let result_route = async_output_binding(async_call);
         let return_meta = self.kotlin_return_meta(&result_route);
@@ -2410,7 +2410,7 @@ impl<'a> KotlinLowerer<'a> {
     fn async_call_for_function(&self, func: &FunctionDef, call: &AbiCall) -> KotlinAsyncCall {
         let async_call = match &call.mode {
             CallMode::Async(async_call) => async_call,
-            CallMode::Sync => panic!("async function missing async call"),
+            CallMode::Sync => unreachable!("async function missing async call"),
         };
         let result_route = async_output_binding(async_call);
         let return_meta = self.kotlin_return_meta(&result_route);

@@ -830,7 +830,6 @@ pub mod transport {
         PrimitiveVec,
         OptionScalar,
         ResultScalar,
-        BlittableRecordOrWire,
         WireEncoded,
     }
 

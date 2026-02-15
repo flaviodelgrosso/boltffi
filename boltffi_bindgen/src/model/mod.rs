@@ -1,6 +1,5 @@
 mod callback_trait;
 mod class;
-mod contract;
 mod custom_type;
 mod enum_layout;
 mod enumeration;
@@ -15,10 +14,6 @@ mod types;
 
 pub use callback_trait::{CallbackTrait, TraitMethod, TraitMethodParam};
 pub use class::{Class, Constructor, ConstructorParam};
-pub use contract::{
-    AbiType, CallContract, EnumRepr, ParamContract, ParamTransport, PassThroughType, RecordRepr,
-    ReturnContract, SliceMutability,
-};
 pub use custom_type::CustomType;
 pub use enum_layout::DataEnumLayout;
 pub use enumeration::{Enumeration, Variant};

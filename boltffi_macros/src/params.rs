@@ -241,6 +241,52 @@ fn wire_bytes_expression(
     }
 }
 
+fn utf8_str_expression(
+    name: &syn::Ident,
+    ptr_name: &syn::Ident,
+    len_name: &syn::Ident,
+    requires_unsafe: bool,
+) -> proc_macro2::TokenStream {
+    let bytes_expr = wire_bytes_expression(ptr_name, len_name, requires_unsafe);
+    quote! {
+        match ::core::str::from_utf8(#bytes_expr) {
+            Ok(value) => value,
+            Err(error) => {
+                ::boltffi::__private::set_last_error(format!(
+                    "{}: invalid UTF-8: {} (buf_len={})",
+                    stringify!(#name),
+                    error,
+                    #len_name
+                ));
+                ""
+            }
+        }
+    }
+}
+
+fn utf8_string_expression(
+    name: &syn::Ident,
+    ptr_name: &syn::Ident,
+    len_name: &syn::Ident,
+    requires_unsafe: bool,
+) -> proc_macro2::TokenStream {
+    let bytes_expr = wire_bytes_expression(ptr_name, len_name, requires_unsafe);
+    quote! {
+        match ::core::str::from_utf8(#bytes_expr) {
+            Ok(value) => value.to_string(),
+            Err(error) => {
+                ::boltffi::__private::set_last_error(format!(
+                    "{}: invalid UTF-8: {} (buf_len={})",
+                    stringify!(#name),
+                    error,
+                    #len_name
+                ));
+                String::new()
+            }
+        }
+    }
+}
+
 fn wire_empty_value_expression(kind: WireEncodedParamKind) -> proc_macro2::TokenStream {
     match kind {
         WireEncodedParamKind::Vec => quote! { Vec::new() },
@@ -273,9 +319,18 @@ fn wire_decode_conversion(
                         #empty_value
                     } else {
                         let __bytes = #bytes_expr;
-                        let #wire_value_ident: #wire_ty = ::boltffi::__private::wire::decode(__bytes)
-                            .unwrap_or_else(|error| panic!("{}: wire decode failed: {} (buf_len={})", stringify!(#name), error, #len_name));
-                        #from_wire
+                        match ::boltffi::__private::wire::decode::<#wire_ty>(__bytes) {
+                            Ok(#wire_value_ident) => { #from_wire },
+                            Err(error) => {
+                                ::boltffi::__private::set_last_error(format!(
+                                    "{}: wire decode failed: {} (buf_len={})",
+                                    stringify!(#name),
+                                    error,
+                                    #len_name
+                                ));
+                                #empty_value
+                            }
+                        }
                     };
                 }
             }
@@ -284,7 +339,20 @@ fn wire_decode_conversion(
                     assert!(!#ptr_name.is_null(), concat!(stringify!(#name), ": null pointer"));
                     let __bytes = #bytes_expr;
                     let #wire_value_ident: #wire_ty = ::boltffi::__private::wire::decode(__bytes)
-                        .unwrap_or_else(|error| panic!("{}: wire decode failed: {} (buf_len={})", stringify!(#name), error, #len_name));
+                        .unwrap_or_else(|error| {
+                            ::boltffi::__private::set_last_error(format!(
+                                "{}: wire decode failed: {} (buf_len={})",
+                                stringify!(#name),
+                                error,
+                                #len_name
+                            ));
+                            panic!(
+                                "{}: wire decode failed: {} (buf_len={})",
+                                stringify!(#name),
+                                error,
+                                #len_name
+                            )
+                        });
                     #from_wire
                 };
             },
@@ -299,7 +367,18 @@ fn wire_decode_conversion(
                     #empty_value
                 } else {
                     let __bytes = #bytes_expr;
-                    ::boltffi::__private::wire::decode(__bytes).unwrap_or_else(|error| panic!("{}: wire decode failed: {} (buf_len={})", stringify!(#name), error, #len_name))
+                    match ::boltffi::__private::wire::decode::<#rust_type>(__bytes) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            ::boltffi::__private::set_last_error(format!(
+                                "{}: wire decode failed: {} (buf_len={})",
+                                stringify!(#name),
+                                error,
+                                #len_name
+                            ));
+                            #empty_value
+                        }
+                    }
                 };
             }
         }
@@ -307,7 +386,20 @@ fn wire_decode_conversion(
             let #name: #rust_type = {
                 assert!(!#ptr_name.is_null(), concat!(stringify!(#name), ": null pointer"));
                 let __bytes = #bytes_expr;
-                ::boltffi::__private::wire::decode(__bytes).unwrap_or_else(|error| panic!("{}: wire decode failed: {} (buf_len={})", stringify!(#name), error, #len_name))
+                ::boltffi::__private::wire::decode(__bytes).unwrap_or_else(|error| {
+                    ::boltffi::__private::set_last_error(format!(
+                        "{}: wire decode failed: {} (buf_len={})",
+                        stringify!(#name),
+                        error,
+                        #len_name
+                    ));
+                    panic!(
+                        "{}: wire decode failed: {} (buf_len={})",
+                        stringify!(#name),
+                        error,
+                        #len_name
+                    )
+                })
             };
         },
     }
@@ -405,6 +497,7 @@ fn validate_async_params(
         .map_or(Ok(()), Err)
 }
 
+#[derive(Clone, Copy)]
 enum ParamExecutionMode {
     Sync,
     Async,
@@ -444,6 +537,435 @@ impl ParamLoweringState {
     }
 }
 
+fn lower_callback_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    arg_types: &[syn::Type],
+    returns: &Option<syn::Type>,
+    mode: ParamExecutionMode,
+    custom_types: &CustomTypeRegistry,
+) {
+    match mode {
+        ParamExecutionMode::Async => {
+            unreachable!("async callback params are rejected during macro validation");
+        }
+        ParamExecutionMode::Sync => {
+            let cb_name = syn::Ident::new(&format!("{}_cb", name), name.span());
+            let ud_name = syn::Ident::new(&format!("{}_ud", name), name.span());
+
+            let (ffi_cb_args, arg_names, cb_call_args, wire_vars) = arg_types.iter().enumerate().fold(
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                |(mut ffi_cb_args, mut arg_names, mut cb_call_args, mut wire_vars), (index, arg_ty)| {
+                    let arg_name = syn::Ident::new(&format!("__arg{}", index), name.span());
+                    let arg_ty_str = quote!(#arg_ty).to_string().replace(' ', "");
+
+                    if is_primitive_vec_inner(&arg_ty_str) {
+                        ffi_cb_args.push(quote! { #arg_ty });
+                        cb_call_args.push(quote! { #arg_name });
+                    } else {
+                        let wire_name = syn::Ident::new(&format!("__wire{}", index), name.span());
+                        ffi_cb_args.push(quote! { *const u8 });
+                        ffi_cb_args.push(quote! { usize });
+                        let wire_vars_expr = if contains_custom_types(arg_ty, custom_types) {
+                            let wire_ty = wire_type_for(arg_ty, custom_types);
+                            let wire_value_ident =
+                                syn::Ident::new(&format!("__wire_value{}", index), name.span());
+                            let to_wire = to_wire_expr_owned(arg_ty, custom_types, &arg_name);
+                            quote! {
+                                let #wire_value_ident: #wire_ty = { #to_wire };
+                                let #wire_name = ::boltffi::__private::wire::encode(&#wire_value_ident);
+                            }
+                        } else {
+                            quote! {
+                                let #wire_name = ::boltffi::__private::wire::encode(&#arg_name);
+                            }
+                        };
+                        wire_vars.push(wire_vars_expr);
+                        cb_call_args.push(quote! { #wire_name.as_ptr() });
+                        cb_call_args.push(quote! { #wire_name.len() });
+                    }
+
+                    arg_names.push(arg_name);
+                    (ffi_cb_args, arg_names, cb_call_args, wire_vars)
+                },
+            );
+
+            let ffi_return_type = returns
+                .as_ref()
+                .map(|ty| quote! { -> #ty })
+                .unwrap_or_default();
+            let closure_return_type = returns
+                .as_ref()
+                .map(|ty| quote! { -> #ty })
+                .unwrap_or_default();
+
+            let closure_params: Vec<proc_macro2::TokenStream> = arg_names
+                .iter()
+                .zip(arg_types.iter())
+                .map(|(n, t)| quote! { #n: #t })
+                .collect();
+
+            acc.ffi_params.push(quote! {
+                #[cfg(not(target_arch = "wasm32"))]
+                #cb_name: extern "C" fn(*mut ::core::ffi::c_void, #(#ffi_cb_args),*) #ffi_return_type,
+                #[cfg(not(target_arch = "wasm32"))]
+                #ud_name: *mut ::core::ffi::c_void,
+                #[cfg(target_arch = "wasm32")]
+                #name: u32
+            });
+
+            let wasm_codegen = generate_wasm_closure_codegen(
+                name,
+                arg_types,
+                returns.as_ref(),
+                &ffi_cb_args,
+                custom_types,
+            );
+
+            acc.setup.push(quote! {
+                #[cfg(not(target_arch = "wasm32"))]
+                let #name = |#(#closure_params),*| #closure_return_type {
+                    #(#wire_vars)*
+                    #cb_name(#ud_name, #(#cb_call_args),*)
+                };
+                #wasm_codegen
+            });
+
+            acc.call_args.push(quote! { #name });
+        }
+    }
+}
+
+fn lower_impl_trait_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    trait_path: &syn::Path,
+    mode: ParamExecutionMode,
+    callback_registry: &CallbackTraitRegistry,
+) {
+    let resolution = impl_trait_resolution(trait_path, callback_registry);
+    let foreign_type = resolution.foreign_type;
+
+    acc.ffi_params.push(quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        #name: ::boltffi::__private::CallbackHandle,
+        #[cfg(target_arch = "wasm32")]
+        #name: u32
+    });
+
+    match mode {
+        ParamExecutionMode::Sync => {
+            if let Some(error) = resolution.error {
+                acc.setup.push(error);
+            }
+            acc.setup.push(quote! {
+                #[cfg(not(target_arch = "wasm32"))]
+                assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                #[cfg(target_arch = "wasm32")]
+                let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
+                let #name = unsafe {
+                    <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                };
+            });
+            acc.call_args.push(quote! { *#name });
+        }
+        ParamExecutionMode::Async => {
+            if let Some(error) = resolution.error {
+                acc.setup.push(error);
+            }
+            let boxed_name = syn::Ident::new(&format!("{}_boxed", name), name.span());
+            acc.setup.push(quote! {
+                #[cfg(not(target_arch = "wasm32"))]
+                assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                #[cfg(target_arch = "wasm32")]
+                let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
+                let #boxed_name = unsafe {
+                    <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                };
+            });
+            acc.move_vars.push(boxed_name.clone());
+            acc.call_args.push(quote! { *#boxed_name });
+        }
+    }
+}
+
+fn lower_str_ref_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    mode: ParamExecutionMode,
+) {
+    let ptr_name = ptr_ident(name);
+    let len_name = len_ident(name);
+    let sync_str_expr = utf8_str_expression(name, &ptr_name, &len_name, false);
+    let async_string_expr = utf8_string_expression(name, &ptr_name, &len_name, true);
+    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+    acc.ffi_params.push(quote! { #len_name: usize });
+
+    match mode {
+        ParamExecutionMode::Sync => {
+            acc.setup.push(quote! {
+                let #name: &str = if #ptr_name.is_null() {
+                    ""
+                } else {
+                    #sync_str_expr
+                };
+            });
+        }
+        ParamExecutionMode::Async => {
+            let owned_name = syn::Ident::new(&format!("{}_owned", name), name.span());
+            acc.setup.push(quote! {
+                let #owned_name: String = if #ptr_name.is_null() {
+                    String::new()
+                } else {
+                    #async_string_expr
+                };
+            });
+            acc.thread_setup.push(quote! {
+                let #name: &str = &#owned_name;
+            });
+            acc.move_vars.push(owned_name);
+        }
+    }
+
+    acc.call_args.push(quote! { #name });
+}
+
+fn lower_owned_string_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    mode: ParamExecutionMode,
+) {
+    let ptr_name = ptr_ident(name);
+    let len_name = len_ident(name);
+    let sync_string_expr = utf8_string_expression(name, &ptr_name, &len_name, false);
+    let async_string_expr = utf8_string_expression(name, &ptr_name, &len_name, true);
+    acc.ffi_params.push(quote! { #ptr_name: *const u8 });
+    acc.ffi_params.push(quote! { #len_name: usize });
+
+    match mode {
+        ParamExecutionMode::Sync => {
+            acc.setup.push(quote! {
+                let #name: String = if #ptr_name.is_null() {
+                    String::new()
+                } else {
+                    #sync_string_expr
+                };
+            });
+        }
+        ParamExecutionMode::Async => {
+            acc.setup.push(quote! {
+                let #name: String = if #ptr_name.is_null() {
+                    String::new()
+                } else {
+                    #async_string_expr
+                };
+            });
+            acc.move_vars.push(name.clone());
+        }
+    }
+
+    acc.call_args.push(quote! { #name });
+}
+
+fn lower_slice_ref_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    inner_ty: &syn::Type,
+    mode: ParamExecutionMode,
+) {
+    let ptr_name = ptr_ident(name);
+    let len_name = len_ident(name);
+    acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+    acc.ffi_params.push(quote! { #len_name: usize });
+
+    match mode {
+        ParamExecutionMode::Sync => {
+            acc.setup.push(quote! {
+                let #name: &[#inner_ty] = if #ptr_name.is_null() {
+                    &[]
+                } else {
+                    ::core::slice::from_raw_parts(#ptr_name, #len_name)
+                };
+            });
+        }
+        ParamExecutionMode::Async => {
+            let owned_name = syn::Ident::new(&format!("{}_vec", name), name.span());
+            acc.setup.push(quote! {
+                let #owned_name: Vec<#inner_ty> = if #ptr_name.is_null() {
+                    Vec::new()
+                } else {
+                    unsafe { ::core::slice::from_raw_parts(#ptr_name, #len_name) }.to_vec()
+                };
+            });
+            acc.thread_setup.push(quote! {
+                let #name: &[#inner_ty] = &#owned_name;
+            });
+            acc.move_vars.push(owned_name);
+        }
+    }
+
+    acc.call_args.push(quote! { #name });
+}
+
+fn lower_slice_mut_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    inner_ty: &syn::Type,
+    mode: ParamExecutionMode,
+) {
+    match mode {
+        ParamExecutionMode::Sync => {
+            let ptr_name = ptr_ident(name);
+            let len_name = len_ident(name);
+            acc.ffi_params.push(quote! { #ptr_name: *mut #inner_ty });
+            acc.ffi_params.push(quote! { #len_name: usize });
+            acc.setup.push(quote! {
+                let #name: &mut [#inner_ty] = if #ptr_name.is_null() {
+                    &mut []
+                } else {
+                    ::core::slice::from_raw_parts_mut(#ptr_name, #len_name)
+                };
+            });
+            acc.call_args.push(quote! { #name });
+        }
+        ParamExecutionMode::Async => {
+            unreachable!("async mutable slices are rejected during macro validation");
+        }
+    }
+}
+
+fn lower_vec_primitive_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    inner_ty: &syn::Type,
+    mode: ParamExecutionMode,
+) {
+    let ptr_name = ptr_ident(name);
+    let len_name = len_ident(name);
+    acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
+    acc.ffi_params.push(quote! { #len_name: usize });
+
+    match mode {
+        ParamExecutionMode::Sync => {
+            acc.setup.push(quote! {
+                let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
+                    Vec::new()
+                } else {
+                    ::core::slice::from_raw_parts(#ptr_name, #len_name).to_vec()
+                };
+            });
+        }
+        ParamExecutionMode::Async => {
+            acc.setup.push(quote! {
+                let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
+                    Vec::new()
+                } else {
+                    unsafe { ::core::slice::from_raw_parts(#ptr_name, #len_name) }.to_vec()
+                };
+            });
+            acc.move_vars.push(name.clone());
+        }
+    }
+
+    acc.call_args.push(quote! { #name });
+}
+
+fn lower_wire_encoded_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    wire_param: &WireEncodedParam,
+    custom_types: &CustomTypeRegistry,
+    mode: ParamExecutionMode,
+) {
+    push_wire_encoded_param(
+        &mut acc.ffi_params,
+        &mut acc.setup,
+        name,
+        wire_param,
+        custom_types,
+        mode.requires_unsafe_wire_decode(),
+    );
+    if matches!(mode, ParamExecutionMode::Async) {
+        acc.move_vars.push(name.clone());
+    }
+    acc.call_args.push(quote! { #name });
+}
+
+#[derive(Clone, Copy)]
+enum TraitObjectParamKind {
+    Boxed,
+    Arc,
+    OptionArc,
+}
+
+fn lower_trait_object_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    trait_path: &syn::Path,
+    mode: ParamExecutionMode,
+    kind: TraitObjectParamKind,
+) {
+    match mode {
+        ParamExecutionMode::Async => {
+            unreachable!("async trait object params are rejected during macro validation");
+        }
+        ParamExecutionMode::Sync => {
+            acc.ffi_params.push(quote! {
+                #[cfg(not(target_arch = "wasm32"))]
+                #name: ::boltffi::__private::CallbackHandle,
+                #[cfg(target_arch = "wasm32")]
+                #name: u32
+            });
+            let setup = match kind {
+                TraitObjectParamKind::Boxed => quote! {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                    #[cfg(target_arch = "wasm32")]
+                    let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
+                    let #name: Box<dyn #trait_path> = unsafe {
+                        <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
+                    };
+                },
+                TraitObjectParamKind::Arc => quote! {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
+                    #[cfg(target_arch = "wasm32")]
+                    let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
+                    let #name: ::std::sync::Arc<dyn #trait_path> = unsafe {
+                        <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::arc_from_callback_handle(#name)
+                    };
+                },
+                TraitObjectParamKind::OptionArc => quote! {
+                    #[cfg(target_arch = "wasm32")]
+                    let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
+                    let #name: Option<::std::sync::Arc<dyn #trait_path>> = if #name.is_null() {
+                        None
+                    } else {
+                        Some(unsafe {
+                            <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::arc_from_callback_handle(#name)
+                        })
+                    };
+                },
+            };
+            acc.setup.push(setup);
+            acc.call_args.push(quote! { #name });
+        }
+    }
+}
+
+fn lower_pass_through_param_transform(
+    acc: &mut ParamLoweringState,
+    name: &syn::Ident,
+    ty: &syn::Type,
+    mode: ParamExecutionMode,
+) {
+    acc.ffi_params.push(quote! { #name: #ty });
+    if matches!(mode, ParamExecutionMode::Async) {
+        acc.move_vars.push(name.clone());
+    }
+    acc.call_args.push(quote! { #name });
+}
+
 fn transform_params_with_mode(
     inputs: &syn::punctuated::Punctuated<FnArg, syn::Token![,]>,
     custom_types: &CustomTypeRegistry,
@@ -473,418 +995,73 @@ fn transform_params_with_mode(
                 };
 
                 match classify_param_transform(&pat_type.ty) {
-                    ParamTransform::StrRef => {
-                        let ptr_name = ptr_ident(&name);
-                        let len_name = len_ident(&name);
-                        acc.ffi_params.push(quote! { #ptr_name: *const u8 });
-                        acc.ffi_params.push(quote! { #len_name: usize });
-
-                        match mode {
-                            ParamExecutionMode::Sync => {
-                                acc.setup.push(quote! {
-                                    let #name: &str = if #ptr_name.is_null() {
-                                        ""
-                                    } else {
-                                        ::core::str::from_utf8(::core::slice::from_raw_parts(#ptr_name, #len_name))
-                                            .expect(concat!(stringify!(#name), ": invalid UTF-8"))
-                                    };
-                                });
-                            }
-                            ParamExecutionMode::Async => {
-                                let owned_name =
-                                    syn::Ident::new(&format!("{}_owned", name), name.span());
-                                acc.setup.push(quote! {
-                                    let #owned_name: String = if #ptr_name.is_null() {
-                                        String::new()
-                                    } else {
-                                        match ::core::str::from_utf8(unsafe { ::core::slice::from_raw_parts(#ptr_name, #len_name) }) {
-                                            Ok(s) => s.to_string(),
-                                            Err(_) => {
-                                                panic!(concat!(stringify!(#name), " is not valid UTF-8"));
-                                            }
-                                        }
-                                    };
-                                });
-                                acc.thread_setup.push(quote! {
-                                    let #name: &str = &#owned_name;
-                                });
-                                acc.move_vars.push(owned_name);
-                            }
-                        }
-
-                        acc.call_args.push(quote! { #name });
-                    }
+                    ParamTransform::StrRef => lower_str_ref_param_transform(&mut acc, &name, mode),
                     ParamTransform::OwnedString => {
-                        let ptr_name = ptr_ident(&name);
-                        let len_name = len_ident(&name);
-                        acc.ffi_params.push(quote! { #ptr_name: *const u8 });
-                        acc.ffi_params.push(quote! { #len_name: usize });
-
-                        match mode {
-                            ParamExecutionMode::Sync => {
-                                acc.setup.push(quote! {
-                                    let #name: String = if #ptr_name.is_null() {
-                                        String::new()
-                                    } else {
-                                        ::core::str::from_utf8(::core::slice::from_raw_parts(#ptr_name, #len_name))
-                                            .expect(concat!(stringify!(#name), ": invalid UTF-8"))
-                                            .to_string()
-                                    };
-                                });
-                            }
-                            ParamExecutionMode::Async => {
-                                acc.setup.push(quote! {
-                                    let #name: String = if #ptr_name.is_null() {
-                                        String::new()
-                                    } else {
-                                        match ::core::str::from_utf8(unsafe { ::core::slice::from_raw_parts(#ptr_name, #len_name) }) {
-                                            Ok(s) => s.to_string(),
-                                            Err(_) => {
-                                                panic!(concat!(stringify!(#name), " is not valid UTF-8"));
-                                            }
-                                        }
-                                    };
-                                });
-                                acc.move_vars.push(name.clone());
-                            }
-                        }
-
-                        acc.call_args.push(quote! { #name });
+                        lower_owned_string_param_transform(&mut acc, &name, mode)
                     }
                     ParamTransform::Callback {
                         params: arg_types,
                         returns,
-                    } => match mode {
-                        ParamExecutionMode::Async => {
-                            unreachable!("async callback params are rejected during macro validation");
-                        }
-                        ParamExecutionMode::Sync => {
-                            let cb_name = syn::Ident::new(&format!("{}_cb", name), name.span());
-                            let ud_name = syn::Ident::new(&format!("{}_ud", name), name.span());
-
-                            let (ffi_cb_args, arg_names, cb_call_args, wire_vars) = arg_types
-                                .iter()
-                                .enumerate()
-                                .fold(
-                                    (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
-                                    |(mut ffi_cb_args, mut arg_names, mut cb_call_args, mut wire_vars),
-                                     (index, arg_ty)| {
-                                        let arg_name =
-                                            syn::Ident::new(&format!("__arg{}", index), name.span());
-                                        let arg_ty_str = quote!(#arg_ty).to_string().replace(' ', "");
-
-                                        if is_primitive_vec_inner(&arg_ty_str) {
-                                            ffi_cb_args.push(quote! { #arg_ty });
-                                            cb_call_args.push(quote! { #arg_name });
-                                        } else {
-                                            let wire_name =
-                                                syn::Ident::new(&format!("__wire{}", index), name.span());
-                                            ffi_cb_args.push(quote! { *const u8 });
-                                            ffi_cb_args.push(quote! { usize });
-                                            let wire_vars_expr =
-                                                if contains_custom_types(arg_ty, custom_types) {
-                                                    let wire_ty = wire_type_for(arg_ty, custom_types);
-                                                    let wire_value_ident = syn::Ident::new(
-                                                        &format!("__wire_value{}", index),
-                                                        name.span(),
-                                                    );
-                                                    let to_wire = to_wire_expr_owned(
-                                                        arg_ty,
-                                                        custom_types,
-                                                        &arg_name,
-                                                    );
-                                                    quote! {
-                                                        let #wire_value_ident: #wire_ty = { #to_wire };
-                                                        let #wire_name = ::boltffi::__private::wire::encode(&#wire_value_ident);
-                                                    }
-                                                } else {
-                                                    quote! {
-                                                        let #wire_name = ::boltffi::__private::wire::encode(&#arg_name);
-                                                    }
-                                                };
-                                            wire_vars.push(wire_vars_expr);
-                                            cb_call_args.push(quote! { #wire_name.as_ptr() });
-                                            cb_call_args.push(quote! { #wire_name.len() });
-                                        }
-
-                                        arg_names.push(arg_name);
-                                        (ffi_cb_args, arg_names, cb_call_args, wire_vars)
-                                    },
-                                );
-
-                            let ffi_return_type = returns
-                                .as_ref()
-                                .map(|ty| quote! { -> #ty })
-                                .unwrap_or_default();
-                            let closure_return_type = returns
-                                .as_ref()
-                                .map(|ty| quote! { -> #ty })
-                                .unwrap_or_default();
-
-                            let closure_params: Vec<proc_macro2::TokenStream> = arg_names
-                                .iter()
-                                .zip(arg_types.iter())
-                                .map(|(n, t)| quote! { #n: #t })
-                                .collect();
-
-                            acc.ffi_params.push(quote! {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                #cb_name: extern "C" fn(*mut ::core::ffi::c_void, #(#ffi_cb_args),*) #ffi_return_type,
-                                #[cfg(not(target_arch = "wasm32"))]
-                                #ud_name: *mut ::core::ffi::c_void,
-                                #[cfg(target_arch = "wasm32")]
-                                #name: u32
-                            });
-
-                            let wasm_codegen = generate_wasm_closure_codegen(
-                                &name,
-                                &arg_types,
-                                returns.as_ref(),
-                                &ffi_cb_args,
-                                custom_types,
-                            );
-
-                            acc.setup.push(quote! {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                let #name = |#(#closure_params),*| #closure_return_type {
-                                    #(#wire_vars)*
-                                    #cb_name(#ud_name, #(#cb_call_args),*)
-                                };
-                                #wasm_codegen
-                            });
-
-                            acc.call_args.push(quote! { #name });
-                        }
-                    },
+                    } => lower_callback_param_transform(
+                        &mut acc,
+                        &name,
+                        &arg_types,
+                        &returns,
+                        mode,
+                        custom_types,
+                    ),
                     ParamTransform::SliceRef(inner_ty) => {
-                        let ptr_name = ptr_ident(&name);
-                        let len_name = len_ident(&name);
-                        acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
-                        acc.ffi_params.push(quote! { #len_name: usize });
-
-                        match mode {
-                            ParamExecutionMode::Sync => {
-                                acc.setup.push(quote! {
-                                    let #name: &[#inner_ty] = if #ptr_name.is_null() {
-                                        &[]
-                                    } else {
-                                        ::core::slice::from_raw_parts(#ptr_name, #len_name)
-                                    };
-                                });
-                            }
-                            ParamExecutionMode::Async => {
-                                let owned_name =
-                                    syn::Ident::new(&format!("{}_vec", name), name.span());
-                                acc.setup.push(quote! {
-                                    let #owned_name: Vec<#inner_ty> = if #ptr_name.is_null() {
-                                        Vec::new()
-                                    } else {
-                                        unsafe { ::core::slice::from_raw_parts(#ptr_name, #len_name) }.to_vec()
-                                    };
-                                });
-                                acc.thread_setup.push(quote! {
-                                    let #name: &[#inner_ty] = &#owned_name;
-                                });
-                                acc.move_vars.push(owned_name);
-                            }
-                        }
-                        acc.call_args.push(quote! { #name });
+                        lower_slice_ref_param_transform(&mut acc, &name, &inner_ty, mode)
                     }
-                    ParamTransform::SliceMut(inner_ty) => match mode {
-                        ParamExecutionMode::Sync => {
-                            let ptr_name = ptr_ident(&name);
-                            let len_name = len_ident(&name);
-                            acc.ffi_params.push(quote! { #ptr_name: *mut #inner_ty });
-                            acc.ffi_params.push(quote! { #len_name: usize });
-                            acc.setup.push(quote! {
-                                let #name: &mut [#inner_ty] = if #ptr_name.is_null() {
-                                    &mut []
-                                } else {
-                                    ::core::slice::from_raw_parts_mut(#ptr_name, #len_name)
-                                };
-                            });
-                            acc.call_args.push(quote! { #name });
-                        }
-                        ParamExecutionMode::Async => {
-                            unreachable!(
-                                "async mutable slices are rejected during macro validation"
-                            );
-                        }
-                    },
-                    ParamTransform::BoxedDynTrait(trait_path) => match mode {
-                        ParamExecutionMode::Sync => {
-                            acc.ffi_params.push(quote! {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                #name: ::boltffi::__private::CallbackHandle,
-                                #[cfg(target_arch = "wasm32")]
-                                #name: u32
-                            });
-                            acc.setup.push(quote! {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
-                                #[cfg(target_arch = "wasm32")]
-                                let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
-                                let #name: Box<dyn #trait_path> = unsafe {
-                                    <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
-                                };
-                            });
-                            acc.call_args.push(quote! { #name });
-                        }
-                        ParamExecutionMode::Async => {
-                            unreachable!(
-                                "async trait object params are rejected during macro validation"
-                            );
-                        }
-                    },
-                    ParamTransform::ArcDynTrait(trait_path) => match mode {
-                        ParamExecutionMode::Sync => {
-                            acc.ffi_params.push(quote! {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                #name: ::boltffi::__private::CallbackHandle,
-                                #[cfg(target_arch = "wasm32")]
-                                #name: u32
-                            });
-                            acc.setup.push(quote! {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
-                                #[cfg(target_arch = "wasm32")]
-                                let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
-                                let #name: ::std::sync::Arc<dyn #trait_path> = unsafe {
-                                    <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::arc_from_callback_handle(#name)
-                                };
-                            });
-                            acc.call_args.push(quote! { #name });
-                        }
-                        ParamExecutionMode::Async => {
-                            unreachable!(
-                                "async trait object params are rejected during macro validation"
-                            );
-                        }
-                    },
-                    ParamTransform::OptionArcDynTrait(trait_path) => match mode {
-                        ParamExecutionMode::Sync => {
-                            acc.ffi_params.push(quote! {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                #name: ::boltffi::__private::CallbackHandle,
-                                #[cfg(target_arch = "wasm32")]
-                                #name: u32
-                            });
-                            acc.setup.push(quote! {
-                                #[cfg(target_arch = "wasm32")]
-                                let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
-                                let #name: Option<::std::sync::Arc<dyn #trait_path>> = if #name.is_null() {
-                                    None
-                                } else {
-                                    Some(unsafe {
-                                        <dyn #trait_path as ::boltffi::__private::FromCallbackHandle>::arc_from_callback_handle(#name)
-                                    })
-                                };
-                            });
-                            acc.call_args.push(quote! { #name });
-                        }
-                        ParamExecutionMode::Async => {
-                            unreachable!(
-                                "async trait object params are rejected during macro validation"
-                            );
-                        }
-                    },
-                    ParamTransform::VecPrimitive(inner_ty) => {
-                        let ptr_name = ptr_ident(&name);
-                        let len_name = len_ident(&name);
-                        acc.ffi_params.push(quote! { #ptr_name: *const #inner_ty });
-                        acc.ffi_params.push(quote! { #len_name: usize });
-
-                        match mode {
-                            ParamExecutionMode::Sync => {
-                                acc.setup.push(quote! {
-                                    let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
-                                        Vec::new()
-                                    } else {
-                                        ::core::slice::from_raw_parts(#ptr_name, #len_name).to_vec()
-                                    };
-                                });
-                            }
-                            ParamExecutionMode::Async => {
-                                acc.setup.push(quote! {
-                                    let #name: Vec<#inner_ty> = if #ptr_name.is_null() {
-                                        Vec::new()
-                                    } else {
-                                        unsafe { ::core::slice::from_raw_parts(#ptr_name, #len_name) }.to_vec()
-                                    };
-                                });
-                                acc.move_vars.push(name.clone());
-                            }
-                        }
-                        acc.call_args.push(quote! { #name });
+                    ParamTransform::SliceMut(inner_ty) => {
+                        lower_slice_mut_param_transform(&mut acc, &name, &inner_ty, mode)
                     }
-                    ParamTransform::WireEncoded(wire_param) => {
-                        push_wire_encoded_param(
-                            &mut acc.ffi_params,
-                            &mut acc.setup,
+                    ParamTransform::BoxedDynTrait(trait_path) => {
+                        lower_trait_object_param_transform(
+                            &mut acc,
                             &name,
-                            &wire_param,
-                            custom_types,
-                            mode.requires_unsafe_wire_decode(),
-                        );
-                        if matches!(mode, ParamExecutionMode::Async) {
-                            acc.move_vars.push(name.clone());
-                        }
-                        acc.call_args.push(quote! { #name });
+                            &trait_path,
+                            mode,
+                            TraitObjectParamKind::Boxed,
+                        )
                     }
+                    ParamTransform::ArcDynTrait(trait_path) => lower_trait_object_param_transform(
+                        &mut acc,
+                        &name,
+                        &trait_path,
+                        mode,
+                        TraitObjectParamKind::Arc,
+                    ),
+                    ParamTransform::OptionArcDynTrait(trait_path) => {
+                        lower_trait_object_param_transform(
+                            &mut acc,
+                            &name,
+                            &trait_path,
+                            mode,
+                            TraitObjectParamKind::OptionArc,
+                        )
+                    }
+                    ParamTransform::VecPrimitive(inner_ty) => {
+                        lower_vec_primitive_param_transform(&mut acc, &name, &inner_ty, mode)
+                    }
+                    ParamTransform::WireEncoded(wire_param) => lower_wire_encoded_param_transform(
+                        &mut acc,
+                        &name,
+                        &wire_param,
+                        custom_types,
+                        mode,
+                    ),
                     ParamTransform::ImplTrait(trait_path) => {
-                        let resolution = impl_trait_resolution(&trait_path, callback_registry);
-                        let foreign_type = resolution.foreign_type;
-
-                        acc.ffi_params.push(quote! {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            #name: ::boltffi::__private::CallbackHandle,
-                            #[cfg(target_arch = "wasm32")]
-                            #name: u32
-                        });
-
-                        match mode {
-                            ParamExecutionMode::Sync => {
-                                if let Some(error) = resolution.error {
-                                    acc.setup.push(error);
-                                }
-                                acc.setup.push(quote! {
-                                    #[cfg(not(target_arch = "wasm32"))]
-                                    assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
-                                    #[cfg(target_arch = "wasm32")]
-                                    let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
-                                    let #name = unsafe {
-                                        <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
-                                    };
-                                });
-                                acc.call_args.push(quote! { *#name });
-                            }
-                            ParamExecutionMode::Async => {
-                                if let Some(error) = resolution.error {
-                                    acc.setup.push(error);
-                                }
-                                let boxed_name =
-                                    syn::Ident::new(&format!("{}_boxed", name), name.span());
-                                acc.setup.push(quote! {
-                                    #[cfg(not(target_arch = "wasm32"))]
-                                    assert!(!#name.is_null(), concat!(stringify!(#name), ": null callback handle"));
-                                    #[cfg(target_arch = "wasm32")]
-                                    let #name = ::boltffi::__private::CallbackHandle::from_wasm_handle(#name);
-                                    let #boxed_name = unsafe {
-                                        <#foreign_type as ::boltffi::__private::FromCallbackHandle>::box_from_callback_handle(#name)
-                                    };
-                                });
-                                acc.move_vars.push(boxed_name.clone());
-                                acc.call_args.push(quote! { *#boxed_name });
-                            }
-                        }
+                        lower_impl_trait_param_transform(
+                            &mut acc,
+                            &name,
+                            &trait_path,
+                            mode,
+                            callback_registry,
+                        );
                     }
                     ParamTransform::PassThrough => {
-                        let ty = &pat_type.ty;
-                        acc.ffi_params.push(quote! { #name: #ty });
-                        if matches!(mode, ParamExecutionMode::Async) {
-                            acc.move_vars.push(name.clone());
-                        }
-                        acc.call_args.push(quote! { #name });
+                        lower_pass_through_param_transform(&mut acc, &name, &pat_type.ty, mode)
                     }
                 }
 

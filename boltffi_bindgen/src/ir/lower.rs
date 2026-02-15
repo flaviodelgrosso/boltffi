@@ -43,6 +43,16 @@ enum AbiCallbackParamStrategy {
     Encoded { codec: CodecPlan },
 }
 
+#[derive(Debug, Clone)]
+enum ValueShapeClass {
+    Scalar(AbiType),
+    OptionScalar(AbiType),
+    ResultScalar { ok: AbiType, err: AbiType },
+    PrimitiveVec(AbiType),
+    BlittableRecord { id: RecordId, size: u32 },
+    Encoded,
+}
+
 /// Walks an [`FfiContract`] and produces an [`AbiContract`].
 ///
 /// Most of the work is codec planning, figuring out which records are blittable,
@@ -527,34 +537,92 @@ impl<'c> Lowerer<'c> {
     }
 
     fn value_shape_from_read_write(&self, read: &ReadSeq, write: &WriteSeq) -> ValueShape {
-        read.ops
-            .first()
-            .and_then(|op| self.classify_value_shape_from_read_op(op, read, write))
-            .unwrap_or_else(|| ValueShape::WireEncoded {
-                read: read.clone(),
-                write: write.clone(),
-            })
+        let read_class = self.classify_value_shape_from_read_seq(read);
+        let write_class = self.classify_value_shape_from_write_seq(write);
+        let shape_class = self.merge_value_shape_classes(read_class, write_class);
+        self.materialize_value_shape(shape_class, read, write)
     }
 
-    fn classify_value_shape_from_read_op(
+    fn classify_value_shape_from_read_seq(&self, read: &ReadSeq) -> ValueShapeClass {
+        match read.ops.first() {
+            Some(op) => self.classify_value_shape_from_read_op(op),
+            None => ValueShapeClass::Encoded,
+        }
+    }
+
+    fn classify_value_shape_from_write_seq(&self, write: &WriteSeq) -> ValueShapeClass {
+        match write.ops.first() {
+            Some(op) => self.classify_value_shape_from_write_op(op),
+            None => ValueShapeClass::Encoded,
+        }
+    }
+
+    fn merge_value_shape_classes(
         &self,
-        op: &ReadOp,
-        read: &ReadSeq,
-        write: &WriteSeq,
-    ) -> Option<ValueShape> {
+        read_class: ValueShapeClass,
+        write_class: ValueShapeClass,
+    ) -> ValueShapeClass {
+        match (read_class, write_class) {
+            (ValueShapeClass::Scalar(read), ValueShapeClass::Scalar(write)) if read == write => {
+                ValueShapeClass::Scalar(read)
+            }
+            (ValueShapeClass::OptionScalar(read), ValueShapeClass::OptionScalar(write))
+                if read == write =>
+            {
+                ValueShapeClass::OptionScalar(read)
+            }
+            (
+                ValueShapeClass::ResultScalar {
+                    ok: read_ok,
+                    err: read_err,
+                },
+                ValueShapeClass::ResultScalar {
+                    ok: write_ok,
+                    err: write_err,
+                },
+            ) if read_ok == write_ok && read_err == write_err => ValueShapeClass::ResultScalar {
+                ok: read_ok,
+                err: read_err,
+            },
+            (ValueShapeClass::PrimitiveVec(read), ValueShapeClass::PrimitiveVec(write))
+                if read == write =>
+            {
+                ValueShapeClass::PrimitiveVec(read)
+            }
+            (
+                ValueShapeClass::BlittableRecord {
+                    id: read_id,
+                    size: read_size,
+                },
+                ValueShapeClass::BlittableRecord {
+                    id: write_id,
+                    size: write_size,
+                },
+            ) if read_id == write_id && read_size == write_size => {
+                ValueShapeClass::BlittableRecord {
+                    id: read_id,
+                    size: read_size,
+                }
+            }
+            (ValueShapeClass::Encoded, ValueShapeClass::Encoded) => ValueShapeClass::Encoded,
+            (read, write) => panic!(
+                "read/write value shape mismatch: read={:?}, write={:?}",
+                read, write
+            ),
+        }
+    }
+
+    fn classify_value_shape_from_read_op(&self, op: &ReadOp) -> ValueShapeClass {
         match op {
             ReadOp::Primitive { primitive, .. } => {
-                Some(ValueShape::Scalar(primitive_to_abi(*primitive)))
+                ValueShapeClass::Scalar(primitive_to_abi(*primitive))
             }
             ReadOp::Option { some, .. } => some
                 .ops
                 .first()
                 .and_then(|inner| self.primitive_abi_from_read_op(inner))
-                .map(|abi| ValueShape::OptionScalar {
-                    abi,
-                    read: read.clone(),
-                    write: write.clone(),
-                }),
+                .map(ValueShapeClass::OptionScalar)
+                .unwrap_or(ValueShapeClass::Encoded),
             ReadOp::Result { ok, err, .. } => ok
                 .ops
                 .first()
@@ -564,36 +632,111 @@ impl<'c> Lowerer<'c> {
                         .first()
                         .and_then(|err_op| self.primitive_abi_from_read_op(err_op)),
                 )
-                .map(|(ok, err)| ValueShape::ResultScalar {
-                    ok,
-                    err,
-                    read: read.clone(),
-                    write: write.clone(),
-                }),
+                .map(|(ok, err)| ValueShapeClass::ResultScalar { ok, err })
+                .unwrap_or(ValueShapeClass::Encoded),
             ReadOp::Vec { element_type, .. } => match element_type {
-                TypeExpr::Primitive(primitive) => Some(ValueShape::PrimitiveVec {
-                    element_abi: primitive_to_abi(*primitive),
-                    read: read.clone(),
-                    write: write.clone(),
-                }),
-                _ => None,
+                TypeExpr::Primitive(primitive) => {
+                    ValueShapeClass::PrimitiveVec(primitive_to_abi(*primitive))
+                }
+                _ => ValueShapeClass::Encoded,
             },
-            ReadOp::Record { id, .. } => {
-                self.blittable_record_size_by_id(id)
-                    .map(|size| ValueShape::BlittableRecord {
-                        id: id.clone(),
-                        size,
-                        read: read.clone(),
-                        write: write.clone(),
-                    })
+            ReadOp::Record { id, .. } => self
+                .blittable_record_size_by_id(id)
+                .map(|size| ValueShapeClass::BlittableRecord {
+                    id: id.clone(),
+                    size,
+                })
+                .unwrap_or(ValueShapeClass::Encoded),
+            _ => ValueShapeClass::Encoded,
+        }
+    }
+
+    fn classify_value_shape_from_write_op(&self, op: &WriteOp) -> ValueShapeClass {
+        match op {
+            WriteOp::Primitive { primitive, .. } => {
+                ValueShapeClass::Scalar(primitive_to_abi(*primitive))
             }
-            _ => None,
+            WriteOp::Option { some, .. } => some
+                .ops
+                .first()
+                .and_then(|inner| self.primitive_abi_from_write_op(inner))
+                .map(ValueShapeClass::OptionScalar)
+                .unwrap_or(ValueShapeClass::Encoded),
+            WriteOp::Result { ok, err, .. } => ok
+                .ops
+                .first()
+                .and_then(|ok_op| self.primitive_abi_from_write_op(ok_op))
+                .zip(
+                    err.ops
+                        .first()
+                        .and_then(|err_op| self.primitive_abi_from_write_op(err_op)),
+                )
+                .map(|(ok, err)| ValueShapeClass::ResultScalar { ok, err })
+                .unwrap_or(ValueShapeClass::Encoded),
+            WriteOp::Vec { element_type, .. } => match element_type {
+                TypeExpr::Primitive(primitive) => {
+                    ValueShapeClass::PrimitiveVec(primitive_to_abi(*primitive))
+                }
+                _ => ValueShapeClass::Encoded,
+            },
+            WriteOp::Record { id, .. } => self
+                .blittable_record_size_by_id(id)
+                .map(|size| ValueShapeClass::BlittableRecord {
+                    id: id.clone(),
+                    size,
+                })
+                .unwrap_or(ValueShapeClass::Encoded),
+            _ => ValueShapeClass::Encoded,
+        }
+    }
+
+    fn materialize_value_shape(
+        &self,
+        shape_class: ValueShapeClass,
+        read: &ReadSeq,
+        write: &WriteSeq,
+    ) -> ValueShape {
+        match shape_class {
+            ValueShapeClass::Scalar(abi) => ValueShape::Scalar(abi),
+            ValueShapeClass::OptionScalar(abi) => ValueShape::OptionScalar {
+                abi,
+                read: read.clone(),
+                write: write.clone(),
+            },
+            ValueShapeClass::ResultScalar { ok, err } => ValueShape::ResultScalar {
+                ok,
+                err,
+                read: read.clone(),
+                write: write.clone(),
+            },
+            ValueShapeClass::PrimitiveVec(element_abi) => ValueShape::PrimitiveVec {
+                element_abi,
+                read: read.clone(),
+                write: write.clone(),
+            },
+            ValueShapeClass::BlittableRecord { id, size } => ValueShape::BlittableRecord {
+                id,
+                size,
+                read: read.clone(),
+                write: write.clone(),
+            },
+            ValueShapeClass::Encoded => ValueShape::WireEncoded {
+                read: read.clone(),
+                write: write.clone(),
+            },
         }
     }
 
     fn primitive_abi_from_read_op(&self, op: &ReadOp) -> Option<AbiType> {
         match op {
             ReadOp::Primitive { primitive, .. } => Some(primitive_to_abi(*primitive)),
+            _ => None,
+        }
+    }
+
+    fn primitive_abi_from_write_op(&self, op: &WriteOp) -> Option<AbiType> {
+        match op {
+            WriteOp::Primitive { primitive, .. } => Some(primitive_to_abi(*primitive)),
             _ => None,
         }
     }

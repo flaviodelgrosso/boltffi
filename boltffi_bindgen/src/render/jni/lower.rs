@@ -1651,7 +1651,7 @@ impl<'a> JniLowerer<'a> {
             Some(InputBinding::WirePacket { .. }) => {
                 self.lower_callback_encoded_param(param_name, is_async)
             }
-            _ => panic!(
+            _ => unreachable!(
                 "unsupported JNI callback param input shape: {:?}",
                 param.input_shape
             ),

@@ -633,7 +633,7 @@ impl<'a> SwiftLowerer<'a> {
                             })
                             .map(|param| {
                                 let def = param_map.get(&param.name).unwrap_or_else(|| {
-                                    panic!(
+                                    unreachable!(
                                         "param def not found: callback={}, method={}, param={}, input_shape={:?}",
                                         plan.callback_id.as_str(),
                                         abi_method.id.as_str(),
@@ -690,12 +690,10 @@ impl<'a> SwiftLowerer<'a> {
                     )),
                 )
             }
-            _ => {
-                panic!(
-                    "unsupported ABI param input shape for Swift callback: {:?}",
-                    param.input_shape
-                )
-            }
+            _ => unreachable!(
+                "unsupported ABI param input shape for Swift callback: {:?}",
+                param.input_shape
+            ),
         };
 
         SwiftCallbackParam {
@@ -1302,7 +1300,7 @@ impl<'a> SwiftLowerer<'a> {
                     decode_expr: arg_name,
                 }
             }
-            _ => panic!(
+            _ => unreachable!(
                 "unsupported closure param role for {}",
                 param_def.name.as_str()
             ),

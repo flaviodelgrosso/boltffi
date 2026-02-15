@@ -215,7 +215,7 @@ pub fn lower_return_abi(kind: ReturnKind) -> ReturnAbi {
         },
         ReturnKind::WireEncoded(rust_type) => ReturnAbi::Encoded {
             rust_type,
-            strategy: EncodedReturnStrategy::BlittableRecordOrWire,
+            strategy: EncodedReturnStrategy::WireEncoded,
         },
     }
 }
@@ -311,14 +311,7 @@ fn encoded_return_buffer_expression(
 ) -> proc_macro2::TokenStream {
     match strategy {
         EncodedReturnStrategy::PrimitiveVec => quote! {
-            #[cfg(target_arch = "wasm32")]
-            {
-                ::boltffi::__private::FfiBuf::from_raw_vec(#result_ident)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-            }
+            ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
         },
         EncodedReturnStrategy::Utf8String => quote! {
             #[cfg(target_arch = "wasm32")]
@@ -330,32 +323,6 @@ fn encoded_return_buffer_expression(
                 ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
             }
         },
-        EncodedReturnStrategy::BlittableRecordOrWire => {
-            if let Some(registry) = custom_type_registry {
-                if custom_types::contains_custom_types(rust_type, registry) {
-                    return wire_encode_expression(rust_type, result_ident, Some(registry));
-                }
-            }
-
-            quote! {
-                #[cfg(target_arch = "wasm32")]
-                {
-                    if <#rust_type as ::boltffi::__private::wire::WireEncode>::IS_BLITTABLE
-                        && !::core::mem::needs_drop::<#rust_type>()
-                    {
-                        let mut values = ::std::vec::Vec::<#rust_type>::with_capacity(1);
-                        values.push(#result_ident);
-                        ::boltffi::__private::FfiBuf::from_raw_vec(values)
-                    } else {
-                        ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                    }
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                }
-            }
-        }
         EncodedReturnStrategy::OptionScalar => quote! {
             ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
         },

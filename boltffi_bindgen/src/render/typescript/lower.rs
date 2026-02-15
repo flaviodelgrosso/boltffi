@@ -1018,11 +1018,11 @@ impl<'a> TypeScriptLowerer<'a> {
         }
         match decode_ops.ops.first() {
             Some(ReadOp::Vec {
-                element_type: TypeExpr::Primitive(prim),
+                element_type: TypeExpr::Primitive(_),
                 ..
             }) => {
-                let decode = emit::emit_raw_primitive_array_read(*prim);
-                (Some(ts_type_str), TsOutputRoute::raw_packed(decode))
+                let decode = emit::emit_reader_read(decode_ops);
+                (Some(ts_type_str), TsOutputRoute::packed(decode))
             }
             Some(ReadOp::String { .. }) => {
                 let decode = "_module.takePackedUtf8String(packed)".to_string();
