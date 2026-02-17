@@ -58,6 +58,7 @@ jobs:
         run: cargo set-version --workspace ${{ inputs.version }}
 
       - name: Bump npm runtime version
+        if: ${{ !inputs.skip_npm }}
         run: |
           cd runtime/typescript
           npm version ${{ inputs.version }} --no-git-tag-version
