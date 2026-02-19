@@ -280,12 +280,17 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
             wasm,
         } => {
             let explicit_target_selected = apple || android || wasm;
+            let config = load_config_if_present()?;
             let check_wasm = if explicit_target_selected { wasm } else { true };
             let wasm_target_triple = if check_wasm {
-                load_config_if_present()?.map(|config| config.wasm_triple().to_string())
+                config.as_ref().map(|c| c.wasm_triple().to_string())
             } else {
                 None
             };
+            let include_macos = config
+                .as_ref()
+                .map(|c| c.apple_include_macos())
+                .unwrap_or(false);
             let options = CheckOptions {
                 fix,
                 apple: if explicit_target_selected {
@@ -293,6 +298,7 @@ fn execute_command(command: Commands, reporter: &reporter::Reporter) -> Result<(
                 } else {
                     true
                 },
+                include_macos,
                 android: if explicit_target_selected {
                     android
                 } else {
@@ -460,6 +466,7 @@ fn run_release(
     let check_options = CheckOptions {
         fix: false,
         apple: config.is_apple_enabled(),
+        include_macos: config.apple_include_macos(),
         android: config.is_android_enabled(),
         wasm: config.is_wasm_enabled(),
         wasm_target_triple: Some(config.wasm_triple().to_string()),

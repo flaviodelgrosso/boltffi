@@ -5,6 +5,7 @@ use crate::target::RustTarget;
 pub struct CheckOptions {
     pub fix: bool,
     pub apple: bool,
+    pub include_macos: bool,
     pub android: bool,
     pub wasm: bool,
     pub wasm_target_triple: Option<String>,
@@ -15,6 +16,7 @@ impl Default for CheckOptions {
         Self {
             fix: false,
             apple: true,
+            include_macos: false,
             android: true,
             wasm: true,
             wasm_target_triple: Some(RustTarget::WASM32_UNKNOWN_UNKNOWN.triple().to_string()),
@@ -31,6 +33,13 @@ pub fn run_check(options: CheckOptions) -> Result<bool> {
                 .iter()
                 .map(|target| target.triple().to_string()),
         );
+        if options.include_macos {
+            required_triples.extend(
+                RustTarget::ALL_MACOS
+                    .iter()
+                    .map(|target| target.triple().to_string()),
+            );
+        }
     }
 
     if options.android {
@@ -79,11 +88,19 @@ fn print_environment_status(check: &EnvironmentCheck, options: &CheckOptions) {
     println!();
 
     if options.apple {
-        println!("Apple Targets");
+        println!("Apple Targets (iOS)");
         RustTarget::ALL_IOS.iter().for_each(|target| {
             let installed = check.installed_targets.iter().any(|t| t == target.triple());
             println!("  {} {}", status_icon(installed), target.triple());
         });
+        if options.include_macos {
+            println!();
+            println!("Apple Targets (macOS)");
+            RustTarget::ALL_MACOS.iter().for_each(|target| {
+                let installed = check.installed_targets.iter().any(|t| t == target.triple());
+                println!("  {} {}", status_icon(installed), target.triple());
+            });
+        }
         println!();
 
         println!("Apple Tools");

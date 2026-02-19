@@ -125,14 +125,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          key: cross-${{ matrix.os }}
+          workspaces: |
+            .
+            benchmarks/rust-boltffi
       - run: cargo install --path ../../boltffi_cli
       - if: matrix.os == 'macos-latest'
         run: boltffi check --fix
       - if: matrix.os == 'macos-latest'
-        run: boltffi pack all
+        run: boltffi -v pack all
       - if: matrix.os != 'macos-latest'
         run: boltffi check --android --wasm --fix
       - if: matrix.os != 'macos-latest'
-        run: boltffi pack android
+        run: boltffi -v pack android
       - if: matrix.os != 'macos-latest'
-        run: boltffi pack wasm
+        run: boltffi -v pack wasm
