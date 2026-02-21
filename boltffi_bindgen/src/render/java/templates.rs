@@ -12,5 +12,10 @@ pub struct PreambleTemplate<'a> {
 #[template(path = "render_java/native.txt", escape = "none")]
 pub struct NativeTemplate<'a> {
     pub module: &'a JavaModule,
-    pub prefix: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "render_java/functions.txt", escape = "none")]
+pub struct FunctionsTemplate<'a> {
+    pub module: &'a JavaModule,
 }

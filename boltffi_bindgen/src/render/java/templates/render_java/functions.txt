@@ -1,0 +1,9 @@
+public final class {{ module.class_name }} {
+    private {{ module.class_name }}() {}
+{%- for func in module.functions %}
+
+    public static {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+        {% if func.return_type == "void" %}Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});{% else %}return Native.{{ func.ffi_name }}({% for param in func.params %}{{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});{% endif %}
+    }
+{%- endfor %}
+}

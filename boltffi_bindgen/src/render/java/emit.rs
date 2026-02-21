@@ -3,7 +3,7 @@ use crate::ir::contract::FfiContract;
 
 use super::JavaOptions;
 use super::lower::JavaLowerer;
-use super::templates::{NativeTemplate, PreambleTemplate};
+use super::templates::{FunctionsTemplate, NativeTemplate, PreambleTemplate};
 use askama::Template;
 
 pub struct JavaOutput {
@@ -24,18 +24,19 @@ impl JavaEmitter {
     ) -> JavaOutput {
         let lowerer = JavaLowerer::new(ffi, abi, package_name, module_name, options);
         let module = lowerer.module();
-        let prefix = lowerer.prefix();
 
         let mut source = String::new();
 
         let preamble = PreambleTemplate { module: &module };
         source.push_str(&preamble.render().expect("preamble template failed"));
 
-        let native = NativeTemplate {
-            module: &module,
-            prefix: &prefix,
-        };
+        let native = NativeTemplate { module: &module };
         source.push_str(&native.render().expect("native template failed"));
+
+        source.push('\n');
+
+        let functions = FunctionsTemplate { module: &module };
+        source.push_str(&functions.render().expect("functions template failed"));
 
         JavaOutput {
             source,
