@@ -21,9 +21,10 @@ use crate::render::kotlin::{NamingConvention, primitives};
 use super::plan::{
     JniArrayReleaseMode, JniAsyncCallbackInvoker, JniAsyncCallbackMethod, JniAsyncCompleteKind,
     JniAsyncFunction, JniCallbackCParam, JniCallbackMethod, JniCallbackReturn, JniCallbackTrait,
-    JniClass, JniClosureRecordParam, JniClosureTrampoline, JniFunction, JniInvokerResult,
-    JniModule, JniOptionInnerKind, JniOptionView, JniParam, JniParamKind, JniResultVariant,
-    JniResultView, JniReturnKind, JniStream, JniWireCtor, JniWireFunction, JniWireMethod,
+    JniClass, JniClosureRecordParam, JniClosureTrampoline, JniClosureTrampolineReturn, JniFunction,
+    JniInvokerResult, JniModule, JniOptionInnerKind, JniOptionView, JniParam, JniParamKind,
+    JniResultVariant, JniResultView, JniReturnKind, JniStream, JniWireCtor, JniWireFunction,
+    JniWireMethod,
 };
 
 struct JniReturnMeta {
@@ -616,7 +617,7 @@ impl<'a> JniLowerer<'a> {
     }
 
     fn lower_param(&self, param: &ParamDef) -> JniParam {
-        let name = param.name.as_str().to_string();
+        let name = naming::escape_c_keyword(param.name.as_str());
         let is_string = matches!(param.type_expr, TypeExpr::String);
         let (array_primitive, array_is_mutable) = match &param.type_expr {
             TypeExpr::Vec(inner) => match inner.as_ref() {
@@ -836,7 +837,7 @@ impl<'a> JniLowerer<'a> {
     ) -> String {
         if matches!(ty, TypeExpr::String) {
             return format!(
-                "(const uint8_t*)_{}_c, {} ? strlen(_{}_c) : 0",
+                "(const uint8_t*)_{}_c, (_{}_c != NULL) ? strlen(_{}_c) : 0",
                 name, name, name
             );
         }
@@ -997,7 +998,8 @@ impl<'a> JniLowerer<'a> {
                 | TypeExpr::Enum(_)
                 | TypeExpr::Vec(_)
                 | TypeExpr::Option(_)
-                | TypeExpr::Bytes => JniReturnMeta {
+                | TypeExpr::Bytes
+                | TypeExpr::Builtin(_) => JniReturnMeta {
                     is_unit: false,
                     is_direct: false,
                     jni_return_type: "jbyteArray".to_string(),
@@ -1344,6 +1346,12 @@ impl<'a> JniLowerer<'a> {
             .flat_map(|param| param.setup_lines.iter().cloned())
             .collect();
 
+        let cleanup_lines = lowered_params
+            .iter()
+            .rev()
+            .flat_map(|param| param.cleanup_lines.iter().cloned())
+            .collect();
+
         let jni_args = lowered_params
             .iter()
             .map(|param| param.jni_arg.clone())
@@ -1357,6 +1365,7 @@ impl<'a> JniLowerer<'a> {
             jni_signature: self.build_callback_jni_signature(&method.params, &method.returns),
             c_params,
             setup_lines,
+            cleanup_lines,
             jni_args,
             return_info,
         }
@@ -1394,6 +1403,12 @@ impl<'a> JniLowerer<'a> {
             .flat_map(|param| param.setup_lines.iter().cloned())
             .collect();
 
+        let cleanup_lines = lowered_params
+            .iter()
+            .rev()
+            .flat_map(|param| param.cleanup_lines.iter().cloned())
+            .collect();
+
         let jni_args = lowered_params
             .iter()
             .map(|param| param.jni_arg.clone())
@@ -1406,6 +1421,7 @@ impl<'a> JniLowerer<'a> {
             jni_signature: self.build_async_callback_jni_signature(&method.params),
             c_params,
             setup_lines,
+            cleanup_lines,
             jni_args,
             return_c_type,
             invoker_jni_name: format!(
@@ -1544,6 +1560,7 @@ impl<'a> JniLowerer<'a> {
                 c_type,
             }],
             setup_lines: Vec::new(),
+            cleanup_lines: Vec::new(),
             jni_arg,
         }
     }
@@ -1574,6 +1591,9 @@ impl<'a> JniLowerer<'a> {
                 },
             ],
             setup_lines,
+            cleanup_lines: vec![format!(
+                "if ({buf_name} != NULL) (*env)->DeleteLocalRef(env, {buf_name});"
+            )],
             jni_arg: buf_name,
         }
     }
@@ -1589,27 +1609,21 @@ impl<'a> JniLowerer<'a> {
 
         let setup_lines = if is_async {
             vec![
+                format!("jobject {buf_name} = NULL;"),
+                format!("if ({ptr_name} == NULL) {{ goto cleanup; }}"),
                 format!(
-                    "if ({ptr_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "{buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
                 ),
-                format!(
-                    "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
-                ),
-                format!(
-                    "if ({buf_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
-                ),
+                format!("if ({buf_name} == NULL) {{ goto cleanup; }}"),
             ]
         } else {
             vec![
+                format!("jobject {buf_name} = NULL;"),
+                format!("if ({ptr_name} == NULL) {{ status->code = 1; goto cleanup; }}"),
                 format!(
-                    "if ({ptr_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "{buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
                 ),
-                format!(
-                    "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
-                ),
-                format!(
-                    "if ({buf_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
-                ),
+                format!("if ({buf_name} == NULL) {{ status->code = 1; goto cleanup; }}"),
             ]
         };
 
@@ -1625,6 +1639,9 @@ impl<'a> JniLowerer<'a> {
                 },
             ],
             setup_lines,
+            cleanup_lines: vec![format!(
+                "if ({buf_name} != NULL) (*env)->DeleteLocalRef(env, {buf_name});"
+            )],
             jni_arg: buf_name,
         }
     }
@@ -1675,6 +1692,7 @@ impl<'a> JniLowerer<'a> {
                 c_type,
             }],
             setup_lines: Vec::new(),
+            cleanup_lines: Vec::new(),
             jni_arg,
         }
     }
@@ -1690,27 +1708,21 @@ impl<'a> JniLowerer<'a> {
 
         let setup_lines = if is_async {
             vec![
+                format!("jobject {buf_name} = NULL;"),
+                format!("if ({ptr_name} == NULL) {{ goto cleanup; }}"),
                 format!(
-                    "if ({ptr_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "{buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
                 ),
-                format!(
-                    "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
-                ),
-                format!(
-                    "if ({buf_name} == NULL) {{ if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
-                ),
+                format!("if ({buf_name} == NULL) {{ goto cleanup; }}"),
             ]
         } else {
             vec![
+                format!("jobject {buf_name} = NULL;"),
+                format!("if ({ptr_name} == NULL) {{ status->code = 1; goto cleanup; }}"),
                 format!(
-                    "if ({ptr_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
+                    "{buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
                 ),
-                format!(
-                    "jobject {buf_name} = (*env)->NewDirectByteBuffer(env, (void*){ptr_name}, (jlong){len_name});"
-                ),
-                format!(
-                    "if ({buf_name} == NULL) {{ status->code = 1; if (attached) (*g_jvm)->DetachCurrentThread(g_jvm); return; }}"
-                ),
+                format!("if ({buf_name} == NULL) {{ status->code = 1; goto cleanup; }}"),
             ]
         };
 
@@ -1726,6 +1738,9 @@ impl<'a> JniLowerer<'a> {
                 },
             ],
             setup_lines,
+            cleanup_lines: vec![format!(
+                "if ({buf_name} != NULL) (*env)->DeleteLocalRef(env, {buf_name});"
+            )],
             jni_arg: buf_name,
         }
     }
@@ -1907,6 +1922,12 @@ impl<'a> JniLowerer<'a> {
         let jni_params_signature = self.closure_jni_params_signature(params);
         let jni_call_args = self.closure_jni_call_args(params);
 
+        let return_info = method.and_then(|m| match &m.returns {
+            ReturnDef::Void => None,
+            ReturnDef::Value(ty) => Some(self.closure_return_info(ty)),
+            ReturnDef::Result { .. } => Some(JniClosureTrampolineReturn::wire_encoded()),
+        });
+
         JniClosureTrampoline {
             trampoline_name: format!("trampoline_{}", signature_id),
             signature_id,
@@ -1915,6 +1936,56 @@ impl<'a> JniLowerer<'a> {
             jni_params_signature,
             jni_call_args,
             record_params,
+            return_info,
+        }
+    }
+
+    fn closure_return_info(&self, ty: &TypeExpr) -> JniClosureTrampolineReturn {
+        match ty {
+            TypeExpr::Primitive(p) => {
+                let model_primitive = self.to_model_primitive(*p);
+                let info = primitives::info(model_primitive);
+                let c_type = info.c_type.to_string();
+                let jni_call_method = format!("CallStatic{}Method", info.call_suffix);
+                let jni_return_cast = format!("({})", c_type);
+                let jni_signature = info.signature.to_string();
+                JniClosureTrampolineReturn {
+                    c_type,
+                    jni_call_method,
+                    jni_return_cast,
+                    jni_signature,
+                    is_wire_encoded: false,
+                    callback_create_fn: None,
+                }
+            }
+            TypeExpr::String
+            | TypeExpr::Record(_)
+            | TypeExpr::Enum(_)
+            | TypeExpr::Bytes
+            | TypeExpr::Vec(_)
+            | TypeExpr::Option(_)
+            | TypeExpr::Builtin(_) => JniClosureTrampolineReturn::wire_encoded(),
+            TypeExpr::Handle(class_id) => JniClosureTrampolineReturn {
+                c_type: format!("struct {}*", class_id.as_str()),
+                jni_call_method: "CallStaticLongMethod".to_string(),
+                jni_return_cast: format!("(struct {}*)(intptr_t)", class_id.as_str()),
+                jni_signature: "J".to_string(),
+                is_wire_encoded: false,
+                callback_create_fn: None,
+            },
+            TypeExpr::Callback(id) => {
+                let snake = naming::to_snake_case(id.as_str());
+                let prefix = naming::ffi_prefix();
+                JniClosureTrampolineReturn {
+                    c_type: "BoltFFICallbackHandle".to_string(),
+                    jni_call_method: "CallStaticLongMethod".to_string(),
+                    jni_return_cast: String::new(),
+                    jni_signature: "J".to_string(),
+                    is_wire_encoded: false,
+                    callback_create_fn: Some(format!("{}_create_{}_handle", prefix, snake)),
+                }
+            }
+            _ => JniClosureTrampolineReturn::wire_encoded(),
         }
     }
 
@@ -1929,6 +2000,11 @@ impl<'a> JniLowerer<'a> {
                     size,
                 })
             }
+            TypeExpr::String => Some(JniClosureRecordParam {
+                index,
+                c_type: "String".to_string(),
+                size: "0".to_string(),
+            }),
             _ => None,
         }
     }
@@ -1958,8 +2034,7 @@ impl<'a> JniLowerer<'a> {
             .iter()
             .map(|param| match &param.type_expr {
                 TypeExpr::Primitive(p) => self.primitive_signature(*p),
-                TypeExpr::String => "Ljava/lang/String;".to_string(),
-                TypeExpr::Record(_) => "Ljava/nio/ByteBuffer;".to_string(),
+                TypeExpr::String | TypeExpr::Record(_) => "Ljava/nio/ByteBuffer;".to_string(),
                 _ => "Ljava/lang/Object;".to_string(),
             })
             .collect::<Vec<_>>()
@@ -1972,7 +2047,7 @@ impl<'a> JniLowerer<'a> {
             .enumerate()
             .map(|(index, param)| match &param.type_expr {
                 TypeExpr::Primitive(p) => format!("({})p{}", self.primitive_jni_cast(*p), index),
-                TypeExpr::Record(_) => format!("buf_p{}", index),
+                TypeExpr::String | TypeExpr::Record(_) => format!("buf_p{}", index),
                 _ => format!("(jlong)p{}", index),
             })
             .collect::<Vec<_>>()
@@ -2008,6 +2083,7 @@ struct DataEnumParamInfo {
 struct LoweredCallbackParam {
     c_params: Vec<JniCallbackCParam>,
     setup_lines: Vec<String>,
+    cleanup_lines: Vec<String>,
     jni_arg: String,
 }
 
@@ -2098,5 +2174,100 @@ mod tests {
                 abi
             );
         });
+    }
+
+    #[test]
+    fn closure_return_primitive_is_direct() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::Primitive(PrimitiveType::I32));
+        assert!(!ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "int32_t");
+        assert_eq!(ret.jni_signature, "I");
+    }
+
+    #[test]
+    fn closure_return_string_is_wire_encoded() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::String);
+        assert!(ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "FfiBuf_u8");
+        assert_eq!(ret.jni_signature, "[B");
+    }
+
+    #[test]
+    fn closure_return_record_is_wire_encoded() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::Record("Point".into()));
+        assert!(ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "FfiBuf_u8");
+    }
+
+    #[test]
+    fn closure_return_enum_is_wire_encoded() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::Enum("Color".into()));
+        assert!(ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "FfiBuf_u8");
+    }
+
+    #[test]
+    fn closure_return_bytes_is_wire_encoded() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::Bytes);
+        assert!(ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "FfiBuf_u8");
+    }
+
+    #[test]
+    fn closure_return_vec_is_wire_encoded() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::Vec(Box::new(TypeExpr::Primitive(
+            PrimitiveType::I32,
+        ))));
+        assert!(ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "FfiBuf_u8");
+    }
+
+    #[test]
+    fn closure_return_option_is_wire_encoded() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::Option(Box::new(TypeExpr::Primitive(
+            PrimitiveType::I32,
+        ))));
+        assert!(ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "FfiBuf_u8");
+    }
+
+    #[test]
+    fn closure_return_builtin_is_wire_encoded() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::Builtin("Duration".into()));
+        assert!(ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "FfiBuf_u8");
+    }
+
+    #[test]
+    fn closure_return_handle_uses_long_with_pointer_cast() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::Handle("Player".into()));
+        assert!(!ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "struct Player*");
+        assert_eq!(ret.jni_call_method, "CallStaticLongMethod");
+        assert_eq!(ret.jni_return_cast, "(struct Player*)(intptr_t)");
+        assert_eq!(ret.jni_signature, "J");
+    }
+
+    #[test]
+    fn closure_return_callback_uses_create_handle() {
+        let lowerer = test_lowerer();
+        let ret = lowerer.closure_return_info(&TypeExpr::Callback("Listener".into()));
+        assert!(!ret.is_wire_encoded);
+        assert_eq!(ret.c_type, "BoltFFICallbackHandle");
+        assert_eq!(ret.jni_call_method, "CallStaticLongMethod");
+        assert_eq!(ret.jni_signature, "J");
+        assert_eq!(
+            ret.callback_create_fn.as_deref(),
+            Some("boltffi_create_listener_handle")
+        );
     }
 }

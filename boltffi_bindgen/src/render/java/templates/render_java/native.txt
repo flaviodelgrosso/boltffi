@@ -16,6 +16,10 @@ final class Native {
 
     private Native() {}
 
+    @SuppressWarnings("unused")
+    static void boltffiFutureContinuationCallback(long handle, byte pollResult) {
+    }
+
     static native void {{ module.native.prefix }}_free_string(long ptr);
     static native String {{ module.native.prefix }}_last_error_message();
 {%- for func in module.native.functions %}

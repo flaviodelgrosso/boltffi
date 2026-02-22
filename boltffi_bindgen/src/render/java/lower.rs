@@ -40,7 +40,8 @@ impl<'a> JavaLowerer<'a> {
             .options
             .library_name
             .clone()
-            .unwrap_or_else(|| self.module_name.clone());
+            .unwrap_or_else(|| self.module_name.clone())
+            .replace('-', "_");
 
         let prefix = boltffi_ffi_rules::naming::ffi_prefix().to_string();
 
