@@ -537,7 +537,8 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
         }
     }
 
-    fn trait_param_to_c(name: &str, ty: &Type, _module: &Module) -> Vec<(String, String)> {
+    fn trait_param_to_c(name: &str, ty: &Type, module: &Module) -> Vec<(String, String)> {
+        let name = naming::escape_c_keyword(name);
         match ty {
             Type::Primitive(_) | Type::Object(_) | Type::BoxedTrait(_) => {
                 vec![(name.to_string(), Self::type_to_c(ty))]
@@ -549,11 +550,7 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
                     .flat_map(Self::closure_param_to_c)
                     .collect();
                 let params_str = params_c.join(", ");
-                let ret_c = if signature.returns.is_void() {
-                    "void".to_string()
-                } else {
-                    Self::type_to_c(&signature.returns)
-                };
+                let ret_c = Self::closure_return_c_type(&signature.returns, module);
                 let callback_type = if params_str.is_empty() {
                     format!("{} (*)(void*)", ret_c)
                 } else {
@@ -630,9 +627,20 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
             | Type::Enum(_)
             | Type::Custom { .. } => true,
             Type::Primitive(_) | Type::Void | Type::Object(_) => false,
-            Type::Bytes | Type::Slice(_) | Type::MutSlice(_) => false,
+            Type::Bytes => true,
+            Type::Slice(_) | Type::MutSlice(_) => false,
             Type::Closure(_) | Type::BoxedTrait(_) => false,
             Type::Result { .. } => true,
+        }
+    }
+
+    fn closure_return_c_type(ty: &Type, module: &Module) -> String {
+        if ty.is_void() {
+            "void".to_string()
+        } else if Self::is_wire_encoded_type(ty, module) {
+            "FfiBuf_u8".to_string()
+        } else {
+            Self::type_to_c_return(ty)
         }
     }
 
@@ -869,7 +877,8 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
             .collect()
     }
 
-    fn param_to_c(name: &str, ty: &Type, _module: &Module) -> Vec<(String, String)> {
+    fn param_to_c(name: &str, ty: &Type, module: &Module) -> Vec<(String, String)> {
+        let name = naming::escape_c_keyword(name);
         match ty {
             Type::String => vec![
                 (format!("{}_ptr", name), "const uint8_t*".to_string()),
@@ -930,19 +939,17 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
                     ]
                 }
             }
-            Type::Option(inner) => {
-                if matches!(
-                    inner.as_ref(),
-                    Type::Builtin(_) | Type::Record(_) | Type::Enum(_) | Type::Vec(_)
-                ) {
+            Type::Option(inner) => match inner.as_ref() {
+                Type::Object(_) | Type::BoxedTrait(_) | Type::Closure(_) => {
+                    Self::param_to_c(&name, inner, module)
+                }
+                _ => {
                     vec![
                         (format!("{}_ptr", name), "const uint8_t*".to_string()),
                         (format!("{}_len", name), "uintptr_t".to_string()),
                     ]
-                } else {
-                    vec![(name.to_string(), Self::type_to_c(ty))]
                 }
-            }
+            },
             Type::Closure(sig) => {
                 let params_c: Vec<String> = sig
                     .params
@@ -950,11 +957,7 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
                     .flat_map(Self::closure_param_to_c)
                     .collect();
                 let params_str = params_c.join(", ");
-                let ret_c = if sig.returns.is_void() {
-                    "void".to_string()
-                } else {
-                    Self::type_to_c(&sig.returns)
-                };
+                let ret_c = Self::closure_return_c_type(&sig.returns, module);
                 let callback_type = if params_str.is_empty() {
                     format!("{} (*)(void*)", ret_c)
                 } else {
@@ -1060,5 +1063,211 @@ static inline uint64_t {prefix}_atomic_u64_load(uint64_t* slot) {{
             Type::Void => "void".to_string(),
             Type::Result { ok, .. } => Self::type_to_c(ok),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::ClosureSignature;
+    use std::collections::{HashMap, HashSet};
+
+    fn empty_module() -> Module {
+        Module {
+            name: "test".to_string(),
+            classes: vec![],
+            records: vec![],
+            enums: vec![],
+            functions: vec![],
+            callback_traits: vec![],
+            custom_types: vec![],
+            used_builtins: HashSet::new(),
+            closures: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn option_primitive_is_wire_encoded() {
+        let module = empty_module();
+        let params = CHeaderGenerator::param_to_c(
+            "value",
+            &Type::Option(Box::new(Type::Primitive(Primitive::I32))),
+            &module,
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "value_ptr");
+        assert_eq!(params[0].1, "const uint8_t*");
+        assert_eq!(params[1].0, "value_len");
+        assert_eq!(params[1].1, "uintptr_t");
+    }
+
+    #[test]
+    fn option_string_is_wire_encoded() {
+        let module = empty_module();
+        let params =
+            CHeaderGenerator::param_to_c("name", &Type::Option(Box::new(Type::String)), &module);
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].1, "const uint8_t*");
+    }
+
+    #[test]
+    fn option_record_is_wire_encoded() {
+        let module = empty_module();
+        let params = CHeaderGenerator::param_to_c(
+            "point",
+            &Type::Option(Box::new(Type::Record("Point".into()))),
+            &module,
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].1, "const uint8_t*");
+    }
+
+    #[test]
+    fn option_enum_is_wire_encoded() {
+        let module = empty_module();
+        let params = CHeaderGenerator::param_to_c(
+            "color",
+            &Type::Option(Box::new(Type::Enum("Color".into()))),
+            &module,
+        );
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].1, "const uint8_t*");
+    }
+
+    #[test]
+    fn option_object_is_nullable_pointer() {
+        let module = empty_module();
+        let params = CHeaderGenerator::param_to_c(
+            "handle",
+            &Type::Option(Box::new(Type::Object("Player".into()))),
+            &module,
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].1, "struct Player*");
+    }
+
+    #[test]
+    fn option_boxed_trait_is_nullable_pointer() {
+        let module = empty_module();
+        let params = CHeaderGenerator::param_to_c(
+            "listener",
+            &Type::Option(Box::new(Type::BoxedTrait("Listener".into()))),
+            &module,
+        );
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].1, "BoltFFICallbackHandle");
+    }
+
+    #[test]
+    fn option_closure_is_nullable_function_pointer() {
+        let module = empty_module();
+        let sig = ClosureSignature {
+            params: vec![],
+            returns: Box::new(Type::Void),
+        };
+        let params = CHeaderGenerator::param_to_c(
+            "on_done",
+            &Type::Option(Box::new(Type::Closure(sig))),
+            &module,
+        );
+        assert_eq!(params.len(), 2);
+        assert!(params[0].0.contains("cb"));
+        assert!(params[1].0.contains("ud"));
+    }
+
+    #[test]
+    fn closure_return_void_is_void() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(&Type::Void, &module),
+            "void"
+        );
+    }
+
+    #[test]
+    fn closure_return_primitive_is_direct() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(&Type::Primitive(Primitive::I32), &module),
+            "int32_t"
+        );
+    }
+
+    #[test]
+    fn closure_return_string_is_wire_encoded() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(&Type::String, &module),
+            "FfiBuf_u8"
+        );
+    }
+
+    #[test]
+    fn closure_return_bytes_is_wire_encoded() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(&Type::Bytes, &module),
+            "FfiBuf_u8"
+        );
+    }
+
+    #[test]
+    fn closure_return_record_is_wire_encoded() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(&Type::Record("Point".into()), &module),
+            "FfiBuf_u8"
+        );
+    }
+
+    #[test]
+    fn closure_return_enum_is_wire_encoded() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(&Type::Enum("Color".into()), &module),
+            "FfiBuf_u8"
+        );
+    }
+
+    #[test]
+    fn closure_return_vec_is_wire_encoded() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(
+                &Type::Vec(Box::new(Type::Primitive(Primitive::I32))),
+                &module
+            ),
+            "FfiBuf_u8"
+        );
+    }
+
+    #[test]
+    fn closure_return_option_is_wire_encoded() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(
+                &Type::Option(Box::new(Type::Primitive(Primitive::I32))),
+                &module
+            ),
+            "FfiBuf_u8"
+        );
+    }
+
+    #[test]
+    fn closure_return_object_is_struct_pointer() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(&Type::Object("Player".into()), &module),
+            "struct Player*"
+        );
+    }
+
+    #[test]
+    fn closure_return_boxed_trait_is_callback_handle() {
+        let module = empty_module();
+        assert_eq!(
+            CHeaderGenerator::closure_return_c_type(&Type::BoxedTrait("Listener".into()), &module),
+            "BoltFFICallbackHandle"
+        );
     }
 }

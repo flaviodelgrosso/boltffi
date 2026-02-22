@@ -55,6 +55,21 @@ pub mod naming {
     #[derive(Clone, Debug, Eq, Hash, PartialEq)]
     pub struct ClassPrefix;
 
+    const C_KEYWORDS: &[&str] = &[
+        "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+        "enum", "extern", "float", "for", "goto", "if", "int", "long", "register", "return",
+        "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned",
+        "void", "volatile", "while",
+    ];
+
+    pub fn escape_c_keyword(name: &str) -> String {
+        if C_KEYWORDS.contains(&name) {
+            format!("{}_", name)
+        } else {
+            name.to_string()
+        }
+    }
+
     pub fn ffi_prefix() -> &'static str {
         FFI_PREFIX
     }

@@ -70,17 +70,25 @@ static void boltffi_jni_continuation_callback(uint64_t handle, int8_t poll_resul
 static jclass g_{{ trampoline.signature_id }}_class = NULL;
 static jmethodID g_{{ trampoline.signature_id }}_call = NULL;
 
-static void {{ trampoline.trampoline_name }}(void* user_data{{ trampoline.c_params }}) {
+static {{ trampoline.c_return_type() }} {{ trampoline.trampoline_name }}(void* user_data{{ trampoline.c_params }}) {
     JNIEnv* env;
     int attached = 0;
     jint get_env_result = (*g_jvm)->GetEnv(g_jvm, (void**)&env, JNI_VERSION_1_6);
     if (get_env_result == JNI_EDETACHED) {
         if (boltffi_attach_current_thread(g_jvm, &env) != JNI_OK) {
+{%- if trampoline.is_void() %}
             return;
+{%- else %}
+            {{ trampoline.c_return_type() }} zero = {0}; return zero;
+{%- endif %}
         }
         attached = 1;
     } else if (get_env_result != JNI_OK) {
+{%- if trampoline.is_void() %}
         return;
+{%- else %}
+        {{ trampoline.c_return_type() }} zero = {0}; return zero;
+{%- endif %}
     }
     jlong handle = (jlong)(uintptr_t)user_data;
 {%- for rp in trampoline.record_params %}
@@ -90,15 +98,53 @@ static void {{ trampoline.trampoline_name }}(void* user_data{{ trampoline.c_para
         jclass local_class = (*env)->FindClass(env, "{{ trampoline.callbacks_class_jni_path }}");
         if (local_class == NULL) {
             if (attached) (*g_jvm)->DetachCurrentThread(g_jvm);
+{%- if trampoline.is_void() %}
             return;
+{%- else %}
+            {{ trampoline.c_return_type() }} zero = {0}; return zero;
+{%- endif %}
         }
         g_{{ trampoline.signature_id }}_class = (*env)->NewGlobalRef(env, local_class);
-        g_{{ trampoline.signature_id }}_call = (*env)->GetStaticMethodID(env, g_{{ trampoline.signature_id }}_class, "call", "(J{{ trampoline.jni_params_signature }})V");
+        g_{{ trampoline.signature_id }}_call = (*env)->GetStaticMethodID(env, g_{{ trampoline.signature_id }}_class, "call", "(J{{ trampoline.jni_params_signature }}){{ trampoline.jni_return_signature() }}");
     }
+{%- if trampoline.is_void() %}
     (*env)->CallStaticVoidMethod(env, g_{{ trampoline.signature_id }}_class, g_{{ trampoline.signature_id }}_call, handle{% if !trampoline.jni_call_args.is_empty() %}, {{ trampoline.jni_call_args }}{% endif %});
     if (attached) {
         (*g_jvm)->DetachCurrentThread(g_jvm);
     }
+{%- else %}
+{%- if trampoline.is_wire_encoded_return() %}
+    jbyteArray _jarr = (jbyteArray)(*env)->{{ trampoline.jni_call_method() }}(env, g_{{ trampoline.signature_id }}_class, g_{{ trampoline.signature_id }}_call, handle{% if !trampoline.jni_call_args.is_empty() %}, {{ trampoline.jni_call_args }}{% endif %});
+    FfiBuf_u8 _result = {0};
+    if (_jarr != NULL) {
+        jsize _len = (*env)->GetArrayLength(env, _jarr);
+        uint8_t* _ptr = (uint8_t*)malloc((size_t)_len);
+        if (_ptr != NULL) {
+            (*env)->GetByteArrayRegion(env, _jarr, 0, _len, (jbyte*)_ptr);
+            _result.ptr = _ptr;
+            _result.len = (size_t)_len;
+            _result.cap = (size_t)_len;
+        }
+    }
+    if (attached) {
+        (*g_jvm)->DetachCurrentThread(g_jvm);
+    }
+    return _result;
+{%- elif trampoline.is_callback_handle_return() %}
+    jlong _handle_val = (*env)->CallStaticLongMethod(env, g_{{ trampoline.signature_id }}_class, g_{{ trampoline.signature_id }}_call, handle{% if !trampoline.jni_call_args.is_empty() %}, {{ trampoline.jni_call_args }}{% endif %});
+    BoltFFICallbackHandle _result = {{ trampoline.callback_create_fn() }}((uint64_t)_handle_val);
+    if (attached) {
+        (*g_jvm)->DetachCurrentThread(g_jvm);
+    }
+    return _result;
+{%- else %}
+    {{ trampoline.c_return_type() }} _result = {{ trampoline.jni_return_cast() }}(*env)->{{ trampoline.jni_call_method() }}(env, g_{{ trampoline.signature_id }}_class, g_{{ trampoline.signature_id }}_call, handle{% if !trampoline.jni_call_args.is_empty() %}, {{ trampoline.jni_call_args }}{% endif %});
+    if (attached) {
+        (*g_jvm)->DetachCurrentThread(g_jvm);
+    }
+    return _result;
+{%- endif %}
+{%- endif %}
 }
 {%- endfor %}
 
@@ -423,7 +469,10 @@ static {{ cb.vtable_type }} g_{{ cb.trait_name }}_vtable = {
 
 static void init_{{ cb.trait_name }}_callbacks(JNIEnv* env) {
     jclass local_class = (*env)->FindClass(env, "{{ cb.callbacks_class }}");
-    if (local_class == NULL) return;
+    if (local_class == NULL) {
+        (*env)->ExceptionClear(env);
+        return;
+    }
     g_{{ cb.trait_name }}_callbacks_class = (*env)->NewGlobalRef(env, local_class);
     g_{{ cb.trait_name }}_free_method = (*env)->GetStaticMethodID(env, g_{{ cb.trait_name }}_callbacks_class, "free", "(J)V");
     g_{{ cb.trait_name }}_clone_method = (*env)->GetStaticMethodID(env, g_{{ cb.trait_name }}_callbacks_class, "clone", "(J)J");

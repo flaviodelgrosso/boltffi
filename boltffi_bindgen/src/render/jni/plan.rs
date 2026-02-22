@@ -276,6 +276,85 @@ pub struct JniClosureTrampoline {
     pub jni_params_signature: String,
     pub jni_call_args: String,
     pub record_params: Vec<JniClosureRecordParam>,
+    pub return_info: Option<JniClosureTrampolineReturn>,
+}
+
+#[derive(Clone)]
+pub struct JniClosureTrampolineReturn {
+    pub c_type: String,
+    pub jni_call_method: String,
+    pub jni_return_cast: String,
+    pub jni_signature: String,
+    pub is_wire_encoded: bool,
+    pub callback_create_fn: Option<String>,
+}
+
+impl JniClosureTrampolineReturn {
+    pub fn wire_encoded() -> Self {
+        Self {
+            c_type: "FfiBuf_u8".to_string(),
+            jni_call_method: "CallStaticObjectMethod".to_string(),
+            jni_return_cast: String::new(),
+            jni_signature: "[B".to_string(),
+            is_wire_encoded: true,
+            callback_create_fn: None,
+        }
+    }
+}
+
+impl JniClosureTrampoline {
+    pub fn is_void(&self) -> bool {
+        self.return_info.is_none()
+    }
+
+    pub fn c_return_type(&self) -> &str {
+        self.return_info
+            .as_ref()
+            .map(|r| r.c_type.as_str())
+            .unwrap_or("void")
+    }
+
+    pub fn jni_call_method(&self) -> &str {
+        self.return_info
+            .as_ref()
+            .map(|r| r.jni_call_method.as_str())
+            .unwrap_or("CallStaticVoidMethod")
+    }
+
+    pub fn jni_return_cast(&self) -> &str {
+        self.return_info
+            .as_ref()
+            .map(|r| r.jni_return_cast.as_str())
+            .unwrap_or("")
+    }
+
+    pub fn jni_return_signature(&self) -> &str {
+        self.return_info
+            .as_ref()
+            .map(|r| r.jni_signature.as_str())
+            .unwrap_or("V")
+    }
+
+    pub fn is_wire_encoded_return(&self) -> bool {
+        self.return_info
+            .as_ref()
+            .map(|r| r.is_wire_encoded)
+            .unwrap_or(false)
+    }
+
+    pub fn is_callback_handle_return(&self) -> bool {
+        self.return_info
+            .as_ref()
+            .and_then(|r| r.callback_create_fn.as_ref())
+            .is_some()
+    }
+
+    pub fn callback_create_fn(&self) -> &str {
+        self.return_info
+            .as_ref()
+            .and_then(|r| r.callback_create_fn.as_deref())
+            .unwrap_or("")
+    }
 }
 
 #[derive(Clone)]
