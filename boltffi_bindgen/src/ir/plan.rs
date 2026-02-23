@@ -1,7 +1,8 @@
 use boltffi_ffi_rules::naming::{GlobalSymbol, Name, VtableField};
 
 use crate::ir::codec::CodecPlan;
-use crate::ir::ids::{CallbackId, ClassId, ParamName};
+use crate::ir::ids::{CallbackId, ClassId, FieldName, ParamName, RecordId};
+use crate::ir::types::PrimitiveType;
 
 #[derive(Debug, Clone)]
 pub struct CallPlan {
@@ -31,9 +32,9 @@ pub struct AsyncPlan {
 #[derive(Debug, Clone)]
 pub enum AsyncResult {
     Void,
-    Value(ReturnValuePlan),
+    Value(Transport),
     Fallible {
-        ok: ReturnValuePlan,
+        ok: Transport,
         err_codec: CodecPlan,
     },
 }
@@ -41,29 +42,21 @@ pub enum AsyncResult {
 #[derive(Debug, Clone)]
 pub struct CompletionCallback {
     pub param_name: ParamName,
-    pub ffi_type: AbiType,
+    pub abi_type: AbiType,
 }
 
 #[derive(Debug, Clone)]
 pub struct ParamPlan {
     pub name: ParamName,
-    pub strategy: ParamStrategy,
+    pub transport: Transport,
+    pub mutability: Mutability,
 }
 
 #[derive(Debug, Clone)]
-pub enum ParamStrategy {
-    Direct(DirectPlan),
-    Buffer {
-        element_abi: AbiType,
-        mutability: Mutability,
-    },
-    String {
-        mutability: Mutability,
-    },
-    Encoded {
-        codec: CodecPlan,
-        mutability: Mutability,
-    },
+pub enum Transport {
+    Scalar(PrimitiveType),
+    Composite(CompositeLayout),
+    Span(SpanContent),
     Handle {
         class_id: ClassId,
         nullable: bool,
@@ -76,8 +69,25 @@ pub enum ParamStrategy {
 }
 
 #[derive(Debug, Clone)]
-pub struct DirectPlan {
-    pub abi_type: AbiType,
+pub enum SpanContent {
+    Scalar(PrimitiveType),
+    Composite(CompositeLayout),
+    Utf8,
+    Encoded(CodecPlan),
+}
+
+#[derive(Debug, Clone)]
+pub struct CompositeLayout {
+    pub record_id: RecordId,
+    pub total_size: usize,
+    pub fields: Vec<CompositeField>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompositeField {
+    pub name: FieldName,
+    pub offset: usize,
+    pub primitive: PrimitiveType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +109,26 @@ pub enum AbiType {
     Pointer,
 }
 
+impl From<PrimitiveType> for AbiType {
+    fn from(p: PrimitiveType) -> Self {
+        match p {
+            PrimitiveType::Bool => Self::Bool,
+            PrimitiveType::I8 => Self::I8,
+            PrimitiveType::U8 => Self::U8,
+            PrimitiveType::I16 => Self::I16,
+            PrimitiveType::U16 => Self::U16,
+            PrimitiveType::I32 => Self::I32,
+            PrimitiveType::U32 => Self::U32,
+            PrimitiveType::I64 => Self::I64,
+            PrimitiveType::U64 => Self::U64,
+            PrimitiveType::ISize => Self::ISize,
+            PrimitiveType::USize => Self::USize,
+            PrimitiveType::F32 => Self::F32,
+            PrimitiveType::F64 => Self::F64,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mutability {
     Shared,
@@ -112,27 +142,11 @@ pub enum CallbackStyle {
 }
 
 #[derive(Debug, Clone)]
-pub enum ReturnValuePlan {
-    Void,
-    Direct(DirectPlan),
-    Encoded {
-        codec: CodecPlan,
-    },
-    Handle {
-        class_id: ClassId,
-        nullable: bool,
-    },
-    Callback {
-        callback_id: CallbackId,
-        nullable: bool,
-    },
-}
-
-#[derive(Debug, Clone)]
 pub enum ReturnPlan {
-    Value(ReturnValuePlan),
+    Void,
+    Value(Transport),
     Fallible {
-        ok: ReturnValuePlan,
+        ok: Transport,
         err_codec: CodecPlan,
     },
 }
