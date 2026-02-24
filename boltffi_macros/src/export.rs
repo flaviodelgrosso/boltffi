@@ -22,7 +22,7 @@ fn build_encoded_return_exports(
             #[cfg(target_arch = "wasm32")]
             #[unsafe(no_mangle)]
             #fn_vis extern "C" fn #export_ident() -> u64 {
-                let __boltffi_buf: ::boltffi::__private::FfiBuf<u8> = { #encode_body };
+                let __boltffi_buf: ::boltffi::__private::FfiBuf = { #encode_body };
                 __boltffi_buf.into_packed()
             }
         },
@@ -32,7 +32,7 @@ fn build_encoded_return_exports(
             #fn_vis unsafe extern "C" fn #export_ident(
                 #(#ffi_params),*
             ) -> u64 {
-                let __boltffi_buf: ::boltffi::__private::FfiBuf<u8> = { #encode_body };
+                let __boltffi_buf: ::boltffi::__private::FfiBuf = { #encode_body };
                 __boltffi_buf.into_packed()
             }
         },
@@ -42,7 +42,7 @@ fn build_encoded_return_exports(
         true => quote! {
             #[cfg(not(target_arch = "wasm32"))]
             #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #export_ident() -> ::boltffi::__private::FfiBuf<u8> {
+            #fn_vis extern "C" fn #export_ident() -> ::boltffi::__private::FfiBuf {
                 #encode_body
             }
         },
@@ -51,7 +51,7 @@ fn build_encoded_return_exports(
             #[unsafe(no_mangle)]
             #fn_vis unsafe extern "C" fn #export_ident(
                 #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf<u8> {
+            ) -> ::boltffi::__private::FfiBuf {
                 #encode_body
             }
         },
@@ -96,7 +96,7 @@ fn build_f64_wasm_return_exports(
         true => quote! {
             #[cfg(not(target_arch = "wasm32"))]
             #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #export_ident() -> ::boltffi::__private::FfiBuf<u8> {
+            #fn_vis extern "C" fn #export_ident() -> ::boltffi::__private::FfiBuf {
                 #native_body
             }
         },
@@ -105,7 +105,7 @@ fn build_f64_wasm_return_exports(
             #[unsafe(no_mangle)]
             #fn_vis unsafe extern "C" fn #export_ident(
                 #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf<u8> {
+            ) -> ::boltffi::__private::FfiBuf {
                 #native_body
             }
         },
@@ -150,7 +150,7 @@ fn build_void_wasm_return_exports(
         true => quote! {
             #[cfg(not(target_arch = "wasm32"))]
             #[unsafe(no_mangle)]
-            #fn_vis extern "C" fn #export_ident() -> ::boltffi::__private::FfiBuf<u8> {
+            #fn_vis extern "C" fn #export_ident() -> ::boltffi::__private::FfiBuf {
                 #native_body
             }
         },
@@ -159,7 +159,7 @@ fn build_void_wasm_return_exports(
             #[unsafe(no_mangle)]
             #fn_vis unsafe extern "C" fn #export_ident(
                 #(#ffi_params),*
-            ) -> ::boltffi::__private::FfiBuf<u8> {
+            ) -> ::boltffi::__private::FfiBuf {
                 #native_body
             }
         },
@@ -210,23 +210,15 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
     } = transform_params(fn_inputs, &custom_types, &callback_registry);
 
     let has_params = !ffi_params.is_empty();
-    let has_conversions = !conversions.is_empty();
 
     let return_abi = lower_return_abi(classify_return(fn_output));
 
     let expanded = match return_abi {
         ReturnAbi::Unit => {
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    #fn_name(#(#call_args),*);
-                    ::boltffi::__private::FfiStatus::OK
-                }
-            } else {
-                quote! {
-                    #fn_name(#(#call_args),*);
-                    ::boltffi::__private::FfiStatus::OK
-                }
+            let body = quote! {
+                #(#conversions)*
+                #fn_name(#(#call_args),*);
+                ::boltffi::__private::FfiStatus::OK
             };
 
             if has_params {
@@ -255,13 +247,9 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
         }
         ReturnAbi::Scalar { .. } => {
             let fn_output = &input.sig.output;
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    #fn_name(#(#call_args),*)
-                }
-            } else {
-                quote! { #fn_name(#(#call_args),*) }
+            let body = quote! {
+                #(#conversions)*
+                #fn_name(#(#call_args),*)
             };
 
             if has_params {
@@ -295,15 +283,9 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
             let result_ident = syn::Ident::new("result", fn_name.span());
 
             if matches!(strategy, EncodedReturnStrategy::OptionScalar) {
-                let call_and_bind = if has_conversions {
-                    quote! {
-                        #(#conversions)*
-                        let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
-                    }
-                } else {
-                    quote! {
-                        let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
-                    }
+                let call_and_bind = quote! {
+                    #(#conversions)*
+                    let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
                 };
 
                 let wasm_body = quote! {
@@ -329,21 +311,15 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
                 );
             }
 
-            if matches!(strategy, EncodedReturnStrategy::PrimitiveVec) {
-                let call_and_bind = if has_conversions {
-                    quote! {
-                        #(#conversions)*
-                        let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
-                    }
-                } else {
-                    quote! {
-                        let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
-                    }
+            if matches!(strategy, EncodedReturnStrategy::DirectVec) {
+                let call_and_bind = quote! {
+                    #(#conversions)*
+                    let #result_ident: #inner_ty = #fn_name(#(#call_args),*);
                 };
 
                 let wasm_body = quote! {
                     #call_and_bind
-                    let __buf = ::boltffi::__private::FfiBuf::from_vec(#result_ident);
+                    let __buf = <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident);
                     let __byte_len = __buf.len() * core::mem::size_of::<<#inner_ty as IntoIterator>::Item>();
                     ::boltffi::__private::write_return_slot(__buf.as_ptr() as u32, __byte_len as u32);
                     core::mem::forget(__buf);
@@ -351,7 +327,7 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
 
                 let native_body = quote! {
                     #call_and_bind
-                    ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+                    <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident)
                 };
 
                 return build_void_wasm_return_exports(
@@ -382,15 +358,9 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
             );
         }
         ReturnAbi::Passable { rust_type } => {
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    ::boltffi::__private::Passable::pack(#fn_name(#(#call_args),*))
-                }
-            } else {
-                quote! {
-                    ::boltffi::__private::Passable::pack(#fn_name(#(#call_args),*))
-                }
+            let body = quote! {
+                #(#conversions)*
+                ::boltffi::__private::Passable::pack(#fn_name(#(#call_args),*))
             };
 
             let return_type =
@@ -538,7 +508,7 @@ fn generate_async_export(
                 #[cfg(target_arch = "wasm32")]
                 #[unsafe(no_mangle)]
                 #fn_vis unsafe extern "C" fn #complete_ident(
-                    out: *mut ::boltffi::__private::FfiBuf<u8>,
+                    out: *mut ::boltffi::__private::FfiBuf,
                     handle: ::boltffi::__private::RustFutureHandle,
                     _out_status: *mut ::boltffi::__private::FfiStatus,
                 ) {
@@ -596,7 +566,7 @@ fn generate_async_export(
         #[unsafe(no_mangle)]
         #fn_vis unsafe extern "C" fn #panic_message_ident(
             handle: ::boltffi::__private::RustFutureHandle,
-        ) -> ::boltffi::__private::FfiBuf<u8> {
+        ) -> ::boltffi::__private::FfiBuf {
             match ::boltffi::__private::rust_future_panic_message::<#rust_return_type>(handle) {
                 Some(message) => ::boltffi::__private::FfiBuf::wire_encode(&message),
                 None => ::boltffi::__private::FfiBuf::empty(),

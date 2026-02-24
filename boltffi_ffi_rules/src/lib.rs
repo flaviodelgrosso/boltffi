@@ -225,8 +225,8 @@ pub mod naming {
         Name::new(format!("{}_free", method_ffi_name(class_name, stream_name)))
     }
 
-    pub fn free_buf_u8() -> Name<GlobalSymbol> {
-        Name::new(format!("{}_free_buf_u8", FFI_PREFIX))
+    pub fn free_buf() -> Name<GlobalSymbol> {
+        Name::new(format!("{}_free_buf", FFI_PREFIX))
     }
 
     pub fn atomic_u8_cas() -> Name<GlobalSymbol> {
@@ -842,7 +842,7 @@ pub mod transport {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub enum EncodedReturnStrategy {
         Utf8String,
-        PrimitiveVec,
+        DirectVec,
         OptionScalar,
         ResultScalar,
         WireEncoded,

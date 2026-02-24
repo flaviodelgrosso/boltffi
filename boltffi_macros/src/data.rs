@@ -61,12 +61,32 @@ fn generate_passable_for_scalar_enum(
                 unsafe { ::core::mem::transmute(input) }
             }
         }
+
+        impl ::boltffi::__private::VecTransport<#enum_name> for ::boltffi::__private::Seal {
+            fn pack(vec: Vec<#enum_name>) -> ::boltffi::__private::FfiBuf {
+                ::boltffi::__private::FfiBuf::from_vec(vec)
+            }
+            unsafe fn unpack(ptr: *const u8, byte_len: usize) -> Vec<#enum_name> {
+                let count = byte_len / ::core::mem::size_of::<#enum_name>();
+                unsafe { ::core::slice::from_raw_parts(ptr as *const #enum_name, count) }.to_vec()
+            }
+        }
     }
 }
 
 fn generate_passable_for_wire_encoded(name: &syn::Ident) -> proc_macro2::TokenStream {
     quote! {
         unsafe impl ::boltffi::__private::WirePassable for #name {}
+
+        impl ::boltffi::__private::VecTransport<#name> for ::boltffi::__private::Seal {
+            fn pack(vec: Vec<#name>) -> ::boltffi::__private::FfiBuf {
+                ::boltffi::__private::FfiBuf::wire_encode(&vec)
+            }
+            unsafe fn unpack(ptr: *const u8, byte_len: usize) -> Vec<#name> {
+                let bytes = unsafe { ::core::slice::from_raw_parts(ptr, byte_len) };
+                ::boltffi::__private::wire::decode(bytes).expect("VecTransport::unpack: wire decode failed")
+            }
+        }
     }
 }
 
@@ -82,6 +102,16 @@ fn generate_passable_for_blittable_struct(struct_name: &syn::Ident) -> proc_macr
 
             unsafe fn unpack(input: #struct_name) -> Self {
                 input
+            }
+        }
+
+        impl ::boltffi::__private::VecTransport<#struct_name> for ::boltffi::__private::Seal {
+            fn pack(vec: Vec<#struct_name>) -> ::boltffi::__private::FfiBuf {
+                ::boltffi::__private::FfiBuf::from_vec(vec)
+            }
+            unsafe fn unpack(ptr: *const u8, byte_len: usize) -> Vec<#struct_name> {
+                let count = byte_len / ::core::mem::size_of::<#struct_name>();
+                unsafe { ::core::slice::from_raw_parts(ptr as *const #struct_name, count) }.to_vec()
             }
         }
     }
@@ -151,7 +181,7 @@ pub fn data_impl(item: TokenStream) -> TokenStream {
 
             #[cfg(not(test))]
             #[unsafe(no_mangle)]
-            pub extern "C" fn #free_fn_name(buf: ::boltffi::__private::FfiBuf<#struct_name>) {
+            pub extern "C" fn #free_fn_name(buf: ::boltffi::__private::FfiBuf) {
                 drop(buf);
             }
         });

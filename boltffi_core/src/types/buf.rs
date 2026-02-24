@@ -1,38 +1,35 @@
 use crate::wire::{WireBuffer, WireEncode};
-use core::mem::ManuallyDrop;
+use core::mem::{self, ManuallyDrop};
 
 #[repr(C)]
-pub struct FfiBuf<T> {
-    ptr: *mut T,
+pub struct FfiBuf {
+    ptr: *mut u8,
     len: usize,
     cap: usize,
+    align: usize,
 }
 
-impl<T> FfiBuf<T> {
+impl FfiBuf {
     pub const fn empty() -> Self {
         Self {
             ptr: core::ptr::null_mut(),
             len: 0,
             cap: 0,
+            align: 1,
         }
     }
 
-    pub fn from_vec(vec: Vec<T>) -> Self {
+    pub fn from_vec<T>(vec: Vec<T>) -> Self {
         let mut vec = ManuallyDrop::new(vec);
-        Self {
-            ptr: vec.as_mut_ptr(),
-            len: vec.len(),
-            cap: vec.capacity(),
-        }
+        let len = vec.len() * mem::size_of::<T>();
+        let cap = vec.capacity() * mem::size_of::<T>();
+        let align = mem::align_of::<T>();
+        let ptr = vec.as_mut_ptr() as *mut u8;
+        Self { ptr, len, cap, align }
     }
 
-    pub fn into_vec(self) -> Vec<T> {
-        if self.ptr.is_null() {
-            return Vec::new();
-        }
-        let vec = unsafe { Vec::from_raw_parts(self.ptr, self.len, self.cap) };
-        core::mem::forget(self);
-        vec
+    pub fn wire_encode<V: WireEncode>(value: &V) -> Self {
+        Self::from_vec(WireBuffer::new(value).into_bytes())
     }
 
     pub fn len(&self) -> usize {
@@ -43,73 +40,63 @@ impl<T> FfiBuf<T> {
         self.len == 0
     }
 
-    pub fn as_ptr(&self) -> *const T {
+    pub fn as_ptr(&self) -> *const u8 {
         self.ptr
     }
 
-    pub fn as_mut_ptr(&mut self) -> *mut T {
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.ptr
     }
 
-    pub unsafe fn as_slice(&self) -> &[T] {
+    pub unsafe fn as_byte_slice(&self) -> &[u8] {
         if self.ptr.is_null() || self.len == 0 {
             &[]
         } else {
             unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
         }
     }
+
+    pub unsafe fn into_vec<T>(self) -> Vec<T> {
+        if self.ptr.is_null() {
+            return Vec::new();
+        }
+        debug_assert_eq!(self.align, mem::align_of::<T>());
+        let elem_len = self.len / mem::size_of::<T>();
+        let elem_cap = self.cap / mem::size_of::<T>();
+        let ptr = self.ptr as *mut T;
+        mem::forget(self);
+        unsafe { Vec::from_raw_parts(ptr, elem_len, elem_cap) }
+    }
 }
 
-impl<T> Drop for FfiBuf<T> {
+impl Drop for FfiBuf {
     fn drop(&mut self) {
         if !self.ptr.is_null() && self.cap > 0 {
             unsafe {
-                let _ = Vec::from_raw_parts(self.ptr, self.len, self.cap);
+                let layout = core::alloc::Layout::from_size_align_unchecked(self.cap, self.align);
+                std::alloc::dealloc(self.ptr, layout);
             }
         }
     }
 }
 
-impl<T> From<Vec<T>> for FfiBuf<T> {
-    fn from(vec: Vec<T>) -> Self {
-        Self::from_vec(vec)
-    }
-}
-
-impl<T> Default for FfiBuf<T> {
+impl Default for FfiBuf {
     fn default() -> Self {
-        Self {
-            ptr: core::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        }
+        Self::empty()
     }
 }
 
-impl FfiBuf<u8> {
-    pub fn wire_encode<V: WireEncode>(value: &V) -> Self {
-        Self::from_vec(WireBuffer::new(value).into_bytes())
-    }
+#[unsafe(no_mangle)]
+pub extern "C" fn boltffi_free_buf(buf: FfiBuf) {
+    drop(buf);
+}
 
-    pub fn from_raw_vec<T>(vec: Vec<T>) -> Self {
-        let mut vec = vec;
-        vec.shrink_to_fit();
-        let ptr = vec.as_mut_ptr() as *mut u8;
-        let byte_len = vec.len() * core::mem::size_of::<T>();
-        let byte_cap = vec.capacity() * core::mem::size_of::<T>();
-        core::mem::forget(vec);
-        Self {
-            ptr,
-            len: byte_len,
-            cap: byte_cap,
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
+#[cfg(target_arch = "wasm32")]
+impl FfiBuf {
     pub fn into_packed(self) -> u64 {
         let ptr = self.ptr;
         let len = self.len;
-        core::mem::forget(self);
+        mem::forget(self);
         if len == 0 {
             return 0;
         }
@@ -117,43 +104,28 @@ impl FfiBuf<u8> {
     }
 }
 
-#[macro_export]
-macro_rules! define_ffi_buf_free {
-    ($($ty:ty => $name:ident),* $(,)?) => {
-        $(
-            #[unsafe(no_mangle)]
-            pub extern "C" fn $name(buf: $crate::FfiBuf<$ty>) {
-                drop(buf);
-            }
-        )*
-    };
-}
-
-define_ffi_buf_free! {
-    i8 => boltffi_free_buf_i8,
-    i16 => boltffi_free_buf_i16,
-    i32 => boltffi_free_buf_i32,
-    i64 => boltffi_free_buf_i64,
-    u8 => boltffi_free_buf_u8,
-    u16 => boltffi_free_buf_u16,
-    u32 => boltffi_free_buf_u32,
-    u64 => boltffi_free_buf_u64,
-    f32 => boltffi_free_buf_f32,
-    f64 => boltffi_free_buf_f64,
-    crate::FfiString => boltffi_free_buf_FfiString,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn buf_roundtrip() {
-        let data = vec![1u32, 2, 3, 4, 5];
-        let ffi_buf = FfiBuf::from_vec(data.clone());
+    fn buf_from_u8_vec() {
+        let data = vec![1u8, 2, 3, 4, 5];
+        let ffi_buf = FfiBuf::from_vec(data);
         assert_eq!(ffi_buf.len(), 5);
-        let recovered = ffi_buf.into_vec();
-        assert_eq!(recovered, data);
+        assert_eq!(ffi_buf.align, 1);
+        let recovered: Vec<u8> = unsafe { ffi_buf.into_vec() };
+        assert_eq!(recovered, vec![1u8, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn buf_from_i32_vec() {
+        let data = vec![10i32, 20, 30];
+        let ffi_buf = FfiBuf::from_vec(data);
+        assert_eq!(ffi_buf.len(), 12);
+        assert_eq!(ffi_buf.align, 4);
+        let recovered: Vec<i32> = unsafe { ffi_buf.into_vec() };
+        assert_eq!(recovered, vec![10i32, 20, 30]);
     }
 
     #[test]
@@ -161,5 +133,12 @@ mod tests {
         let data = vec![1u8, 2, 3];
         let ffi_buf = FfiBuf::from_vec(data);
         drop(ffi_buf);
+    }
+
+    #[test]
+    fn buf_empty() {
+        let buf = FfiBuf::empty();
+        assert!(buf.is_empty());
+        assert!(buf.as_ptr().is_null());
     }
 }

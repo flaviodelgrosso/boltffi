@@ -48,7 +48,8 @@ pub use subscription::{
     EventSubscription, StreamContinuationCallback, StreamPollResult, StreamProducer,
     SubscriptionHandle, WaitResult,
 };
-pub use passable::{Passable, WirePassable};
+pub use passable::{Passable, Seal, VecTransport, WirePassable};
+
 pub use types::{FfiBuf, FfiError, FfiOption, FfiSlice, FfiSpan, FfiString};
 pub use wasm::WASM_ABI_VERSION;
 #[cfg(target_arch = "wasm32")]

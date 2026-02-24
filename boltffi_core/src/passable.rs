@@ -9,6 +9,13 @@ pub unsafe trait Passable: Sized {
     fn pack(self) -> Self::Out;
 }
 
+pub struct Seal;
+
+pub trait VecTransport<T> {
+    fn pack(vec: Vec<T>) -> FfiBuf;
+    unsafe fn unpack(ptr: *const u8, byte_len: usize) -> Vec<T>;
+}
+
 macro_rules! impl_passable_scalar {
     ($($ty:ty),*) => {
         $(
@@ -22,11 +29,38 @@ macro_rules! impl_passable_scalar {
     };
 }
 
+macro_rules! impl_vec_direct {
+    ($($ty:ty),*) => {
+        $(
+            impl VecTransport<$ty> for Seal {
+                fn pack(vec: Vec<$ty>) -> FfiBuf {
+                    FfiBuf::from_vec(vec)
+                }
+                unsafe fn unpack(ptr: *const u8, byte_len: usize) -> Vec<$ty> {
+                    let count = byte_len / core::mem::size_of::<$ty>();
+                    unsafe { core::slice::from_raw_parts(ptr as *const $ty, count) }.to_vec()
+                }
+            }
+        )*
+    };
+}
+
 impl_passable_scalar!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, usize, isize);
+impl_vec_direct!(i8, i16, i32, i64, u16, u32, u64, f32, f64, bool, usize, isize);
+
+impl VecTransport<u8> for Seal {
+    fn pack(vec: Vec<u8>) -> FfiBuf {
+        FfiBuf::wire_encode(&vec)
+    }
+    unsafe fn unpack(ptr: *const u8, byte_len: usize) -> Vec<u8> {
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, byte_len) };
+        crate::wire::decode(bytes).expect("VecTransport<u8>::unpack: wire decode failed")
+    }
+}
 
 unsafe impl Passable for String {
     type In = FfiSpan;
-    type Out = FfiBuf<u8>;
+    type Out = FfiBuf;
 
     unsafe fn unpack(input: FfiSpan) -> Self {
         let bytes = unsafe { input.as_bytes() };
@@ -35,7 +69,7 @@ unsafe impl Passable for String {
             .to_string()
     }
 
-    fn pack(self) -> FfiBuf<u8> {
+    fn pack(self) -> FfiBuf {
         FfiBuf::from_vec(self.into_bytes())
     }
 }
@@ -44,14 +78,14 @@ pub unsafe trait WirePassable: WireEncode + WireDecode + Sized {}
 
 unsafe impl<T: WirePassable> Passable for T {
     type In = FfiSpan;
-    type Out = FfiBuf<u8>;
+    type Out = FfiBuf;
 
     unsafe fn unpack(input: FfiSpan) -> Self {
         let bytes = unsafe { input.as_bytes() };
         crate::wire::decode(bytes).expect("wire decode failed in Passable::unpack")
     }
 
-    fn pack(self) -> FfiBuf<u8> {
+    fn pack(self) -> FfiBuf {
         FfiBuf::wire_encode(&self)
     }
 }

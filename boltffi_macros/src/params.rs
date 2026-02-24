@@ -193,13 +193,13 @@ fn generate_wasm_closure_codegen(
             let #name = {
                 #[allow(improper_ctypes)]
                 unsafe extern "C" {
-                    fn #call_import_ident(handle: u32, out: *mut ::boltffi::__private::FfiBuf<u8> #extern_params_tokens);
+                    fn #call_import_ident(handle: u32, out: *mut ::boltffi::__private::FfiBuf #extern_params_tokens);
                     fn #free_import_ident(handle: u32);
                 }
                 let #owner_name = ::boltffi::__private::WasmCallbackOwner::new(#name, #free_import_ident);
                 move |#closure_params_tokens| -> #return_ty {
                     #(#wire_vars)*
-                    let mut __out_buf = ::boltffi::__private::FfiBuf::<u8>::empty();
+                    let mut __out_buf = ::boltffi::__private::FfiBuf::empty();
                     unsafe { #call_import_ident(#owner_name.handle(), &mut __out_buf #(, #call_args)*) };
                     let __result_bytes = unsafe {
                         ::core::slice::from_raw_parts(__out_buf.as_ptr(), __out_buf.len())

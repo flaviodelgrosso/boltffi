@@ -175,14 +175,19 @@ pub fn lower_return_abi(kind: ReturnKind) -> ReturnAbi {
             rust_type: syn::parse_quote!(String),
             strategy: EncodedReturnStrategy::Utf8String,
         },
-        ReturnKind::Vec(inner) => ReturnAbi::Encoded {
-            rust_type: syn::parse_quote!(Vec<#inner>),
-            strategy: if type_is_primitive(&inner) {
-                EncodedReturnStrategy::PrimitiveVec
-            } else {
-                EncodedReturnStrategy::WireEncoded
-            },
-        },
+        ReturnKind::Vec(inner) => {
+            let is_nested = extract_vec_inner(&inner).is_some()
+                || is_string_like_type(&inner)
+                || matches!(inner, syn::Type::Tuple(_));
+            ReturnAbi::Encoded {
+                rust_type: syn::parse_quote!(Vec<#inner>),
+                strategy: if is_nested {
+                    EncodedReturnStrategy::WireEncoded
+                } else {
+                    EncodedReturnStrategy::DirectVec
+                },
+            }
+        }
         ReturnKind::Option(abi) => match abi {
             OptionReturnAbi::OutValue { inner } if type_is_primitive(&inner) => {
                 ReturnAbi::Encoded {
@@ -229,7 +234,7 @@ impl ReturnAbi {
         match self {
             Self::Unit => quote! { () },
             Self::Scalar { rust_type } => quote! { #rust_type },
-            Self::Encoded { .. } => quote! { ::boltffi::__private::FfiBuf<u8> },
+            Self::Encoded { .. } => quote! { ::boltffi::__private::FfiBuf },
             Self::Passable { rust_type } => {
                 quote! { <#rust_type as ::boltffi::__private::Passable>::Out }
             }
@@ -320,8 +325,8 @@ fn encoded_return_buffer_expression(
     custom_type_registry: Option<&custom_types::CustomTypeRegistry>,
 ) -> proc_macro2::TokenStream {
     match strategy {
-        EncodedReturnStrategy::PrimitiveVec => quote! {
-            ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+        EncodedReturnStrategy::DirectVec => quote! {
+            <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident)
         },
         EncodedReturnStrategy::Utf8String => quote! {
             #[cfg(target_arch = "wasm32")]
