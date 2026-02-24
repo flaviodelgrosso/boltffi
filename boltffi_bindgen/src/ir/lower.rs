@@ -19,7 +19,7 @@ use crate::ir::definitions::{
     MethodDef, ParamDef, ParamPassing, Receiver, RecordDef, ReturnDef, StreamDef, VariantPayload,
 };
 use crate::ir::ids::{
-    BuiltinId, ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId,
+    BuiltinId, CallbackId, ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId,
 };
 use crate::ir::ops::{
     FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WireShape,
@@ -476,7 +476,8 @@ impl<'c> Lowerer<'c> {
                 };
                 let decode_ops = self.expand_decode(&result_codec);
                 let encode_ops = self.expand_encode(&result_codec, ValueExpr::Var("value".into()));
-                return_shape_from_transport_with_ops(ok.clone(), decode_ops, encode_ops)
+                let wire_transport = Transport::Span(SpanContent::Encoded(result_codec));
+                return_shape_from_transport_with_ops(wire_transport, decode_ops, encode_ops)
             }
         }
     }
@@ -528,11 +529,16 @@ impl<'c> Lowerer<'c> {
                 decode_ops: None,
                 encode_ops: None,
             },
-            Transport::Composite(_) => ReturnShape {
-                transport: Some(value.clone()),
-                decode_ops: None,
-                encode_ops: None,
-            },
+            Transport::Composite(layout) => {
+                let codec = self.build_codec(&TypeExpr::Record(layout.record_id.clone()));
+                let decode_ops = self.expand_decode(&codec);
+                let encode_ops = self.expand_encode(&codec, ValueExpr::Var("value".into()));
+                ReturnShape {
+                    transport: Some(value.clone()),
+                    decode_ops: Some(decode_ops),
+                    encode_ops: Some(encode_ops),
+                }
+            }
             Transport::Span(content) => {
                 let codec = self.codec_from_span_content(content);
                 let decode_ops = self.expand_decode(&codec);
@@ -562,9 +568,16 @@ impl<'c> Lowerer<'c> {
 
     fn codec_from_span_content(&self, content: &SpanContent) -> CodecPlan {
         match content {
-            SpanContent::Scalar(p) => CodecPlan::Primitive(*p),
+            SpanContent::Scalar(p) => CodecPlan::Vec {
+                element: Box::new(CodecPlan::Primitive(*p)),
+                layout: VecLayout::Blittable { element_size: p.wire_size_bytes() },
+            },
             SpanContent::Composite(layout) => {
-                self.build_codec(&TypeExpr::Record(layout.record_id.clone()))
+                let element_codec = self.build_codec(&TypeExpr::Record(layout.record_id.clone()));
+                CodecPlan::Vec {
+                    element: Box::new(element_codec),
+                    layout: VecLayout::Blittable { element_size: layout.total_size },
+                }
             }
             SpanContent::Utf8 => CodecPlan::String,
             SpanContent::Encoded(codec) => codec.clone(),
@@ -586,7 +599,12 @@ impl<'c> Lowerer<'c> {
             AbiType::USize => PrimitiveType::USize,
             AbiType::F32 => PrimitiveType::F32,
             AbiType::F64 => PrimitiveType::F64,
-            AbiType::Void | AbiType::Pointer => {
+            AbiType::Void
+            | AbiType::Pointer
+            | AbiType::InlineCallbackFn(_)
+            | AbiType::Handle(_)
+            | AbiType::CallbackHandle
+            | AbiType::Struct(_) => {
                 panic!("unsupported ABI primitive for wire encoding")
             }
         }
@@ -965,7 +983,7 @@ impl<'c> Lowerer<'c> {
                 },
                 AbiParam {
                     name: len_name.clone(),
-                    abi_type: AbiType::U64,
+                    abi_type: AbiType::USize,
                     role: ParamRole::SyntheticLen {
                         for_param: param.name.clone(),
                     },
@@ -986,15 +1004,21 @@ impl<'c> Lowerer<'c> {
                 },
             }],
             Transport::Composite(layout) => {
+                let codec = self.build_codec(&TypeExpr::Record(layout.record_id.clone()));
+                let decode_ops = self.expand_decode(&codec);
+                let encode_ops = self.expand_encode(
+                    &codec,
+                    ValueExpr::Named(param.name.as_str().to_string()),
+                );
                 vec![AbiParam {
                     name: param.name.clone(),
-                    abi_type: AbiType::Pointer,
+                    abi_type: AbiType::Struct(layout.record_id.clone()),
                     role: ParamRole::Input {
                         transport: Transport::Composite(layout.clone()),
                         mutability: param.mutability,
                         len_param: None,
-                        decode_ops: None,
-                        encode_ops: None,
+                        decode_ops: Some(decode_ops),
+                        encode_ops: Some(encode_ops),
                     },
                 }]
             }
@@ -1030,9 +1054,9 @@ impl<'c> Lowerer<'c> {
                     )
                 }
             },
-            Transport::Handle { .. } | Transport::Callback { .. } => vec![AbiParam {
+            Transport::Handle { class_id, .. } => vec![AbiParam {
                 name: param.name.clone(),
-                abi_type: AbiType::Pointer,
+                abi_type: AbiType::Handle(class_id.clone()),
                 role: ParamRole::Input {
                     transport: param.transport.clone(),
                     mutability: param.mutability,
@@ -1041,7 +1065,69 @@ impl<'c> Lowerer<'c> {
                     encode_ops: None,
                 },
             }],
+            Transport::Callback { style: CallbackStyle::BoxedDyn, .. } => vec![AbiParam {
+                name: param.name.clone(),
+                abi_type: AbiType::CallbackHandle,
+                role: ParamRole::Input {
+                    transport: param.transport.clone(),
+                    mutability: param.mutability,
+                    len_param: None,
+                    decode_ops: None,
+                    encode_ops: None,
+                },
+            }],
+            Transport::Callback { style: CallbackStyle::ImplTrait, callback_id, .. } => {
+                let ud_name = ParamName::new(format!("{}_ud", param.name.as_str()));
+                let fn_params = self.inline_callback_fn_abi_params(callback_id);
+                vec![
+                    AbiParam {
+                        name: param.name.clone(),
+                        abi_type: AbiType::InlineCallbackFn(fn_params),
+                        role: ParamRole::Input {
+                            transport: param.transport.clone(),
+                            mutability: param.mutability,
+                            len_param: Some(ud_name.clone()),
+                            decode_ops: None,
+                            encode_ops: None,
+                        },
+                    },
+                    AbiParam {
+                        name: ud_name,
+                        abi_type: AbiType::Pointer,
+                        role: ParamRole::CallbackContext {
+                            for_param: param.name.clone(),
+                        },
+                    },
+                ]
+            },
         }
+    }
+
+    fn inline_callback_fn_abi_params(&self, callback_id: &CallbackId) -> Vec<AbiType> {
+        let callback_def = self
+            .contract
+            .catalog
+            .resolve_callback(callback_id)
+            .unwrap_or_else(|| panic!("callback {} not found", callback_id.as_str()));
+
+        let mut abi_params = vec![];
+
+        for method in &callback_def.methods {
+            for param in &method.params {
+                let transport = self.classify_type(&param.type_expr);
+                match &transport {
+                    Transport::Scalar(p) => {
+                        abi_params.push(AbiType::from(*p));
+                    }
+                    _ => {
+                        abi_params.push(AbiType::Pointer);
+                        abi_params.push(AbiType::USize);
+                    }
+                }
+            }
+        }
+
+        abi_params
     }
 
     fn callback_return_shape_and_error(
@@ -1052,10 +1138,23 @@ impl<'c> Lowerer<'c> {
             ReturnDef::Void => (ReturnShape::void(), ErrorTransport::None),
             ReturnDef::Value(ty) => {
                 let transport = self.classify_type(ty);
-                (
-                    self.return_shape_from_transport(&transport),
-                    ErrorTransport::None,
-                )
+                let shape = match &transport {
+                    Transport::Scalar(_) => self.return_shape_from_transport(&transport),
+                    _ => {
+                        let codec = self.build_codec(ty);
+                        let decode_ops = self.expand_decode(&codec);
+                        let encode_ops =
+                            self.expand_encode(&codec, ValueExpr::Var("value".into()));
+                        let wire_transport =
+                            Transport::Span(SpanContent::Encoded(codec));
+                        return_shape_from_transport_with_ops(
+                            wire_transport,
+                            decode_ops,
+                            encode_ops,
+                        )
+                    }
+                };
+                (shape, ErrorTransport::None)
             }
             ReturnDef::Result { ok, err } => {
                 let ok_transport = self.classify_type(ok);
@@ -1130,15 +1229,21 @@ impl<'c> Lowerer<'c> {
                 },
             }],
             AbiCallbackParamStrategy::Direct(layout) => {
+                let codec = self.build_codec(&TypeExpr::Record(layout.record_id.clone()));
+                let decode_ops = self.expand_decode(&codec);
+                let encode_ops = self.expand_encode(
+                    &codec,
+                    ValueExpr::Named(param.name.as_str().to_string()),
+                );
                 vec![AbiParam {
                     name: param.name.clone(),
-                    abi_type: AbiType::Pointer,
+                    abi_type: AbiType::Struct(layout.record_id.clone()),
                     role: ParamRole::Input {
                         transport: Transport::Composite(layout),
                         mutability: Mutability::Shared,
                         len_param: None,
-                        decode_ops: None,
-                        encode_ops: None,
+                        decode_ops: Some(decode_ops),
+                        encode_ops: Some(encode_ops),
                     },
                 }]
             }
@@ -1160,7 +1265,7 @@ impl<'c> Lowerer<'c> {
                     },
                     AbiParam {
                         name: len_name,
-                        abi_type: AbiType::U64,
+                        abi_type: AbiType::USize,
                         role: ParamRole::SyntheticLen {
                             for_param: param.name,
                         },
@@ -1199,17 +1304,11 @@ impl<'c> Lowerer<'c> {
                     AbiParam {
                         name: out_ptr_name.clone(),
                         abi_type: AbiType::Pointer,
-                        role: ParamRole::Input {
-                            transport: ret.transport.unwrap(),
-                            mutability: Mutability::Mutable,
-                            len_param: Some(out_len_name.clone()),
-                            decode_ops: ret.decode_ops,
-                            encode_ops: ret.encode_ops,
-                        },
+                        role: ParamRole::OutDirect,
                     },
                     AbiParam {
                         name: out_len_name,
-                        abi_type: AbiType::U64,
+                        abi_type: AbiType::USize,
                         role: ParamRole::OutLen {
                             for_param: out_ptr_name,
                         },
@@ -1394,7 +1493,7 @@ impl<'c> Lowerer<'c> {
 
             TypeExpr::Vec(inner) => match inner.as_ref() {
                 TypeExpr::Primitive(p) => Transport::Span(SpanContent::Scalar(*p)),
-                other => Transport::Span(SpanContent::Encoded(self.build_codec(other))),
+                _ => Transport::Span(SpanContent::Encoded(self.build_codec(type_expr))),
             },
 
             TypeExpr::Handle(class_id) => Transport::Handle {
@@ -2935,7 +3034,7 @@ mod tests {
     }
 
     #[test]
-    fn encoded_param_produces_synthetic_len() {
+    fn blittable_record_param_produces_composite() {
         let mut contract = test_contract();
         let record_id = RecordId::new("Point");
         contract.catalog.insert_record(RecordDef {
@@ -2976,21 +3075,22 @@ mod tests {
 
         let abi = lowerer.abi_call_for_function(&func);
 
-        assert_eq!(abi.params.len(), 2);
+        assert_eq!(abi.params.len(), 1);
         assert!(matches!(
             abi.params[0].role,
             ParamRole::Input {
-                transport: Transport::Span(SpanContent::Encoded(_)),
+                transport: Transport::Composite(_),
+                len_param: None,
+                decode_ops: Some(_),
+                encode_ops: Some(_),
                 ..
             }
         ));
         assert_eq!(abi.params[0].name.as_str(), "point");
-        match &abi.params[1].role {
-            ParamRole::SyntheticLen { for_param } => {
-                assert_eq!(for_param.as_str(), "point");
-            }
-            other => panic!("expected SyntheticLen, got {:?}", other),
-        }
+        assert_eq!(
+            abi.params[0].abi_type,
+            AbiType::Struct(RecordId::new("Point"))
+        );
     }
 
     #[test]

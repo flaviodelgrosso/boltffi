@@ -147,6 +147,9 @@ pub enum ParamRole {
     SyntheticLen {
         for_param: ParamName,
     },
+    CallbackContext {
+        for_param: ParamName,
+    },
     OutLen {
         for_param: ParamName,
     },
@@ -205,6 +208,7 @@ impl AbiParam {
         matches!(
             self.role,
             ParamRole::SyntheticLen { .. }
+                | ParamRole::CallbackContext { .. }
                 | ParamRole::OutLen { .. }
                 | ParamRole::OutDirect
                 | ParamRole::StatusOut

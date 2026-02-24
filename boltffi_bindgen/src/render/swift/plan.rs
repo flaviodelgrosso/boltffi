@@ -2,6 +2,12 @@ use crate::ir::ops::{OffsetExpr, ReadOp, ReadSeq, WriteSeq};
 use crate::render::swift::emit;
 
 #[derive(Debug, Clone)]
+pub struct CompositeFieldMapping {
+    pub swift_name: String,
+    pub c_name: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum SwiftCallMode {
     Sync {
         symbol: String,
@@ -890,6 +896,14 @@ impl SwiftParam {
     pub fn ffi_arg(&self) -> String {
         match &self.conversion {
             SwiftConversion::Direct => self.name.clone(),
+            SwiftConversion::CStyleEnumRawValue => format!("{}.rawValue", self.name),
+            SwiftConversion::ToComposite { c_type, fields } => {
+                let field_inits: Vec<String> = fields
+                    .iter()
+                    .map(|f| format!("{}: {}.{}", f.c_name, self.name, f.swift_name))
+                    .collect();
+                format!("{}({})", c_type, field_inits.join(", "))
+            }
             SwiftConversion::ToString => format!(
                 "{}Buf.baseAddress!, UInt({}Buf.count)",
                 self.name, self.name
@@ -930,7 +944,10 @@ impl SwiftParam {
     }
 
     pub fn needs_wrapper(&self) -> bool {
-        !matches!(self.conversion, SwiftConversion::Direct)
+        !matches!(
+            self.conversion,
+            SwiftConversion::Direct | SwiftConversion::CStyleEnumRawValue | SwiftConversion::ToComposite { .. }
+        )
     }
 
     pub fn wrapper_code(&self) -> Option<String> {
@@ -1038,9 +1055,11 @@ impl SwiftClosureTrampoline {
 #[derive(Debug, Clone)]
 pub enum SwiftConversion {
     Direct,
+    CStyleEnumRawValue,
     ToString,
     ToData,
     ToWireBuffer { encode: WriteSeq },
+    ToComposite { c_type: String, fields: Vec<CompositeFieldMapping> },
     PrimitiveBuffer { element_type: String },
     MutableBuffer { element_type: String },
     WrapCallback { protocol: String, nullable: bool },
@@ -1073,6 +1092,14 @@ pub enum SwiftReturn {
     Direct {
         swift_type: String,
     },
+    CStyleEnumFromRawValue {
+        swift_type: String,
+    },
+    FromComposite {
+        swift_type: String,
+        c_type: String,
+        fields: Vec<CompositeFieldMapping>,
+    },
     FromWireBuffer {
         swift_type: String,
         decode: ReadSeq,
@@ -1096,6 +1123,8 @@ impl SwiftReturn {
         match self {
             SwiftReturn::Void => None,
             SwiftReturn::Direct { swift_type } => Some(swift_type.clone()),
+            SwiftReturn::CStyleEnumFromRawValue { swift_type } => Some(swift_type.clone()),
+            SwiftReturn::FromComposite { swift_type, .. } => Some(swift_type.clone()),
             SwiftReturn::FromWireBuffer { swift_type, .. } => Some(swift_type.clone()),
             SwiftReturn::Handle {
                 class_name,
@@ -1129,6 +1158,40 @@ impl SwiftReturn {
 
     pub fn is_handle(&self) -> bool {
         matches!(self, SwiftReturn::Handle { .. })
+    }
+
+    pub fn is_c_style_enum(&self) -> bool {
+        matches!(self, SwiftReturn::CStyleEnumFromRawValue { .. })
+    }
+
+    pub fn c_style_enum_type(&self) -> Option<&str> {
+        match self {
+            SwiftReturn::CStyleEnumFromRawValue { swift_type } => Some(swift_type.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn is_composite(&self) -> bool {
+        match self {
+            SwiftReturn::FromComposite { .. } => true,
+            SwiftReturn::Throws { ok, .. } => ok.is_composite(),
+            _ => false,
+        }
+    }
+
+    pub fn composite_convert_expr(&self, raw_var: &str) -> Option<String> {
+        match self {
+            SwiftReturn::FromComposite {
+                swift_type, fields, ..
+            } => {
+                let field_assignments: Vec<String> = fields
+                    .iter()
+                    .map(|f| format!("{}: {}.{}", f.swift_name, raw_var, f.c_name))
+                    .collect();
+                Some(format!("{}({})", swift_type, field_assignments.join(", ")))
+            }
+            _ => None,
+        }
     }
 
     pub fn handle_info(&self) -> Option<(&str, bool)> {

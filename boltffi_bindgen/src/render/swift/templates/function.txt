@@ -68,6 +68,13 @@
 {{ func.body_indent() }}let ptr = {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})!
 {{ func.body_indent() }}return {{ class_name }}(handle: ptr)
 {%- endif %}
+{%- elif func.returns.is_composite() %}
+{%- if let Some(convert_expr) = func.returns.composite_convert_expr("_raw") %}
+{{ func.body_indent() }}let _raw = {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
+{{ func.body_indent() }}return {{ convert_expr }}
+{%- endif %}
+{%- elif func.returns.is_c_style_enum() %}
+{{ func.body_indent() }}return {{ func.returns.c_style_enum_type().unwrap() }}(rawValue: {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %}))!
 {%- else %}
 {{ func.body_indent() }}return {{ symbol }}({% for p in func.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- endif %}

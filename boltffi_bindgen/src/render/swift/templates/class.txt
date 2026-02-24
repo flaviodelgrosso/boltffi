@@ -145,6 +145,15 @@
 {%- endif %}
 {{ method.method_body_indent() }}return {{ class_name }}(handle: ptr)
 {%- endif %}
+{%- elif method.returns.is_composite() %}
+{%- if let Some(convert_expr) = method.returns.composite_convert_expr("_raw") %}
+{%- if method.needs_handle() %}
+{{ method.method_body_indent() }}let _raw = {{ symbol }}(handle{% for p in method.params %}, {{ p.ffi_arg() }}{% endfor %})
+{%- else %}
+{{ method.method_body_indent() }}let _raw = {{ symbol }}({% for p in method.params %}{{ p.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %})
+{%- endif %}
+{{ method.method_body_indent() }}return {{ convert_expr }}
+{%- endif %}
 {%- else %}
 {%- if method.needs_handle() %}
 {{ method.method_body_indent() }}return {{ symbol }}(handle{% for p in method.params %}, {{ p.ffi_arg() }}{% endfor %})

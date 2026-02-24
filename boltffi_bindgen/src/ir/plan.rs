@@ -90,7 +90,7 @@ pub struct CompositeField {
     pub primitive: PrimitiveType,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbiType {
     Void,
     Bool,
@@ -107,6 +107,10 @@ pub enum AbiType {
     F32,
     F64,
     Pointer,
+    InlineCallbackFn(Vec<AbiType>),
+    Handle(ClassId),
+    CallbackHandle,
+    Struct(RecordId),
 }
 
 impl From<PrimitiveType> for AbiType {

@@ -380,7 +380,7 @@ impl TsParam {
             TsInputRoute::PrimitiveBuffer { element_abi } => Some(format!(
                 "const {}_alloc = _module.{}({});",
                 self.name,
-                primitive_buffer_alloc_method(*element_abi),
+                primitive_buffer_alloc_method(element_abi),
                 self.name
             )),
             TsInputRoute::Callback { interface_name } => Some(format!(
@@ -467,7 +467,7 @@ pub enum TsInputRoute {
     OtherEncoded { encode: WriteSeq },
 }
 
-fn primitive_buffer_alloc_method(abi_type: AbiType) -> &'static str {
+fn primitive_buffer_alloc_method(abi_type: &AbiType) -> &'static str {
     match abi_type {
         AbiType::Bool => "allocBoolArray",
         AbiType::I8 => "allocI8Array",
@@ -482,7 +482,7 @@ fn primitive_buffer_alloc_method(abi_type: AbiType) -> &'static str {
         AbiType::USize => "allocU64Array",
         AbiType::F32 => "allocF32Array",
         AbiType::F64 => "allocF64Array",
-        AbiType::Void | AbiType::Pointer => {
+        AbiType::Void | AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle | AbiType::Struct(_) => {
             panic!("unsupported primitive buffer abi type: {abi_type:?}")
         }
     }

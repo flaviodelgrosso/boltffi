@@ -15,7 +15,7 @@ use crate::ir::ids::{CallbackId, EnumId, ParamName, RecordId};
 use crate::ir::ops::SizeExpr;
 use crate::ir::plan::AbiType;
 use crate::ir::types::{PrimitiveType, TypeExpr};
-use crate::ir::{InputBinding, OutputBinding};
+use crate::ir::{ParamRole, ReturnShape, Transport};
 use crate::render::kotlin::{NamingConvention, primitives};
 
 use super::plan::{
@@ -202,7 +202,7 @@ impl<'a> JniLowerer<'a> {
         call.params
             .iter()
             .for_each(|param| self.collect_used_from_param(param, used));
-        self.collect_used_from_return(&call.output_shape, used);
+        self.collect_used_from_return(&call.returns, used);
         self.collect_used_from_error(&call.error, used);
         match &call.mode {
             CallMode::Sync => {}
@@ -211,25 +211,27 @@ impl<'a> JniLowerer<'a> {
     }
 
     fn collect_used_from_param(&self, param: &AbiParam, used: &mut HashSet<CallbackId>) {
-        if let Some(InputBinding::CallbackHandle { callback_id, .. }) = param.input_binding() {
+        if let ParamRole::Input {
+            transport: Transport::Callback { callback_id, .. },
+            ..
+        } = &param.role
+        {
             used.insert(callback_id.clone());
         }
     }
 
     fn collect_used_from_return(
         &self,
-        output_shape: &crate::ir::abi::OutputShape,
+        returns: &ReturnShape,
         used: &mut HashSet<CallbackId>,
     ) {
-        if let OutputBinding::CallbackHandle { callback_id, .. } = output_shape.output_binding() {
+        if let Some(Transport::Callback { callback_id, .. }) = &returns.transport {
             used.insert(callback_id.clone());
         }
     }
 
     fn collect_used_from_async(&self, async_call: &AsyncCall, used: &mut HashSet<CallbackId>) {
-        if let OutputBinding::CallbackHandle { callback_id, .. } =
-            async_call.result_shape.output_binding()
-        {
+        if let Some(Transport::Callback { callback_id, .. }) = &async_call.result.transport {
             used.insert(callback_id.clone());
         }
         self.collect_used_from_error(&async_call.error, used);
@@ -1728,16 +1730,22 @@ impl<'a> JniLowerer<'a> {
 
     fn callback_param(&self, param: &AbiParam, is_async: bool) -> LoweredCallbackParam {
         let param_name = param.name.as_str();
-        match param.input_binding() {
-            Some(InputBinding::Scalar) => {
-                self.lower_callback_direct_param(param_name, &param.ffi_type)
+        match &param.role {
+            ParamRole::Input {
+                transport: Transport::Scalar(_),
+                ..
+            } => self.lower_callback_direct_param(param_name, &param.abi_type),
+            ParamRole::Input {
+                transport: Transport::Span(_),
+                ..
             }
-            Some(InputBinding::WirePacket { .. }) => {
-                self.lower_callback_encoded_param(param_name, is_async)
-            }
+            | ParamRole::Input {
+                transport: Transport::Composite(_),
+                ..
+            } => self.lower_callback_encoded_param(param_name, is_async),
             _ => unreachable!(
-                "unsupported JNI callback param input shape: {:?}",
-                param.input_shape
+                "unsupported JNI callback param role: {:?}",
+                param.role
             ),
         }
     }
@@ -1825,7 +1833,8 @@ impl<'a> JniLowerer<'a> {
             AbiType::U64 | AbiType::USize => "uint64_t".to_string(),
             AbiType::F32 => "float".to_string(),
             AbiType::F64 => "double".to_string(),
-            AbiType::Void | AbiType::Pointer => "void".to_string(),
+            AbiType::Void | AbiType::Pointer | AbiType::InlineCallbackFn(_) | AbiType::Handle(_) | AbiType::CallbackHandle => "void".to_string(),
+            AbiType::Struct(_) => "jlong".to_string(),
         }
     }
 
