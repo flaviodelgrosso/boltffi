@@ -9,10 +9,12 @@ mod custom_ffi;
 mod custom_type;
 mod custom_types;
 mod data;
+mod data_types;
 mod export;
 mod params;
 mod returns;
 mod safety;
+mod type_classification;
 mod util;
 mod wire_gen;
 
