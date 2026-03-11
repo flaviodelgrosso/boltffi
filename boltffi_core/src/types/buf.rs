@@ -84,10 +84,11 @@ impl FfiBuf {
 
 impl Drop for FfiBuf {
     fn drop(&mut self) {
-        if !self.ptr.is_null() && self.cap > 0 {
-            if let Ok(layout) = core::alloc::Layout::from_size_align(self.cap, self.align) {
-                unsafe { std::alloc::dealloc(self.ptr, layout) };
-            }
+        if !self.ptr.is_null()
+            && self.cap > 0
+            && let Ok(layout) = core::alloc::Layout::from_size_align(self.cap, self.align)
+        {
+            unsafe { std::alloc::dealloc(self.ptr, layout) };
         }
     }
 }
