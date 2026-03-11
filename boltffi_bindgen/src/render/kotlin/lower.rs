@@ -854,10 +854,10 @@ impl<'a> KotlinLowerer<'a> {
             .map(|w| w.binding_name.clone())
             .collect();
         let native_args = self.native_args_for_params(call, &func.params, &wire_writers);
-        let return_type = self.kotlin_return_type_from_def(&func.returns, &output_route);
-        let return_meta = self.kotlin_return_meta(&output_route);
-        let decode_expr = self.decode_expr_for_call_return(&output_route, &func.returns);
-        let is_blittable_return = self.is_blittable_return(&output_route, &func.returns);
+        let return_type = self.kotlin_return_type_from_def(&func.returns, output_route);
+        let return_meta = self.kotlin_return_meta(output_route);
+        let decode_expr = self.decode_expr_for_call_return(output_route, &func.returns);
+        let is_blittable_return = self.is_blittable_return(output_route, &func.returns);
         let async_call = match &call.mode {
             CallMode::Async(_) => Some(self.async_call_for_function(func, call)),
             CallMode::Sync => None,
@@ -976,10 +976,10 @@ impl<'a> KotlinLowerer<'a> {
                 kotlin_type: self.kotlin_type(&param.type_expr),
             })
             .collect::<Vec<_>>();
-        let return_type = self.kotlin_return_type_from_def(&method.returns, &output_route);
-        let return_meta = self.kotlin_return_meta(&output_route);
-        let decode_expr = self.decode_expr_for_call_return(&output_route, &method.returns);
-        let is_blittable_return = self.is_blittable_return(&output_route, &method.returns);
+        let return_type = self.kotlin_return_type_from_def(&method.returns, output_route);
+        let return_meta = self.kotlin_return_meta(output_route);
+        let decode_expr = self.decode_expr_for_call_return(output_route, &method.returns);
+        let is_blittable_return = self.is_blittable_return(output_route, &method.returns);
         let ffi_name = call.symbol.as_str().to_string();
         let include_handle = method.receiver != Receiver::Static;
         let err_type = self.error_type_name(&method.returns);
@@ -1237,7 +1237,7 @@ impl<'a> KotlinLowerer<'a> {
             })
             .collect();
         let return_info =
-            self.callback_return_info(&method.returns, &output_route, &abi_method.error);
+            self.callback_return_info(&method.returns, output_route, &abi_method.error);
         KotlinCallbackMethod {
             name: NamingConvention::method_name(method.id.as_str()),
             ffi_name: abi_method.vtable_field.as_str().to_string(),
@@ -1268,7 +1268,7 @@ impl<'a> KotlinLowerer<'a> {
             })
             .collect();
         let return_info =
-            self.callback_return_info(&method.returns, &output_route, &abi_method.error);
+            self.callback_return_info(&method.returns, output_route, &abi_method.error);
         let invoker = self.async_callback_invoker(&return_info);
         KotlinAsyncCallbackMethod {
             name: NamingConvention::method_name(method.id.as_str()),
@@ -2518,10 +2518,10 @@ impl<'a> KotlinLowerer<'a> {
         ret_shape: &ReturnShape,
         returns_def: &ReturnDef,
     ) -> String {
-        if !self.is_throwing_return(returns_def) {
-            if let Some(direct_decode) = self.decode_direct_buffer_return(ret_shape) {
-                return direct_decode;
-            }
+        if !self.is_throwing_return(returns_def)
+            && let Some(direct_decode) = self.decode_direct_buffer_return(ret_shape)
+        {
+            return direct_decode;
         }
         if let Some(decode_ops) = &ret_shape.decode_ops {
             if self.is_throwing_return(returns_def) {

@@ -136,6 +136,7 @@ pub struct AbiParam {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ParamRole {
     Input {
         transport: Transport,

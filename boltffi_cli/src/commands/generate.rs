@@ -91,7 +91,7 @@ fn convert_type_mappings(
 }
 
 fn scan_with_pointer_width(
-    crate_dir: &PathBuf,
+    crate_dir: &Path,
     crate_name: &str,
     pointer_width_bits: Option<u8>,
 ) -> Result<boltffi_bindgen::Module> {

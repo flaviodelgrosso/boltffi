@@ -1,13 +1,5 @@
 use std::collections::HashSet;
 
-use crate::ir::abi::{AbiCall, AbiContract, AbiParam, AbiRecord, CallId};
-use crate::ir::contract::FfiContract;
-use crate::ir::definitions::{FieldDef, FunctionDef, RecordDef, ReturnDef};
-use crate::ir::ids::{FieldName, RecordId};
-use crate::ir::ops::{ReadOp, ReadSeq, WriteOp, WriteSeq};
-use crate::ir::types::{PrimitiveType, TypeExpr};
-use crate::ir::{InputBinding, ParamBinding};
-
 use super::JavaOptions;
 use super::mappings;
 use super::names::NamingConvention;
@@ -15,6 +7,12 @@ use super::plan::{
     JavaFunction, JavaModule, JavaParam, JavaParamKind, JavaRecord, JavaRecordField,
     JavaRecordShape, JavaReturnStrategy, JavaWireWriter,
 };
+use crate::ir::abi::{AbiCall, AbiContract, AbiParam, AbiRecord, CallId, ParamRole};
+use crate::ir::contract::FfiContract;
+use crate::ir::definitions::{FieldDef, FunctionDef, RecordDef, ReturnDef};
+use crate::ir::ids::{FieldName, RecordId};
+use crate::ir::ops::{ReadOp, ReadSeq, WriteOp, WriteSeq};
+use crate::ir::types::{PrimitiveType, TypeExpr};
 
 pub struct JavaLowerer<'a> {
     ffi: &'a FfiContract,
@@ -319,10 +317,11 @@ impl<'a> JavaLowerer<'a> {
     }
 
     fn input_write_ops(&self, param: &AbiParam) -> Option<WriteSeq> {
-        match param.param_binding() {
-            ParamBinding::Input(InputBinding::WirePacket { encode_ops, .. }) => {
-                Some(encode_ops.clone())
-            }
+        match &param.role {
+            ParamRole::Input {
+                encode_ops: Some(encode_ops),
+                ..
+            } => Some(encode_ops.clone()),
             _ => None,
         }
     }

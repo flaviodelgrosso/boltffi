@@ -242,11 +242,10 @@ impl<'a> JniLowerer<'a> {
 
         let abi_call = self.abi_call_for_function(func);
 
-        let returns_ok = match &abi_call.returns.transport {
-            None => true,
-            Some(Transport::Scalar(_)) => true,
-            _ => false,
-        };
+        let returns_ok = matches!(
+            &abi_call.returns.transport,
+            None | Some(Transport::Scalar(_))
+        );
 
         let params_ok = abi_call.params.iter().all(|p| {
             matches!(
