@@ -445,7 +445,7 @@ fn primitive_array_write_method(primitive: PrimitiveType) -> &'static str {
     }
 }
 
-fn emit_size_expr(size: &SizeExpr) -> String {
+pub fn emit_size_expr(size: &SizeExpr) -> String {
     let mut context = JavaEmitContext::default();
     emit_size_expr_with_context(size, &mut context)
 }
@@ -552,8 +552,4 @@ fn replace_identifier_occurrences(expression: &str, identifier: &str, replacemen
 
 fn is_identifier_char(character: char) -> bool {
     character.is_ascii_alphanumeric() || character == '_'
-}
-
-pub fn emit_size_expr_for_write_seq(seq: &WriteSeq) -> String {
-    emit_size_expr(&seq.size)
 }

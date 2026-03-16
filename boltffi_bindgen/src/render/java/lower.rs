@@ -277,7 +277,7 @@ impl<'a> JavaLowerer<'a> {
             name: NamingConvention::field_name(field.name.as_str()),
             java_type: self.java_type(&field.type_expr),
             wire_decode_expr: super::emit::emit_reader_read(&decode_seq),
-            wire_size_expr: super::emit::emit_size_expr_for_write_seq(&encode_seq),
+            wire_size_expr: super::emit::emit_size_expr(&encode_seq.size),
             wire_encode_expr: super::emit::emit_write_expr(&encode_seq, "wire"),
             equals_expr: self.record_field_equals_expr(&field.type_expr, field.name.as_str()),
             hash_expr: self.record_field_hash_expr(&field.type_expr, field.name.as_str()),
@@ -585,7 +585,7 @@ impl<'a> JavaLowerer<'a> {
                     JavaWireWriter {
                         binding_name,
                         param_name,
-                        size_expr: super::emit::emit_size_expr_for_write_seq(&encode_ops),
+                        size_expr: super::emit::emit_size_expr(&encode_ops.size),
                         encode_expr,
                     }
                 })
@@ -830,7 +830,7 @@ impl<'a> JavaLowerer<'a> {
         let prefixed = Self::prefix_write_seq(&field.encode, "_v");
         let mut java_type = self.java_type(&field.type_expr);
         let mut decode_expr = super::emit::emit_reader_read(&field.decode);
-        let mut size_expr = super::emit::emit_size_expr_for_write_seq(&prefixed);
+        let mut size_expr = super::emit::emit_size_expr(&prefixed.size);
         let mut encode_expr = super::emit::emit_write_expr(&prefixed, "wire");
         if sibling_names.contains(&java_type) {
             java_type = format!("{}.{}", self.package_name, java_type);
