@@ -5,25 +5,15 @@ use syn::{FnArg, ReturnType, Type};
 
 use crate::callback_registry;
 use crate::custom_types;
+use crate::method_common::{
+    impl_type_name, is_factory_constructor, is_result_of_self_type_path, sync_error_return_expr,
+};
 use crate::params::{FfiParams, transform_method_params, transform_method_params_async};
 use crate::returns::{
     ReturnAbi, classify_return, encoded_return_body, encoded_return_buffer_expression,
     lower_return_abi,
 };
 use boltffi_ffi_rules::transport::EncodedReturnStrategy;
-
-fn sync_wire_record_error_return_expr(return_abi: &ReturnAbi) -> proc_macro2::TokenStream {
-    match return_abi {
-        ReturnAbi::Unit => quote! { ::boltffi::__private::FfiStatus::INVALID_ARG },
-        ReturnAbi::Scalar { .. } => quote! { ::core::default::Default::default() },
-        ReturnAbi::Encoded { .. } => quote! { ::core::default::Default::default() },
-        ReturnAbi::Passable { rust_type } => quote! {
-            unsafe {
-                ::core::mem::MaybeUninit::<<#rust_type as ::boltffi::__private::Passable>::Out>::zeroed().assume_init()
-            }
-        },
-    }
-}
 
 fn has_mut_self_methods(input: &syn::ItemImpl) -> bool {
     input.items.iter().any(|item| {
@@ -77,12 +67,7 @@ pub fn ffi_class_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(error) => return error.to_compile_error().into(),
     };
 
-    let self_ty = match input.self_ty.as_ref() {
-        Type::Path(path) => path.path.segments.last().map(|s| s.ident.clone()),
-        _ => None,
-    };
-
-    let type_name = match self_ty {
+    let type_name = match impl_type_name(&input) {
         Some(name) => name,
         None => {
             return syn::Error::new_spanned(&input, "ffi_class requires a named type")
@@ -437,56 +422,6 @@ fn build_static_f64_wasm_exports(
     }
 }
 
-fn is_factory_constructor(method: &syn::ImplItemFn, type_name: &syn::Ident) -> bool {
-    let has_self = method
-        .sig
-        .inputs
-        .first()
-        .map(|arg| matches!(arg, FnArg::Receiver(_)))
-        .unwrap_or(false);
-
-    if has_self {
-        return false;
-    }
-
-    is_factory_return(&method.sig.output, type_name)
-}
-
-fn is_factory_return(output: &ReturnType, type_name: &syn::Ident) -> bool {
-    match output {
-        ReturnType::Default => false,
-        ReturnType::Type(_, ty) => match ty.as_ref() {
-            Type::Path(type_path) => {
-                is_self_type_path(&type_path.path, type_name)
-                    || is_result_of_self_type_path(&type_path.path, type_name)
-            }
-            _ => false,
-        },
-    }
-}
-
-fn is_self_type_path(path: &syn::Path, type_name: &syn::Ident) -> bool {
-    path.segments
-        .last()
-        .is_some_and(|segment| segment.ident == "Self" || segment.ident == *type_name)
-}
-
-fn is_result_of_self_type_path(path: &syn::Path, type_name: &syn::Ident) -> bool {
-    let Some(result_segment) = path.segments.last() else {
-        return false;
-    };
-    if result_segment.ident != "Result" {
-        return false;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &result_segment.arguments else {
-        return false;
-    };
-    let Some(syn::GenericArgument::Type(Type::Path(ok_type_path))) = args.args.first() else {
-        return false;
-    };
-    is_self_type_path(&ok_type_path.path, type_name)
-}
-
 fn generate_factory_constructor_export(
     type_name: &syn::Ident,
     class_name: &str,
@@ -615,7 +550,7 @@ fn generate_method_export(
     }
 
     let return_abi = lower_return_abi(classify_return(&method.sig.output), custom_types);
-    let on_wire_record_error = sync_wire_record_error_return_expr(&return_abi);
+    let on_wire_record_error = sync_error_return_expr(&return_abi);
     let other_inputs = method.sig.inputs.iter().skip(1).cloned();
     let FfiParams {
         ffi_params,
@@ -804,7 +739,7 @@ fn generate_static_method_export(
     );
 
     let return_abi = lower_return_abi(classify_return(&method.sig.output), custom_types);
-    let on_wire_record_error = sync_wire_record_error_return_expr(&return_abi);
+    let on_wire_record_error = sync_error_return_expr(&return_abi);
     let all_inputs = method.sig.inputs.iter().cloned();
     let FfiParams {
         ffi_params,

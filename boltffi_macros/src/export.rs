@@ -6,25 +6,13 @@ use syn::ItemFn;
 
 use crate::callback_registry;
 use crate::custom_types;
+use crate::method_common::sync_error_return_expr;
 use crate::params::{FfiParams, transform_params, transform_params_async};
 use crate::returns::{
     ReturnAbi, classify_return, encoded_return_body, encoded_return_buffer_expression,
     lower_return_abi,
 };
 use crate::safety;
-
-fn sync_wire_record_error_return_expr(return_abi: &ReturnAbi) -> proc_macro2::TokenStream {
-    match return_abi {
-        ReturnAbi::Unit => quote! { ::boltffi::__private::FfiStatus::INVALID_ARG },
-        ReturnAbi::Scalar { .. } => quote! { ::core::default::Default::default() },
-        ReturnAbi::Encoded { .. } => quote! { ::boltffi::__private::FfiBuf::default() },
-        ReturnAbi::Passable { rust_type } => quote! {
-            unsafe {
-                ::core::mem::MaybeUninit::<<#rust_type as ::boltffi::__private::Passable>::Out>::zeroed().assume_init()
-            }
-        },
-    }
-}
 
 fn build_encoded_return_exports(
     input: &ItemFn,
@@ -220,7 +208,7 @@ pub fn ffi_export_impl(item: TokenStream) -> TokenStream {
     let export_ident = syn::Ident::new(&export_name, fn_name.span());
 
     let return_abi = lower_return_abi(classify_return(fn_output), &custom_types);
-    let on_wire_record_error = sync_wire_record_error_return_expr(&return_abi);
+    let on_wire_record_error = sync_error_return_expr(&return_abi);
     let FfiParams {
         ffi_params,
         conversions,

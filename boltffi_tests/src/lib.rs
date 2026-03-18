@@ -879,3 +879,30 @@ impl ClassTestFixture {
         data
     }
 }
+
+#[data(impl)]
+impl FixturePoint {
+    pub fn origin() -> Self {
+        Self { x: 0.0, y: 0.0 }
+    }
+
+    pub fn new_at(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+
+    pub fn distance_to_origin(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+
+    pub fn scale(&mut self, factor: f64) {
+        self.x *= factor;
+        self.y *= factor;
+    }
+
+    pub fn midpoint_to(a: FixturePoint, b: FixturePoint) -> FixturePoint {
+        FixturePoint {
+            x: (a.x + b.x) / 2.0,
+            y: (a.y + b.y) / 2.0,
+        }
+    }
+}
