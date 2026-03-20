@@ -1,3 +1,4 @@
+use boltffi_ffi_rules::naming;
 use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -36,6 +37,8 @@ pub enum TypeShape {
         variants: Vec<Variant>,
         is_error: bool,
         repr_type: Option<Primitive>,
+        constructors: Vec<Constructor>,
+        methods: Vec<Method>,
     },
     Class {
         constructors: Vec<Constructor>,
@@ -146,6 +149,37 @@ impl TypeRegistry {
                 meta.shape = TypeShape::Record {
                     fields: Vec::new(),
                     is_repr_c: true,
+                    constructors,
+                    methods,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    pub fn merge_enum_impl(
+        &mut self,
+        name: &str,
+        constructors: Vec<Constructor>,
+        methods: Vec<Method>,
+    ) {
+        let Some(meta) = self.types.get_mut(name) else {
+            return;
+        };
+        match &mut meta.shape {
+            TypeShape::Enum {
+                constructors: existing_ctors,
+                methods: existing_methods,
+                ..
+            } => {
+                existing_ctors.extend(constructors);
+                existing_methods.extend(methods);
+            }
+            TypeShape::Pending(PendingKind::Enum) => {
+                meta.shape = TypeShape::Enum {
+                    variants: Vec::new(),
+                    is_error: false,
+                    repr_type: None,
                     constructors,
                     methods,
                 };
@@ -951,7 +985,7 @@ impl SourceScanner {
             }
             Item::Impl(item_impl) => {
                 if self.features.record_methods && has_data_impl_attribute(&item_impl.attrs) {
-                    self.process_record_impl(item_impl);
+                    self.process_value_type_impl(item_impl);
                 } else if has_attribute(&item_impl.attrs, "ffi_class")
                     || has_attribute(&item_impl.attrs, "export")
                 {
@@ -1176,6 +1210,8 @@ impl SourceScanner {
                 variants,
                 is_error,
                 repr_type,
+                constructors: Vec::new(),
+                methods: Vec::new(),
             },
         );
         Ok(())
@@ -1285,12 +1321,15 @@ impl SourceScanner {
         );
     }
 
-    fn process_record_impl(&mut self, item_impl: &ItemImpl) {
-        let Some(record_name) = impl_self_type_ident(item_impl) else {
+    fn process_value_type_impl(&mut self, item_impl: &ItemImpl) {
+        let Some(type_name) = impl_self_type_ident(item_impl) else {
             return;
         };
 
-        if !self.type_registry.is_record(&record_name) {
+        let is_record = self.type_registry.is_record(&type_name);
+        let is_enum = self.type_registry.is_enum(&type_name);
+
+        if !is_record && !is_enum {
             return;
         }
 
@@ -1307,20 +1346,25 @@ impl SourceScanner {
             .filter(|method| matches!(method.vis, syn::Visibility::Public(_)))
             .filter(|method| !has_attribute(&method.attrs, "skip"))
             .for_each(|method| {
-                if self.is_constructor(method, &record_name) {
-                    if let Some(ctor) = self.build_constructor(method, &record_name) {
+                if self.is_constructor(method, &type_name) {
+                    if let Some(ctor) = self.build_constructor(method, &type_name) {
                         constructors.push(ctor);
                     }
                     return;
                 }
 
-                if let Some(built_method) = self.build_method(method, &record_name) {
+                if let Some(built_method) = self.build_method(method, &type_name) {
                     methods.push(built_method);
                 }
             });
 
-        self.type_registry
-            .merge_record_impl(&record_name, constructors, methods);
+        if is_record {
+            self.type_registry
+                .merge_record_impl(&type_name, constructors, methods);
+        } else {
+            self.type_registry
+                .merge_enum_impl(&type_name, constructors, methods);
+        }
     }
 
     fn build_method(&self, method: &syn::ImplItemFn, self_type_name: &str) -> Option<Method> {
@@ -1374,6 +1418,7 @@ impl SourceScanner {
             syn::ReturnType::Type(_, ty) => {
                 return_type_is_self(ty.as_ref(), class_name)
                     || return_type_is_result_self(ty.as_ref(), class_name)
+                    || return_type_is_option_self(ty.as_ref(), class_name)
             }
         }
     }
@@ -1388,6 +1433,10 @@ impl SourceScanner {
             syn::ReturnType::Default => false,
             syn::ReturnType::Type(_, ty) => return_type_is_result_self(ty.as_ref(), self_type_name),
         };
+        let is_optional = match &sig.output {
+            syn::ReturnType::Default => false,
+            syn::ReturnType::Type(_, ty) => return_type_is_option_self(ty.as_ref(), self_type_name),
+        };
         let params = self.resolve_typed_params(&sig.inputs, Some(self_type_name))?;
 
         Some(
@@ -1396,7 +1445,8 @@ impl SourceScanner {
                 .fold(
                     Constructor::new()
                         .with_name(sig.ident.to_string())
-                        .with_fallible(is_fallible),
+                        .with_fallible(is_fallible)
+                        .with_optional(is_optional),
                     |c, (name, ty)| c.with_param(ConstructorParam::new(&name, ty)),
                 )
                 .maybe_doc(extract_doc_string(&method.attrs)),
@@ -1429,6 +1479,8 @@ impl SourceScanner {
                     variants,
                     is_error,
                     repr_type,
+                    constructors,
+                    methods,
                 } => {
                     let mut enumeration = variants
                         .into_iter()
@@ -1438,6 +1490,12 @@ impl SourceScanner {
                         enumeration = enumeration.as_error();
                     }
                     enumeration.repr_type = repr_type;
+                    let enumeration = constructors
+                        .into_iter()
+                        .fold(enumeration, |e, ctor| e.with_constructor(ctor));
+                    let enumeration = methods
+                        .into_iter()
+                        .fold(enumeration, |e, m| e.with_method(m));
                     module = module.with_enum(enumeration);
                 }
                 TypeShape::Class {
@@ -1629,6 +1687,31 @@ fn return_type_is_result_self(ty: &Type, class_name: &str) -> bool {
         return false;
     };
     ok_ty
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Self" || segment.ident == class_name)
+}
+
+fn return_type_is_option_self(ty: &Type, class_name: &str) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+    let Some(option_segment) = type_path
+        .path
+        .segments
+        .last()
+        .filter(|segment| segment.ident == "Option")
+    else {
+        return false;
+    };
+    let syn::PathArguments::AngleBracketed(args) = &option_segment.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(Type::Path(inner_ty))) = args.args.first() else {
+        return false;
+    };
+    inner_ty
         .path
         .segments
         .last()
@@ -2133,7 +2216,11 @@ fn rust_type_to_ffi_type(
             let ident = last_segment.ident.to_string();
 
             if ident == "Self" {
-                return self_type_name.map(|name| MType::Object(name.to_string()));
+                return self_type_name.and_then(|name| {
+                    registry
+                        .classify_named_type(name)
+                        .or_else(|| Some(MType::Object(name.to_string())))
+                });
             }
 
             if ident == "Box"
@@ -2436,6 +2523,73 @@ fn string_to_ffi_type(
     }
 }
 
+fn validate_no_symbol_collisions(module: &Module) -> Result<(), String> {
+    let mut symbols: HashMap<String, String> = HashMap::new();
+
+    let mut check = |symbol: String, origin: String| -> Result<(), String> {
+        if let Some(existing) = symbols.get(&symbol) {
+            return Err(format!(
+                "FFI symbol collision: '{}' is produced by both {} and {}. Rename one to avoid the conflict.",
+                symbol, existing, origin
+            ));
+        }
+        symbols.insert(symbol, origin);
+        Ok(())
+    };
+
+    for func in &module.functions {
+        let symbol = naming::function_ffi_name(&func.name).to_string();
+        check(symbol, format!("fn {}()", func.name))?;
+    }
+
+    for record in &module.records {
+        for ctor in &record.constructors {
+            let symbol = if ctor.name == "new" {
+                naming::class_ffi_new(&record.name).to_string()
+            } else {
+                naming::method_ffi_name(&record.name, &ctor.name).to_string()
+            };
+            check(symbol, format!("{}::{}()", record.name, ctor.name))?;
+        }
+        for method in &record.methods {
+            let symbol = naming::method_ffi_name(&record.name, &method.name).to_string();
+            check(symbol, format!("{}::{}()", record.name, method.name))?;
+        }
+    }
+
+    for enumeration in &module.enums {
+        for ctor in &enumeration.constructors {
+            let symbol = if ctor.name == "new" {
+                naming::class_ffi_new(&enumeration.name).to_string()
+            } else {
+                naming::method_ffi_name(&enumeration.name, &ctor.name).to_string()
+            };
+            check(symbol, format!("{}::{}()", enumeration.name, ctor.name))?;
+        }
+        for method in &enumeration.methods {
+            let symbol = naming::method_ffi_name(&enumeration.name, &method.name).to_string();
+            check(symbol, format!("{}::{}()", enumeration.name, method.name))?;
+        }
+    }
+
+    for class in &module.classes {
+        for ctor in &class.constructors {
+            let symbol = if ctor.name == "new" {
+                naming::class_ffi_new(&class.name).to_string()
+            } else {
+                naming::method_ffi_name(&class.name, &ctor.name).to_string()
+            };
+            check(symbol, format!("{}::{}()", class.name, ctor.name))?;
+        }
+        for method in &class.methods {
+            let symbol = naming::method_ffi_name(&class.name, &method.name).to_string();
+            check(symbol, format!("{}::{}()", class.name, method.name))?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn scan_crate(crate_path: &Path, module_name: &str) -> Result<Module, String> {
     scan_crate_with_pointer_width(crate_path, module_name, None)
 }
@@ -2466,7 +2620,9 @@ pub fn scan_crate_with_options(
     )
     .with_features(features);
     scanner.scan_directory(crate_path, &src_path)?;
-    Ok(scanner.into_module())
+    let module = scanner.into_module();
+    validate_no_symbol_collisions(&module)?;
+    Ok(module)
 }
 
 #[cfg(test)]
@@ -2686,6 +2842,8 @@ mod tests {
                 variants: vec![],
                 is_error: false,
                 repr_type: None,
+                constructors: vec![],
+                methods: vec![],
             },
         );
 
@@ -3198,5 +3356,44 @@ mod tests {
         assert_eq!(record.constructors[0].name, "origin");
         assert_eq!(record.methods.len(), 1);
         assert_eq!(record.methods[0].name, "magnitude");
+    }
+
+    #[test]
+    fn symbol_collision_between_method_and_function_is_detected() {
+        let mut module = Module::new("test");
+        module.functions.push(Function::new("point_distance"));
+        module
+            .records
+            .push(Record::new("Point").with_method(Method::new("distance", Receiver::Ref)));
+
+        let result = validate_no_symbol_collisions(&module);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("FFI symbol collision"),
+            "error should mention collision: {}",
+            err
+        );
+        assert!(
+            err.contains("Point::distance()"),
+            "error should mention the method: {}",
+            err
+        );
+        assert!(
+            err.contains("fn point_distance()"),
+            "error should mention the function: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn no_collision_when_names_differ() {
+        let mut module = Module::new("test");
+        module.functions.push(Function::new("echo_point"));
+        module
+            .records
+            .push(Record::new("Point").with_method(Method::new("distance", Receiver::Ref)));
+
+        assert!(validate_no_symbol_collisions(&module).is_ok());
     }
 }

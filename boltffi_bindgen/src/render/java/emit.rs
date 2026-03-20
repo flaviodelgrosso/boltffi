@@ -610,6 +610,7 @@ mod tests {
         ConstructorDef::Default {
             params,
             is_fallible: false,
+            is_optional: false,
             doc: None,
             deprecated: None,
         }

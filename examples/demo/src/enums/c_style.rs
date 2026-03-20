@@ -44,6 +44,62 @@ pub enum Direction {
     West,
 }
 
+#[data(impl)]
+impl Direction {
+    pub fn new(raw: i32) -> Self {
+        match raw {
+            0 => Direction::North,
+            1 => Direction::South,
+            2 => Direction::East,
+            3 => Direction::West,
+            _ => Direction::North,
+        }
+    }
+
+    pub fn cardinal() -> Self {
+        Direction::North
+    }
+
+    pub fn from_degrees(degrees: f64) -> Self {
+        let normalized = ((degrees % 360.0) + 360.0) % 360.0;
+        if normalized < 45.0 || normalized >= 315.0 {
+            Direction::North
+        } else if normalized < 135.0 {
+            Direction::East
+        } else if normalized < 225.0 {
+            Direction::South
+        } else {
+            Direction::West
+        }
+    }
+
+    pub fn opposite(&self) -> Direction {
+        match self {
+            Direction::North => Direction::South,
+            Direction::South => Direction::North,
+            Direction::East => Direction::West,
+            Direction::West => Direction::East,
+        }
+    }
+
+    pub fn is_horizontal(&self) -> bool {
+        matches!(self, Direction::East | Direction::West)
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Direction::North => "N".to_string(),
+            Direction::South => "S".to_string(),
+            Direction::East => "E".to_string(),
+            Direction::West => "W".to_string(),
+        }
+    }
+
+    pub fn count() -> u32 {
+        4
+    }
+}
+
 #[export]
 pub fn echo_direction(d: Direction) -> Direction {
     d

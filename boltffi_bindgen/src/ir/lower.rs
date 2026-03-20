@@ -57,6 +57,121 @@ fn return_shape_from_transport_with_ops(
     }
 }
 
+trait MethodHost {
+    fn classify(&self, lowerer: &Lowerer) -> Transport;
+    fn method_symbol(
+        &self,
+        method_id: &MethodId,
+        lowerer: &Lowerer,
+    ) -> naming::Name<naming::GlobalSymbol>;
+    fn constructor_symbol(
+        &self,
+        name: Option<&MethodId>,
+        lowerer: &Lowerer,
+    ) -> naming::Name<naming::GlobalSymbol>;
+    fn method_call_id(&self, method_id: &MethodId) -> CallId;
+    fn constructor_call_id(&self, index: usize) -> CallId;
+    fn constructors(&self) -> &[ConstructorDef];
+    fn methods(&self) -> &[MethodDef];
+    fn has_methods(&self) -> bool {
+        !self.constructors().is_empty() || !self.methods().is_empty()
+    }
+}
+
+impl MethodHost for RecordDef {
+    fn classify(&self, lowerer: &Lowerer) -> Transport {
+        lowerer.classify_record(&self.id)
+    }
+
+    fn method_symbol(
+        &self,
+        method_id: &MethodId,
+        _lowerer: &Lowerer,
+    ) -> naming::Name<naming::GlobalSymbol> {
+        naming::method_ffi_name(self.id.as_str(), method_id.as_str())
+    }
+
+    fn constructor_symbol(
+        &self,
+        name: Option<&MethodId>,
+        _lowerer: &Lowerer,
+    ) -> naming::Name<naming::GlobalSymbol> {
+        match name {
+            Some(n) => naming::method_ffi_name(self.id.as_str(), n.as_str()),
+            None => naming::class_ffi_new(self.id.as_str()),
+        }
+    }
+
+    fn method_call_id(&self, method_id: &MethodId) -> CallId {
+        CallId::RecordMethod {
+            record_id: self.id.clone(),
+            method_id: method_id.clone(),
+        }
+    }
+
+    fn constructor_call_id(&self, index: usize) -> CallId {
+        CallId::RecordConstructor {
+            record_id: self.id.clone(),
+            index,
+        }
+    }
+
+    fn constructors(&self) -> &[ConstructorDef] {
+        &self.constructors
+    }
+
+    fn methods(&self) -> &[MethodDef] {
+        &self.methods
+    }
+}
+
+impl MethodHost for EnumDef {
+    fn classify(&self, lowerer: &Lowerer) -> Transport {
+        lowerer.classify_enum(&self.id)
+    }
+
+    fn method_symbol(
+        &self,
+        method_id: &MethodId,
+        _lowerer: &Lowerer,
+    ) -> naming::Name<naming::GlobalSymbol> {
+        naming::method_ffi_name(self.id.as_str(), method_id.as_str())
+    }
+
+    fn constructor_symbol(
+        &self,
+        name: Option<&MethodId>,
+        _lowerer: &Lowerer,
+    ) -> naming::Name<naming::GlobalSymbol> {
+        match name {
+            Some(n) => naming::method_ffi_name(self.id.as_str(), n.as_str()),
+            None => naming::class_ffi_new(self.id.as_str()),
+        }
+    }
+
+    fn method_call_id(&self, method_id: &MethodId) -> CallId {
+        CallId::EnumMethod {
+            enum_id: self.id.clone(),
+            method_id: method_id.clone(),
+        }
+    }
+
+    fn constructor_call_id(&self, index: usize) -> CallId {
+        CallId::EnumConstructor {
+            enum_id: self.id.clone(),
+            index,
+        }
+    }
+
+    fn constructors(&self) -> &[ConstructorDef] {
+        &self.constructors
+    }
+
+    fn methods(&self) -> &[MethodDef] {
+        &self.methods
+    }
+}
+
 /// Walks an [`FfiContract`] and produces an [`AbiContract`].
 ///
 /// Most of the work is codec planning, figuring out which records are blittable,
@@ -113,26 +228,34 @@ impl<'c> Lowerer<'c> {
             ctor_calls.chain(method_calls)
         });
 
-        let record_calls =
-            self.contract
-                .catalog
-                .all_records()
-                .filter(|record| record.has_methods())
-                .flat_map(|record| {
-                    let ctor_calls = record.constructors.iter().enumerate().map(|(index, ctor)| {
-                        self.abi_call_for_record_constructor(record, ctor, index)
-                    });
-                    let method_calls = record
-                        .methods
-                        .iter()
-                        .filter(|method| !method.is_async)
-                        .map(|method| self.abi_call_for_record_method(record, method));
-                    ctor_calls.chain(method_calls)
+        let value_type_calls = self
+            .contract
+            .catalog
+            .all_records()
+            .filter(|r| r.has_methods())
+            .map(|r| r as &dyn MethodHost)
+            .chain(
+                self.contract
+                    .catalog
+                    .all_enums()
+                    .filter(|e| e.has_methods())
+                    .map(|e| e as &dyn MethodHost),
+            )
+            .flat_map(|host| {
+                let ctor_calls = host.constructors().iter().enumerate().map(|(index, ctor)| {
+                    self.abi_call_for_value_type_constructor(host, ctor, index)
                 });
+                let method_calls = host
+                    .methods()
+                    .iter()
+                    .filter(|method| !method.is_async)
+                    .map(|method| self.abi_call_for_value_type_method(host, method));
+                ctor_calls.chain(method_calls)
+            });
 
         let calls = function_calls
             .chain(class_calls)
-            .chain(record_calls)
+            .chain(value_type_calls)
             .collect();
 
         let callbacks = self
@@ -243,20 +366,17 @@ impl<'c> Lowerer<'c> {
         }
     }
 
-    fn abi_call_for_record_method(&self, record: &RecordDef, method: &MethodDef) -> AbiCall {
-        let plan = self.lower_record_method(record, method);
+    fn abi_call_for_value_type_method(&self, host: &dyn MethodHost, method: &MethodDef) -> AbiCall {
+        let plan = self.lower_value_type_method(host, method);
         let symbol = self.call_symbol(&plan);
         let params = self.abi_params_from_plan(&plan.params);
         let (returns, error) = self.return_shape_and_error(match &plan.kind {
             CallPlanKind::Sync { returns } => returns,
-            CallPlanKind::Async { .. } => unreachable!("record methods are always sync"),
+            CallPlanKind::Async { .. } => unreachable!("value type methods are always sync"),
         });
 
         AbiCall {
-            id: CallId::RecordMethod {
-                record_id: record.id.clone(),
-                method_id: method.id.clone(),
-            },
+            id: host.method_call_id(&method.id),
             symbol,
             mode: CallMode::Sync,
             params,
@@ -265,25 +385,22 @@ impl<'c> Lowerer<'c> {
         }
     }
 
-    fn abi_call_for_record_constructor(
+    fn abi_call_for_value_type_constructor(
         &self,
-        record: &RecordDef,
+        host: &dyn MethodHost,
         ctor: &ConstructorDef,
         index: usize,
     ) -> AbiCall {
-        let plan = self.lower_record_constructor(record, ctor);
+        let plan = self.lower_value_type_constructor(host, ctor);
         let symbol = self.call_symbol(&plan);
         let params = self.abi_params_from_plan(&plan.params);
         let (returns, error) = self.return_shape_and_error(match &plan.kind {
             CallPlanKind::Sync { returns } => returns,
-            CallPlanKind::Async { .. } => panic!("record constructors cannot be async"),
+            CallPlanKind::Async { .. } => unreachable!("value type constructors are always sync"),
         });
 
         AbiCall {
-            id: CallId::RecordConstructor {
-                record_id: record.id.clone(),
-                index,
-            },
+            id: host.constructor_call_id(index),
             symbol,
             mode: CallMode::Sync,
             params,
@@ -1515,7 +1632,7 @@ impl<'c> Lowerer<'c> {
         }
     }
 
-    fn lower_record_method(&self, record: &RecordDef, method: &MethodDef) -> CallPlan {
+    fn lower_value_type_method(&self, host: &dyn MethodHost, method: &MethodDef) -> CallPlan {
         let mut params: Vec<ParamPlan> =
             method.params.iter().map(|p| self.lower_param(p)).collect();
 
@@ -1531,48 +1648,54 @@ impl<'c> Lowerer<'c> {
                 0,
                 ParamPlan {
                     name: ParamName::new("self"),
-                    transport: self.classify_record(&record.id),
+                    transport: host.classify(self),
                     mutability,
                 },
             );
         }
 
         let returns = if is_mut_receiver && matches!(method.returns, ReturnDef::Void) {
-            ReturnPlan::Value(self.classify_record(&record.id))
+            ReturnPlan::Value(host.classify(self))
         } else {
             self.lower_return(&method.returns)
         };
         let kind = CallPlanKind::Sync { returns };
 
         CallPlan {
-            target: CallTarget::GlobalSymbol(self.record_method_symbol(&record.id, &method.id)),
+            target: CallTarget::GlobalSymbol(host.method_symbol(&method.id, self)),
             params,
             kind,
         }
     }
 
-    fn lower_record_constructor(&self, record: &RecordDef, ctor: &ConstructorDef) -> CallPlan {
+    fn lower_value_type_constructor(
+        &self,
+        host: &dyn MethodHost,
+        ctor: &ConstructorDef,
+    ) -> CallPlan {
         let params = ctor
             .params()
             .into_iter()
             .map(|p| self.lower_param(p))
             .collect();
 
-        let record_transport = self.classify_record(&record.id);
+        let transport = host.classify(self);
 
         let returns = if ctor.is_fallible() {
             ReturnPlan::Fallible {
-                ok: record_transport,
+                ok: transport,
                 err_codec: CodecPlan::String,
             }
+        } else if ctor.is_optional() {
+            let inner_codec = self.codec_from_transport(&transport);
+            let option_codec = CodecPlan::Option(Box::new(inner_codec));
+            ReturnPlan::Value(Transport::Span(SpanContent::Encoded(option_codec)))
         } else {
-            ReturnPlan::Value(record_transport)
+            ReturnPlan::Value(transport)
         };
 
         CallPlan {
-            target: CallTarget::GlobalSymbol(
-                self.record_constructor_symbol(&record.id, ctor.name()),
-            ),
+            target: CallTarget::GlobalSymbol(host.constructor_symbol(ctor.name(), self)),
             params,
             kind: CallPlanKind::Sync { returns },
         }
@@ -2028,25 +2151,6 @@ impl<'c> Lowerer<'c> {
         }
     }
 
-    fn record_method_symbol(
-        &self,
-        record_id: &RecordId,
-        method_id: &MethodId,
-    ) -> naming::Name<naming::GlobalSymbol> {
-        naming::method_ffi_name(record_id.as_str(), method_id.as_str())
-    }
-
-    fn record_constructor_symbol(
-        &self,
-        record_id: &RecordId,
-        name: Option<&MethodId>,
-    ) -> naming::Name<naming::GlobalSymbol> {
-        match name {
-            Some(n) => naming::method_ffi_name(record_id.as_str(), n.as_str()),
-            None => naming::class_ffi_new(record_id.as_str()),
-        }
-    }
-
     fn call_symbol(&self, plan: &CallPlan) -> naming::Name<naming::GlobalSymbol> {
         match &plan.target {
             CallTarget::GlobalSymbol(symbol) => symbol.clone(),
@@ -2112,11 +2216,13 @@ mod tests {
     use super::*;
     use crate::ir::contract::{FfiContract, PackageInfo, TypeCatalog};
     use crate::ir::definitions::{
-        CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef, FieldDef,
-        FunctionDef, MethodDef, ParamDef, ParamPassing, Receiver, RecordDef, ReturnDef,
+        CStyleVariant, CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef, ConstructorDef,
+        EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef, ParamDef, ParamPassing, Receiver,
+        RecordDef, ReturnDef,
     };
     use crate::ir::ids::{
-        CallbackId, ClassId, FieldName, FunctionId, MethodId, ParamName, RecordId,
+        CallbackId, ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId,
+        VariantName,
     };
     use crate::ir::types::{PrimitiveType, TypeExpr};
     use boltffi_ffi_rules::naming;
@@ -2578,6 +2684,7 @@ mod tests {
         let ctor = ConstructorDef::Default {
             params: vec![],
             is_fallible: false,
+            is_optional: false,
             doc: None,
             deprecated: None,
         };
@@ -2614,6 +2721,7 @@ mod tests {
         let ctor = ConstructorDef::NamedFactory {
             name: MethodId::new("try_new"),
             is_fallible: true,
+            is_optional: false,
             doc: None,
             deprecated: None,
         };
@@ -2856,6 +2964,7 @@ mod tests {
         let ctor = ConstructorDef::NamedFactory {
             name: MethodId::new("connect"),
             is_fallible: true,
+            is_optional: false,
             doc: None,
             deprecated: None,
         };
@@ -3127,6 +3236,7 @@ mod tests {
         let default_ctor = ConstructorDef::Default {
             params: vec![],
             is_fallible: false,
+            is_optional: false,
             doc: None,
             deprecated: None,
         };
@@ -3141,6 +3251,7 @@ mod tests {
         let named_ctor = ConstructorDef::NamedFactory {
             name: MethodId::new("with_config"),
             is_fallible: false,
+            is_optional: false,
             doc: None,
             deprecated: None,
         };
@@ -3324,6 +3435,7 @@ mod tests {
                     doc: None,
                 }],
                 is_fallible: true,
+                is_optional: false,
                 doc: None,
                 deprecated: None,
             }],
@@ -3528,7 +3640,7 @@ mod tests {
             deprecated: None,
         };
 
-        let plan = lowerer.lower_record_method(&record, &method);
+        let plan = lowerer.lower_value_type_method(&record, &method);
 
         assert_eq!(plan.params.len(), 1);
         assert_eq!(plan.params[0].name.as_str(), "self");
@@ -3555,7 +3667,7 @@ mod tests {
             deprecated: None,
         };
 
-        let plan = lowerer.lower_record_method(&record, &method);
+        let plan = lowerer.lower_value_type_method(&record, &method);
 
         assert_eq!(plan.params.len(), 0);
     }
@@ -3577,7 +3689,7 @@ mod tests {
             deprecated: None,
         };
 
-        let plan = lowerer.lower_record_method(&record, &method);
+        let plan = lowerer.lower_value_type_method(&record, &method);
 
         assert_eq!(plan.params.len(), 1);
         assert_eq!(plan.params[0].name.as_str(), "self");
@@ -3597,11 +3709,12 @@ mod tests {
         let ctor = ConstructorDef::Default {
             params: vec![],
             is_fallible: false,
+            is_optional: false,
             doc: None,
             deprecated: None,
         };
 
-        let plan = lowerer.lower_record_constructor(&record, &ctor);
+        let plan = lowerer.lower_value_type_constructor(&record, &ctor);
 
         assert!(matches!(
             plan.kind,
@@ -3621,11 +3734,12 @@ mod tests {
         let ctor = ConstructorDef::NamedFactory {
             name: MethodId::new("try_parse"),
             is_fallible: true,
+            is_optional: false,
             doc: None,
             deprecated: None,
         };
 
-        let plan = lowerer.lower_record_constructor(&record, &ctor);
+        let plan = lowerer.lower_value_type_constructor(&record, &ctor);
 
         assert!(matches!(
             plan.kind,
@@ -3648,6 +3762,7 @@ mod tests {
         record.constructors = vec![ConstructorDef::Default {
             params: vec![],
             is_fallible: false,
+            is_optional: false,
             doc: None,
             deprecated: None,
         }];
@@ -3754,7 +3869,7 @@ mod tests {
             deprecated: None,
         };
 
-        let plan = lowerer.lower_record_method(&record, &method);
+        let plan = lowerer.lower_value_type_method(&record, &method);
 
         assert_eq!(plan.params.len(), 1);
         assert_eq!(plan.params[0].mutability, Mutability::Mutable);
@@ -3777,7 +3892,7 @@ mod tests {
             deprecated: None,
         };
 
-        let plan = lowerer.lower_record_method(&record, &method);
+        let plan = lowerer.lower_value_type_method(&record, &method);
 
         assert!(matches!(
             plan.kind,
@@ -3804,7 +3919,7 @@ mod tests {
             deprecated: None,
         };
 
-        let plan = lowerer.lower_record_method(&record, &method);
+        let plan = lowerer.lower_value_type_method(&record, &method);
 
         assert_eq!(plan.params[0].mutability, Mutability::Shared);
         assert!(matches!(
@@ -3813,5 +3928,83 @@ mod tests {
                 returns: ReturnPlan::Void
             }
         ));
+    }
+
+    fn c_style_enum_with_method() -> EnumDef {
+        EnumDef {
+            id: EnumId::new("Direction"),
+            repr: EnumRepr::CStyle {
+                tag_type: PrimitiveType::I32,
+                variants: vec![
+                    CStyleVariant {
+                        name: VariantName::new("North"),
+                        discriminant: 0,
+                        doc: None,
+                    },
+                    CStyleVariant {
+                        name: VariantName::new("South"),
+                        discriminant: 1,
+                        doc: None,
+                    },
+                ],
+            },
+            is_error: false,
+            constructors: vec![],
+            methods: vec![MethodDef {
+                id: MethodId::new("opposite"),
+                receiver: Receiver::RefSelf,
+                params: vec![],
+                returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+                is_async: false,
+                doc: None,
+                deprecated: None,
+            }],
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    #[test]
+    fn enum_method_lowered_via_method_host() {
+        let mut contract = test_contract();
+        contract.catalog.insert_enum(c_style_enum_with_method());
+
+        let lowerer = lowerer_for_contract(&contract);
+        let abi = lowerer.to_abi_contract();
+
+        let enum_methods: Vec<_> = abi
+            .calls
+            .iter()
+            .filter(|c| matches!(&c.id, CallId::EnumMethod { .. }))
+            .collect();
+
+        assert_eq!(enum_methods.len(), 1);
+        assert!(matches!(
+            &enum_methods[0].id,
+            CallId::EnumMethod { enum_id, method_id }
+                if enum_id.as_str() == "Direction" && method_id.as_str() == "opposite"
+        ));
+    }
+
+    #[test]
+    fn c_style_enum_self_is_scalar() {
+        let mut contract = test_contract();
+        contract.catalog.insert_enum(c_style_enum_with_method());
+
+        let lowerer = lowerer_for_contract(&contract);
+        let enum_def = contract.catalog.all_enums().next().unwrap();
+        let method = &enum_def.methods[0];
+        let plan = lowerer.lower_value_type_method(enum_def, method);
+
+        let self_param = plan.params.first().unwrap();
+        assert_eq!(self_param.name.as_str(), "self");
+        assert!(
+            matches!(
+                self_param.transport,
+                Transport::Scalar(ScalarOrigin::CStyleEnum { .. })
+            ),
+            "c-style enum self should be Scalar, got: {:?}",
+            self_param.transport
+        );
     }
 }

@@ -108,6 +108,14 @@ pub enum CallId {
         record_id: RecordId,
         index: usize,
     },
+    EnumMethod {
+        enum_id: EnumId,
+        method_id: MethodId,
+    },
+    EnumConstructor {
+        enum_id: EnumId,
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -1900,6 +1900,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1941,6 +1943,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1964,6 +1968,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1989,6 +1995,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2015,6 +2023,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2207,6 +2217,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2358,6 +2370,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2415,6 +2429,7 @@ mod tests {
         ConstructorDef::Default {
             params,
             is_fallible: false,
+            is_optional: false,
             doc: None,
             deprecated: None,
         }
@@ -2424,6 +2439,7 @@ mod tests {
         ConstructorDef::Default {
             params,
             is_fallible: true,
+            is_optional: false,
             doc: None,
             deprecated: None,
         }
@@ -2433,6 +2449,7 @@ mod tests {
         ConstructorDef::NamedFactory {
             name: name.into(),
             is_fallible: false,
+            is_optional: false,
             doc: None,
             deprecated: None,
         }
@@ -2448,6 +2465,7 @@ mod tests {
             first_param,
             rest_params: params_iter.collect(),
             is_fallible: false,
+            is_optional: false,
             doc: None,
             deprecated: None,
         }

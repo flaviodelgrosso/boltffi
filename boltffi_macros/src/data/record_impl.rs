@@ -283,7 +283,7 @@ fn generate_value_return_export(
 ) -> Option<proc_macro2::TokenStream> {
     let on_error = sync_error_return_expr(return_abi);
 
-    let value_expr = if is_fallible {
+    let unwrapped_call = if is_fallible {
         quote! {
             match #call_expr {
                 Ok(value) => value,
@@ -294,22 +294,22 @@ fn generate_value_return_export(
             }
         }
     } else {
-        call_expr
+        call_expr.clone()
     };
 
-    let wrapped_call = if conversions.is_empty() {
-        value_expr
+    let passable_call = if conversions.is_empty() {
+        unwrapped_call
     } else {
         quote! {
             #(#conversions)*
-            #value_expr
+            #unwrapped_call
         }
     };
 
     match return_abi {
         ReturnAbi::Passable { rust_type } => {
             let body = quote! {
-                ::boltffi::__private::Passable::pack({ #wrapped_call })
+                ::boltffi::__private::Passable::pack({ #passable_call })
             };
             let return_type = quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out };
 
@@ -325,12 +325,20 @@ fn generate_value_return_export(
             rust_type: inner_ty,
             strategy,
         } => {
+            let encoded_call = if conversions.is_empty() {
+                call_expr
+            } else {
+                quote! {
+                    #(#conversions)*
+                    #call_expr
+                }
+            };
             let result_ident = syn::Ident::new("result", export_name.span());
             let body = encoded_return_body(
                 inner_ty,
                 *strategy,
                 &result_ident,
-                wrapped_call,
+                encoded_call,
                 &[],
                 custom_types,
             );
