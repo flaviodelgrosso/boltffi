@@ -9,6 +9,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.IntFunction;
+{%- if module.has_async() %}
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+{%- endif %}
 
 final class WireReader {
     private final byte[] data;
@@ -638,3 +644,575 @@ final class WireWriter implements AutoCloseable {
     }
 }
 {% endif %}
+{%- if module.has_async() %}
+final class BoltFFIContinuationSignal {
+    enum DeliveryState { WAITING, PENDING_DELIVERY, READY_DELIVERY, CANCELLED }
+
+    enum CancellationClaim { OWNED, DEFERRED, REJECTED }
+
+    private final AtomicReference<DeliveryState> deliveryState;
+    private final CompletableFuture<Byte> future;
+    private final Runnable onReady;
+
+    BoltFFIContinuationSignal(CompletableFuture<Byte> future, Runnable onReady) {
+        this.deliveryState = new AtomicReference<>(DeliveryState.WAITING);
+        this.future = future;
+        this.onReady = onReady;
+    }
+
+    boolean beginCompletion(byte pollResult) {
+        DeliveryState delivery = pollResult == 0 ? DeliveryState.READY_DELIVERY : DeliveryState.PENDING_DELIVERY;
+        if (!deliveryState.compareAndSet(DeliveryState.WAITING, delivery)) return false;
+        if (delivery == DeliveryState.READY_DELIVERY && onReady != null) {
+            onReady.run();
+        }
+        return true;
+    }
+
+    CancellationClaim claimForCancellation() {
+        while (true) {
+            DeliveryState currentState = deliveryState.get();
+            if (currentState == DeliveryState.READY_DELIVERY) {
+                return CancellationClaim.REJECTED;
+            }
+            if (currentState == DeliveryState.PENDING_DELIVERY) {
+                return CancellationClaim.DEFERRED;
+            }
+            if (currentState == DeliveryState.CANCELLED) {
+                return CancellationClaim.OWNED;
+            }
+            if (deliveryState.compareAndSet(DeliveryState.WAITING, DeliveryState.CANCELLED)) {
+                return CancellationClaim.OWNED;
+            }
+        }
+    }
+
+    boolean isReadyDeliveryStarted() {
+        return deliveryState.get() == DeliveryState.READY_DELIVERY;
+    }
+
+    void finishCompletion(byte pollResult) {
+        future.complete(pollResult);
+    }
+}
+
+final class BoltFFIContinuationMap {
+    private static final AtomicLong NEXT_HANDLE = new AtomicLong(1);
+    private static final ConcurrentHashMap<Long, BoltFFIContinuationSignal> MAP = new ConcurrentHashMap<>();
+
+    static long insert(CompletableFuture<Byte> future) {
+        return insert(new BoltFFIContinuationSignal(future, null));
+    }
+
+    static long insert(BoltFFIContinuationSignal signal) {
+        long handle = NEXT_HANDLE.getAndIncrement();
+        MAP.put(handle, signal);
+        return handle;
+    }
+
+    static void complete(long handle, byte pollResult) {
+        BoltFFIContinuationSignal signal = MAP.get(handle);
+        if (signal != null && signal.beginCompletion(pollResult)) {
+            signal.finishCompletion(pollResult);
+            MAP.remove(handle, signal);
+        }
+    }
+
+    static void remove(long handle, BoltFFIContinuationSignal signal) {
+        MAP.remove(handle, signal);
+    }
+}
+{%- if module.async_mode.is_virtual_thread() %}
+
+final class BoltFFIAsync {
+    private static final byte POLL_READY = 0;
+
+    interface FutureCreator {
+        long create();
+    }
+
+    interface FuturePoll {
+        void poll(long future, long contHandle);
+    }
+
+    interface FutureComplete<T> {
+        T complete(long future);
+    }
+
+    interface FutureLifecycle {
+        void apply(long future);
+    }
+
+    static <T> T callAsync(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        return callAsyncInternal(createFuture, poll, complete, free, cancel);
+    }
+
+    static void callAsyncVoid(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureLifecycle completeVoid,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        callAsyncInternal(
+                createFuture,
+                poll,
+                rustFuture -> {
+                    completeVoid.apply(rustFuture);
+                    return null;
+                },
+                free,
+                cancel
+        );
+    }
+
+    private static <T> T callAsyncInternal(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        long rustFuture = createFuture.create();
+        try {
+            byte pollResult;
+            do {
+                CompletableFuture<Byte> signal = new CompletableFuture<>();
+                long contHandle = BoltFFIContinuationMap.insert(signal);
+                poll.poll(rustFuture, contHandle);
+                try {
+                    pollResult = signal.get();
+                } catch (Exception e) {
+                    cancel.apply(rustFuture);
+                    throw new RuntimeException("async poll interrupted", e);
+                }
+            } while (pollResult != POLL_READY);
+            return complete.complete(rustFuture);
+        } finally {
+            free.apply(rustFuture);
+        }
+    }
+}
+{%- else %}
+
+final class BoltFFIAsync {
+    private static final byte POLL_READY = 0;
+
+    interface FutureCreator {
+        long create();
+    }
+
+    interface FuturePoll {
+        void poll(long future, long contHandle);
+    }
+
+    interface FutureComplete<T> {
+        T complete(long future);
+    }
+
+    interface FutureLifecycle {
+        void apply(long future);
+    }
+
+    private enum FutureState { ACTIVE, POLLING, WAITING, CANCEL_REQUESTED, READY, OWNED }
+
+    private enum CancelDisposition { REJECTED, DEFERRED, OWNED }
+
+    private enum PendingJoinDisposition { STOPPED, CONTINUE, CANCELLED }
+
+    private static final class ActiveContinuation {
+        private final long handle;
+        private final BoltFFIContinuationSignal signal;
+
+        private ActiveContinuation(long handle, BoltFFIContinuationSignal signal) {
+            this.handle = handle;
+            this.signal = signal;
+        }
+    }
+
+    private static final class ManagedFuture<T> extends CompletableFuture<T> {
+        private final long rustFuture;
+        private final AtomicReference<FutureState> state;
+        private final AtomicReference<ActiveContinuation> activeContinuation;
+        private final FutureLifecycle cancel;
+        private final FutureLifecycle free;
+
+        private ManagedFuture(
+                long rustFuture,
+                AtomicReference<FutureState> state,
+                AtomicReference<ActiveContinuation> activeContinuation,
+                FutureLifecycle cancel,
+                FutureLifecycle free
+        ) {
+            this.rustFuture = rustFuture;
+            this.state = state;
+            this.activeContinuation = activeContinuation;
+            this.cancel = cancel;
+            this.free = free;
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            CancelDisposition cancelDisposition = requestCancellation(state, activeContinuation);
+            if (cancelDisposition == CancelDisposition.REJECTED) return false;
+            if (cancelDisposition == CancelDisposition.DEFERRED) {
+                return super.cancel(mayInterruptIfRunning);
+            }
+            cancelAndFree(rustFuture, cancel, free);
+            return super.cancel(mayInterruptIfRunning);
+        }
+
+        private void finishCancelled() {
+            cancelAndFree(rustFuture, cancel, free);
+            super.cancel(false);
+        }
+    }
+
+    private static void cancelAndFree(long rustFuture, FutureLifecycle cancel, FutureLifecycle free) {
+        try { cancel.apply(rustFuture); } catch (Exception ignored) {}
+        try { free.apply(rustFuture); } catch (Exception ignored) {}
+    }
+
+    private static void releaseContinuation(
+            AtomicReference<ActiveContinuation> activeContinuation,
+            ActiveContinuation activePoll
+    ) {
+        activeContinuation.compareAndSet(activePoll, null);
+    }
+
+    private static <T> void finishCancelled(
+            ManagedFuture<T> result,
+            AtomicReference<ActiveContinuation> activeContinuation,
+            ActiveContinuation activePoll
+    ) {
+        releaseContinuation(activeContinuation, activePoll);
+        result.finishCancelled();
+    }
+
+    private static <T> boolean finishDeferredCancellation(
+            AtomicReference<FutureState> state,
+            ManagedFuture<T> result
+    ) {
+        if (!claimDeferredCancellation(state)) return false;
+        result.finishCancelled();
+        return true;
+    }
+
+    private static <T> boolean finishDeferredCancellation(
+            AtomicReference<FutureState> state,
+            ManagedFuture<T> result,
+            AtomicReference<ActiveContinuation> activeContinuation,
+            ActiveContinuation activePoll
+    ) {
+        if (!claimDeferredCancellation(state)) return false;
+        finishCancelled(result, activeContinuation, activePoll);
+        return true;
+    }
+
+    private static <T> void finishPollingFailure(
+            long rustFuture,
+            FutureLifecycle free,
+            FutureLifecycle cancel,
+            ManagedFuture<T> result,
+            AtomicReference<FutureState> state,
+            AtomicReference<ActiveContinuation> activeContinuation,
+            ActiveContinuation activePoll,
+            Exception error
+    ) {
+        releaseContinuation(activeContinuation, activePoll);
+        state.set(FutureState.OWNED);
+        cancelAndFree(rustFuture, cancel, free);
+        result.completeExceptionally(error);
+    }
+
+    private static <T> void finishJoinedReady(
+            long rustFuture,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            ManagedFuture<T> result,
+            AtomicReference<FutureState> state,
+            AtomicReference<ActiveContinuation> activeContinuation,
+            ActiveContinuation activePoll
+    ) {
+        if (claimReady(state)) {
+            completeReadyResult(rustFuture, complete, free, result);
+            releaseContinuation(activeContinuation, activePoll);
+            return;
+        }
+        finishDeferredCancellation(state, result, activeContinuation, activePoll);
+        releaseContinuation(activeContinuation, activePoll);
+    }
+
+    private static CancelDisposition requestCancellation(
+            AtomicReference<FutureState> state,
+            AtomicReference<ActiveContinuation> activeContinuation
+    ) {
+        while (true) {
+            FutureState currentState = state.get();
+            if (currentState == FutureState.OWNED || currentState == FutureState.READY) {
+                return CancelDisposition.REJECTED;
+            }
+            if (currentState == FutureState.CANCEL_REQUESTED) {
+                return CancelDisposition.DEFERRED;
+            }
+            if (currentState == FutureState.ACTIVE) {
+                if (state.compareAndSet(currentState, FutureState.OWNED)) {
+                    return CancelDisposition.OWNED;
+                }
+                continue;
+            }
+            if (currentState == FutureState.WAITING) {
+                ActiveContinuation continuation = activeContinuation.get();
+                if (continuation == null) continue;
+                BoltFFIContinuationSignal.CancellationClaim continuationClaim =
+                        continuation.signal.claimForCancellation();
+                if (continuationClaim == BoltFFIContinuationSignal.CancellationClaim.OWNED) {
+                    if (!state.compareAndSet(FutureState.WAITING, FutureState.OWNED)) continue;
+                    releaseContinuation(activeContinuation, continuation);
+                    BoltFFIContinuationMap.remove(continuation.handle, continuation.signal);
+                    return CancelDisposition.OWNED;
+                }
+                if (continuationClaim == BoltFFIContinuationSignal.CancellationClaim.REJECTED) {
+                    return CancelDisposition.REJECTED;
+                }
+                if (!state.compareAndSet(FutureState.WAITING, FutureState.CANCEL_REQUESTED)) continue;
+                return CancelDisposition.DEFERRED;
+            }
+            if (currentState == FutureState.POLLING) {
+                ActiveContinuation continuation = activeContinuation.get();
+                if (continuation != null && continuation.signal.isReadyDeliveryStarted()) {
+                    return CancelDisposition.REJECTED;
+                }
+                if (state.compareAndSet(FutureState.POLLING, FutureState.CANCEL_REQUESTED)) {
+                    ActiveContinuation updatedContinuation = activeContinuation.get();
+                    if (updatedContinuation != null && updatedContinuation.signal.isReadyDeliveryStarted()) {
+                        if (state.compareAndSet(FutureState.CANCEL_REQUESTED, FutureState.READY)) {
+                            return CancelDisposition.REJECTED;
+                        }
+                        continue;
+                    }
+                    return CancelDisposition.DEFERRED;
+                }
+            }
+        }
+    }
+
+    private static void markReady(AtomicReference<FutureState> state) {
+        while (true) {
+            FutureState currentState = state.get();
+            if (currentState == FutureState.CANCEL_REQUESTED
+                    || currentState == FutureState.READY
+                    || currentState == FutureState.OWNED) return;
+            if (state.compareAndSet(currentState, FutureState.READY)) return;
+        }
+    }
+
+    private static boolean claimReady(AtomicReference<FutureState> state) {
+        return state.compareAndSet(FutureState.READY, FutureState.OWNED);
+    }
+
+    private static boolean claimDeferredCancellation(AtomicReference<FutureState> state) {
+        return state.compareAndSet(FutureState.CANCEL_REQUESTED, FutureState.OWNED);
+    }
+
+    private static boolean rearmPolling(AtomicReference<FutureState> state) {
+        while (true) {
+            FutureState currentState = state.get();
+            if (currentState == FutureState.WAITING || currentState == FutureState.POLLING) {
+                if (state.compareAndSet(currentState, FutureState.ACTIVE)) return true;
+                continue;
+            }
+            return false;
+        }
+    }
+
+    private static boolean enterWaiting(AtomicReference<FutureState> state) {
+        return state.compareAndSet(FutureState.POLLING, FutureState.WAITING);
+    }
+
+    private static PendingJoinDisposition finishJoinedPending(
+            AtomicReference<FutureState> state,
+            AtomicReference<ActiveContinuation> activeContinuation,
+            ActiveContinuation activePoll
+    ) {
+        if (claimDeferredCancellation(state)) {
+            releaseContinuation(activeContinuation, activePoll);
+            return PendingJoinDisposition.CANCELLED;
+        }
+        PendingJoinDisposition pendingJoinDisposition = rearmPolling(state)
+                ? PendingJoinDisposition.CONTINUE
+                : claimDeferredCancellation(state)
+                        ? PendingJoinDisposition.CANCELLED
+                        : PendingJoinDisposition.STOPPED;
+        releaseContinuation(activeContinuation, activePoll);
+        return pendingJoinDisposition;
+    }
+
+    static <T> CompletableFuture<T> callAsync(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        return callAsyncInternal(createFuture, poll, complete, free, cancel);
+    }
+
+    static CompletableFuture<Void> callAsyncVoid(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureLifecycle completeVoid,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        return callAsyncInternal(
+                createFuture,
+                poll,
+                rustFuture -> {
+                    completeVoid.apply(rustFuture);
+                    return null;
+                },
+                free,
+                cancel
+        );
+    }
+
+    private static <T> CompletableFuture<T> callAsyncInternal(
+            FutureCreator createFuture,
+            FuturePoll poll,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            FutureLifecycle cancel
+    ) {
+        long rustFuture;
+        try {
+            rustFuture = createFuture.create();
+        } catch (Exception e) {
+            CompletableFuture<T> failed = new CompletableFuture<>();
+            failed.completeExceptionally(e);
+            return failed;
+        }
+        AtomicReference<FutureState> state = new AtomicReference<>(FutureState.ACTIVE);
+        AtomicReference<ActiveContinuation> activeContinuation = new AtomicReference<>(null);
+        ManagedFuture<T> result = new ManagedFuture<>(rustFuture, state, activeContinuation, cancel, free);
+        pollLoop(rustFuture, poll, complete, free, cancel, result, state, activeContinuation);
+        return result;
+    }
+
+    private static <T> void pollLoop(
+            long rustFuture,
+            FuturePoll poll,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            FutureLifecycle cancel,
+            ManagedFuture<T> result,
+            AtomicReference<FutureState> state,
+            AtomicReference<ActiveContinuation> activeContinuation
+    ) {
+        while (true) {
+            if (!state.compareAndSet(FutureState.ACTIVE, FutureState.POLLING)) return;
+            CompletableFuture<Byte> signal = new CompletableFuture<>();
+            BoltFFIContinuationSignal continuationSignal = new BoltFFIContinuationSignal(signal, () -> markReady(state));
+            long contHandle = BoltFFIContinuationMap.insert(continuationSignal);
+            ActiveContinuation activePoll = new ActiveContinuation(contHandle, continuationSignal);
+            activeContinuation.set(activePoll);
+            poll.poll(rustFuture, contHandle);
+            if (!signal.isDone()) {
+                if (enterWaiting(state)) {
+                    signal.whenComplete((pollResult, error) -> {
+                        releaseContinuation(activeContinuation, activePoll);
+                        if (error != null) {
+                            if (state.getAndSet(FutureState.OWNED) != FutureState.OWNED) {
+                                cancelAndFree(rustFuture, cancel, free);
+                            }
+                            result.completeExceptionally(error);
+                            return;
+                        }
+                        if (pollResult == POLL_READY) {
+                            if (claimReady(state)) {
+                                completeReadyResult(rustFuture, complete, free, result);
+                                return;
+                            }
+                            finishDeferredCancellation(state, result);
+                            return;
+                        }
+                        if (finishDeferredCancellation(state, result)) return;
+                        if (rearmPolling(state)) {
+                            pollLoop(rustFuture, poll, complete, free, cancel, result, state, activeContinuation);
+                        }
+                    });
+                    return;
+                }
+                releaseContinuation(activeContinuation, activePoll);
+                if (finishDeferredCancellation(state, result)) return;
+                if (claimReady(state)) {
+                    completeReadyResult(rustFuture, complete, free, result);
+                }
+                return;
+            }
+            byte pollResult;
+            try {
+                pollResult = signal.join();
+            } catch (Exception e) {
+                finishPollingFailure(
+                        rustFuture,
+                        free,
+                        cancel,
+                        result,
+                        state,
+                        activeContinuation,
+                        activePoll,
+                        e
+                );
+                return;
+            }
+            if (pollResult == POLL_READY) {
+                finishJoinedReady(
+                        rustFuture,
+                        complete,
+                        free,
+                        result,
+                        state,
+                        activeContinuation,
+                        activePoll
+                );
+                return;
+            }
+            if (finishDeferredCancellation(state, result, activeContinuation, activePoll)) return;
+            PendingJoinDisposition pendingJoinDisposition =
+                    finishJoinedPending(state, activeContinuation, activePoll);
+            if (pendingJoinDisposition == PendingJoinDisposition.CANCELLED) {
+                result.finishCancelled();
+                return;
+            }
+            if (pendingJoinDisposition == PendingJoinDisposition.CONTINUE) {
+                continue;
+            }
+            return;
+        }
+    }
+
+    private static <T> void completeReadyResult(
+            long rustFuture,
+            FutureComplete<T> complete,
+            FutureLifecycle free,
+            ManagedFuture<T> result
+    ) {
+        try {
+            T value = complete.complete(rustFuture);
+            result.complete(value);
+        } catch (Exception e) {
+            result.completeExceptionally(e);
+        } finally {
+            try { free.apply(rustFuture); } catch (Exception ignored) {}
+        }
+    }
+}
+{%- endif %}
+{%- endif %}
