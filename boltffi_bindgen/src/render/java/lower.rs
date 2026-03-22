@@ -9,15 +9,18 @@ use super::JavaOptions;
 use super::mappings;
 use super::names::NamingConvention;
 use super::plan::{
-    JavaAsyncCall, JavaAsyncMode, JavaBlittableField, JavaBlittableLayout, JavaCallbackMethod,
-    JavaCallbackParam, JavaCallbackReturn, JavaCallbackTrait, JavaClass, JavaClassMethod,
-    JavaClosureInterface, JavaClosureParam, JavaConstructor, JavaConstructorKind, JavaEnum,
-    JavaEnumField, JavaEnumKind, JavaEnumVariant, JavaFunction, JavaModule, JavaParam, JavaRecord,
-    JavaRecordField, JavaRecordShape, JavaReturnPlan, JavaReturnRender, JavaWireWriter,
+    JavaAsyncCall, JavaAsyncCallbackInvoker, JavaAsyncCallbackMethod, JavaAsyncMode,
+    JavaBlittableField, JavaBlittableLayout, JavaBridgeParam, JavaBridgeReturn,
+    JavaCallbackErrorCapture, JavaCallbackTrait, JavaClass, JavaClassMethod,
+    JavaClosureInterface, JavaConstructor, JavaConstructorKind, JavaEnum, JavaEnumField,
+    JavaEnumKind, JavaEnumVariant, JavaFunction, JavaModule, JavaParam, JavaRecord,
+    JavaRecordField, JavaRecordShape, JavaResultBridgeReturn, JavaReturnPlan, JavaReturnRender,
+    JavaSyncCallbackMethod, JavaValueBridgeRender, JavaValueBridgeReturn, JavaWireWriter,
 };
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
-    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, CallId, CallMode, ParamRole,
+    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, CallId, CallMode, ErrorTransport,
+    ParamRole, ReturnShape,
 };
 use crate::ir::codec::EnumTagStrategy;
 use crate::ir::contract::FfiContract;
@@ -28,6 +31,7 @@ use crate::ir::definitions::{
 use crate::ir::ids::{CallbackId, FieldName, RecordId};
 use crate::ir::ops::{
     FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq,
+    remap_root_in_seq,
 };
 use crate::ir::plan::{ScalarOrigin, SpanContent, Transport};
 use crate::ir::types::{PrimitiveType, TypeExpr};
@@ -183,6 +187,8 @@ impl<'a> JavaLowerer<'a> {
             .map(|cb| self.lower_callback_trait(cb))
             .collect();
 
+        let async_callback_invokers = self.collect_async_callback_invokers(&callbacks);
+
         let classes: Vec<JavaClass> = self
             .ffi
             .catalog
@@ -201,6 +207,7 @@ impl<'a> JavaLowerer<'a> {
             enums,
             closures,
             callbacks,
+            async_callback_invokers,
             functions,
             classes,
         }
