@@ -2,9 +2,9 @@ use boltffi_ffi_rules::classification::{self, FieldPrimitive, PassableCategory};
 use quote::quote;
 use syn::Fields;
 
-use crate::custom_types;
-use crate::data_types::{extract_integer_repr, has_repr_c};
-use crate::wire_gen;
+use crate::expansion::data::wire;
+use crate::registries::custom_types;
+use crate::registries::data_types::{extract_integer_repr, has_repr_c};
 
 pub fn is_c_style_enum(item_enum: &syn::ItemEnum) -> bool {
     item_enum.variants.iter().all(|v| v.fields.is_empty())
@@ -168,12 +168,12 @@ pub fn generate_struct_wire_impls(
     item_struct: &syn::ItemStruct,
     custom_types: &custom_types::CustomTypeRegistry,
 ) -> proc_macro2::TokenStream {
-    wire_gen::generate_wire_impls(item_struct, custom_types)
+    wire::generate_wire_impls(item_struct, custom_types)
 }
 
 pub fn generate_enum_wire_impls(
     item_enum: &syn::ItemEnum,
     custom_types: &custom_types::CustomTypeRegistry,
 ) -> proc_macro2::TokenStream {
-    wire_gen::generate_enum_wire_impls(item_enum, custom_types)
+    wire::generate_enum_wire_impls(item_enum, custom_types)
 }

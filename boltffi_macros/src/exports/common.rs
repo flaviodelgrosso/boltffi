@@ -1,6 +1,6 @@
 use syn::{FnArg, ReturnType, Type};
 
-pub fn is_factory_constructor(method: &syn::ImplItemFn, type_name: &syn::Ident) -> bool {
+pub(crate) fn is_factory_constructor(method: &syn::ImplItemFn, type_name: &syn::Ident) -> bool {
     let has_self = method
         .sig
         .inputs
@@ -14,7 +14,7 @@ pub fn is_factory_constructor(method: &syn::ImplItemFn, type_name: &syn::Ident) 
     is_factory_return(&method.sig.output, type_name)
 }
 
-pub fn is_factory_return(output: &ReturnType, type_name: &syn::Ident) -> bool {
+fn is_factory_return(output: &ReturnType, type_name: &syn::Ident) -> bool {
     match output {
         ReturnType::Default => false,
         ReturnType::Type(_, ty) => match ty.as_ref() {
@@ -27,13 +27,13 @@ pub fn is_factory_return(output: &ReturnType, type_name: &syn::Ident) -> bool {
     }
 }
 
-pub fn is_self_type_path(path: &syn::Path, type_name: &syn::Ident) -> bool {
+fn is_self_type_path(path: &syn::Path, type_name: &syn::Ident) -> bool {
     path.segments
         .last()
         .is_some_and(|segment| segment.ident == "Self" || segment.ident == *type_name)
 }
 
-pub fn is_result_of_self_type_path(path: &syn::Path, type_name: &syn::Ident) -> bool {
+pub(crate) fn is_result_of_self_type_path(path: &syn::Path, type_name: &syn::Ident) -> bool {
     let Some(result_segment) = path.segments.last() else {
         return false;
     };
@@ -49,7 +49,9 @@ pub fn is_result_of_self_type_path(path: &syn::Path, type_name: &syn::Ident) -> 
     is_self_type_path(&ok_type_path.path, type_name)
 }
 
-pub fn exported_methods(item_impl: &syn::ItemImpl) -> impl Iterator<Item = &syn::ImplItemFn> + '_ {
+pub(crate) fn exported_methods(
+    item_impl: &syn::ItemImpl,
+) -> impl Iterator<Item = &syn::ImplItemFn> + '_ {
     item_impl
         .items
         .iter()
@@ -58,12 +60,21 @@ pub fn exported_methods(item_impl: &syn::ItemImpl) -> impl Iterator<Item = &syn:
             _ => None,
         })
         .filter(|method| matches!(method.vis, syn::Visibility::Public(_)))
-        .filter(|method| !method.attrs.iter().any(|a| a.path().is_ident("skip")))
+        .filter(|method| {
+            !method
+                .attrs
+                .iter()
+                .any(|attribute| attribute.path().is_ident("skip"))
+        })
 }
 
-pub fn impl_type_name(item_impl: &syn::ItemImpl) -> Option<syn::Ident> {
+pub(crate) fn impl_type_name(item_impl: &syn::ItemImpl) -> Option<syn::Ident> {
     match item_impl.self_ty.as_ref() {
-        Type::Path(path) => path.path.segments.last().map(|s| s.ident.clone()),
+        Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.clone()),
         _ => None,
     }
 }

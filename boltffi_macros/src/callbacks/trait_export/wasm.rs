@@ -6,8 +6,8 @@ use super::lowered_return::LoweredCallbackReturn;
 use super::{
     direct_callback_return_ffi_type, is_ffi_primitive, parse_result_type, to_snake_case_ident,
 };
-use crate::custom_types;
-use crate::returns::ReturnLoweringContext;
+use crate::lowering::returns::model::ReturnLoweringContext;
+use crate::registries::custom_types;
 
 pub(super) struct WasmMethodExpansion {
     pub(super) extern_import: TokenStream,

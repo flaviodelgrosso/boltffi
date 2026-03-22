@@ -1,10 +1,11 @@
 mod passable;
 mod record_impl;
+mod wire;
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::custom_types;
+use crate::registries::custom_types;
 
 pub use record_impl::data_impl_block;
 

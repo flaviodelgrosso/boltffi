@@ -1,17 +1,16 @@
+use super::common::{impl_type_name, is_factory_constructor, is_result_of_self_type_path};
+
 use boltffi_ffi_rules::naming;
 use proc_macro::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::{FnArg, ReturnType, Type};
 
-use crate::callback_registry;
-use crate::custom_types;
-use crate::data_types;
-use crate::method_common::{impl_type_name, is_factory_constructor, is_result_of_self_type_path};
-use crate::params::{FfiParams, transform_method_params, transform_method_params_async};
-use crate::returns::{
-    ReturnAbi, ReturnLoweringContext, WasmOptionScalarEncoding, encoded_return_body,
-    encoded_return_buffer_expression,
-};
+use crate::callbacks::registry as callback_registry;
+use crate::lowering::params::{FfiParams, transform_method_params, transform_method_params_async};
+use crate::lowering::returns::lower::{encoded_return_body, encoded_return_buffer_expression};
+use crate::lowering::returns::model::{ReturnAbi, ReturnLoweringContext, WasmOptionScalarEncoding};
+use crate::registries::custom_types;
+use crate::registries::data_types;
 use boltffi_ffi_rules::transport::EncodedReturnStrategy;
 
 fn has_mut_self_methods(input: &syn::ItemImpl) -> bool {

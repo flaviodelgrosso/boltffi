@@ -1,16 +1,18 @@
+use crate::exports::common::{
+    exported_methods, impl_type_name, is_factory_constructor, is_result_of_self_type_path,
+};
+
 use boltffi_ffi_rules::naming;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{FnArg, ReturnType, Type};
 
-use crate::callback_registry;
-use crate::custom_types;
-use crate::data_types;
-use crate::method_common::{
-    exported_methods, impl_type_name, is_factory_constructor, is_result_of_self_type_path,
-};
-use crate::params::{FfiParams, transform_method_params};
-use crate::returns::{ReturnAbi, ReturnLoweringContext, encoded_return_body};
+use crate::callbacks::registry as callback_registry;
+use crate::lowering::params::{FfiParams, transform_method_params};
+use crate::lowering::returns::lower::encoded_return_body;
+use crate::lowering::returns::model::{ReturnAbi, ReturnLoweringContext};
+use crate::registries::custom_types;
+use crate::registries::data_types;
 
 enum RecordMethodKind {
     Constructor,

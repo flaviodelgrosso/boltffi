@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Fields, ItemEnum, ItemStruct, Type};
 
-use crate::custom_types::{CustomTypeRegistry, contains_custom_types};
+use crate::registries::custom_types::{CustomTypeRegistry, contains_custom_types};
 
 pub fn is_primitive_type(ty: &Type) -> bool {
     match ty {

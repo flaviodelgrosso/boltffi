@@ -3,16 +3,16 @@ use boltffi_ffi_rules::transport::{
 };
 use syn::Type;
 
-use crate::returns::{ReturnAbi, ReturnLoweringContext};
+use crate::lowering::returns::model::{ResolvedReturn, ReturnLoweringContext};
 
 pub(super) struct LoweredCallbackReturn {
-    abi: ReturnAbi,
+    resolved_return: ResolvedReturn,
 }
 
 impl LoweredCallbackReturn {
     pub(super) fn new(ty: &Type, return_lowering: &ReturnLoweringContext<'_>) -> Self {
         Self {
-            abi: return_lowering.lower_type(ty),
+            resolved_return: return_lowering.lower_type(ty),
         }
     }
 
@@ -22,13 +22,13 @@ impl LoweredCallbackReturn {
         context: ReturnInvocationContext,
         platform: ReturnPlatform,
     ) -> ValueReturnMethod {
-        self.abi
-            .value_return_method(return_lowering, context, platform)
+        let _ = return_lowering;
+        self.resolved_return.value_return_method(context, platform)
     }
 
     pub(super) fn uses_wire_payload(&self, return_lowering: &ReturnLoweringContext<'_>) -> bool {
         !matches!(
-            self.abi.value_return_strategy(return_lowering),
+            self.resolved_return.value_return_strategy(),
             ValueReturnStrategy::Scalar(_)
         )
     }

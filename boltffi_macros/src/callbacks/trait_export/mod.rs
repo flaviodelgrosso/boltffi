@@ -10,9 +10,9 @@ mod wasm;
 use self::native::NativeCallbackMethodExpander;
 use self::wasm::{WasmCallbackMethodExpander, WasmMethodExpansion};
 
-use crate::custom_types;
-use crate::data_types;
-use crate::returns::ReturnLoweringContext;
+use crate::lowering::returns::model::ReturnLoweringContext;
+use crate::registries::custom_types;
+use crate::registries::data_types;
 
 pub fn ffi_trait_impl(item: TokenStream) -> TokenStream {
     let item_trait = syn::parse_macro_input!(item as syn::ItemTrait);

@@ -4,14 +4,12 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::ItemFn;
 
-use crate::callback_registry;
-use crate::custom_types;
-use crate::data_types;
-use crate::params::{FfiParams, transform_params, transform_params_async};
-use crate::returns::{
-    ReturnAbi, ReturnLoweringContext, WasmOptionScalarEncoding, encoded_return_body,
-    encoded_return_buffer_expression,
-};
+use crate::callbacks::registry as callback_registry;
+use crate::lowering::params::{FfiParams, transform_params, transform_params_async};
+use crate::lowering::returns::lower::{encoded_return_body, encoded_return_buffer_expression};
+use crate::lowering::returns::model::{ReturnAbi, ReturnLoweringContext, WasmOptionScalarEncoding};
+use crate::registries::custom_types;
+use crate::registries::data_types;
 use crate::safety;
 
 fn build_encoded_return_exports(

@@ -42,6 +42,12 @@ pub fn registry_for_current_crate() -> syn::Result<CallbackTraitRegistry> {
 }
 
 impl CallbackTraitRegistry {
+    pub fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
     pub fn resolve(&self, trait_path: &syn::Path) -> Option<CallbackTraitResolution> {
         let segments = normalize_segments(trait_path);
         let (trait_name, module_path) = segments.split_last()?;
