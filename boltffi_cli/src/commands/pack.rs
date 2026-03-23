@@ -4,7 +4,10 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::build::{BuildOptions, Builder, OutputCallback, all_successful, failed_targets};
+use crate::build::{
+    BuildOptions, Builder, CargoBuildProfile, OutputCallback, all_successful, failed_targets,
+    resolve_build_profile,
+};
 use crate::commands::generate::{GenerateOptions, GenerateTarget, run_generate_with_output};
 use crate::config::{
     Config, SpmDistribution, SpmLayout, Target, WasmNpmTarget, WasmOptimizeLevel,
@@ -28,6 +31,7 @@ pub struct PackAllOptions {
     pub regenerate: bool,
     pub no_build: bool,
     pub experimental: bool,
+    pub cargo_args: Vec<String>,
 }
 
 pub struct PackAppleOptions {
@@ -38,24 +42,28 @@ pub struct PackAppleOptions {
     pub spm_only: bool,
     pub xcframework_only: bool,
     pub layout: Option<SpmLayout>,
+    pub cargo_args: Vec<String>,
 }
 
 pub struct PackAndroidOptions {
     pub release: bool,
     pub regenerate: bool,
     pub no_build: bool,
+    pub cargo_args: Vec<String>,
 }
 
 pub struct PackWasmOptions {
     pub release: bool,
     pub regenerate: bool,
     pub no_build: bool,
+    pub cargo_args: Vec<String>,
 }
 
 pub struct PackJavaOptions {
     pub release: bool,
     pub regenerate: bool,
     pub no_build: bool,
+    pub cargo_args: Vec<String>,
 }
 
 pub fn run_pack(config: &Config, command: PackCommand, reporter: &Reporter) -> Result<()> {
@@ -82,6 +90,7 @@ fn pack_all(config: &Config, options: PackAllOptions, reporter: &Reporter) -> Re
                 spm_only: false,
                 xcframework_only: false,
                 layout: None,
+                cargo_args: options.cargo_args.clone(),
             },
             reporter,
         )?;
@@ -95,6 +104,7 @@ fn pack_all(config: &Config, options: PackAllOptions, reporter: &Reporter) -> Re
                 release: options.release,
                 regenerate: options.regenerate,
                 no_build: options.no_build,
+                cargo_args: options.cargo_args.clone(),
             },
             reporter,
         )?;
@@ -108,6 +118,7 @@ fn pack_all(config: &Config, options: PackAllOptions, reporter: &Reporter) -> Re
                 release: options.release,
                 regenerate: options.regenerate,
                 no_build: options.no_build,
+                cargo_args: options.cargo_args.clone(),
             },
             reporter,
         )?;
@@ -121,6 +132,7 @@ fn pack_all(config: &Config, options: PackAllOptions, reporter: &Reporter) -> Re
                 release: options.release,
                 regenerate: options.regenerate,
                 no_build: options.no_build,
+                cargo_args: options.cargo_args.clone(),
             },
             reporter,
         )?;
@@ -156,9 +168,12 @@ fn pack_apple(config: &Config, options: PackAppleOptions, reporter: &Reporter) -
         });
     }
 
+    let build_cargo_args = resolve_build_cargo_args(config, &options.cargo_args);
+    let build_profile = resolve_build_profile(options.release, &build_cargo_args);
+
     if !options.no_build {
         let step = reporter.step("Building Apple targets");
-        build_apple_targets(config, options.release, &step)?;
+        build_apple_targets(config, options.release, &build_cargo_args, &step)?;
         step.finish_success();
     }
 
@@ -171,7 +186,10 @@ fn pack_apple(config: &Config, options: PackAppleOptions, reporter: &Reporter) -
         step.finish_success();
     }
 
-    let libraries = discover_built_libraries(&config.crate_artifact_name(), options.release)?;
+    let libraries = discover_built_libraries(
+        &config.crate_artifact_name(),
+        build_profile.output_directory_name(),
+    )?;
     let apple_libraries: Vec<_> = libraries
         .into_iter()
         .filter(|lib| lib.target.platform().is_apple())
@@ -266,24 +284,47 @@ fn pack_wasm(config: &Config, options: PackWasmOptions, reporter: &Reporter) -> 
 
     reporter.section("🌐", "Packing WASM");
 
-    let profile = if options.release {
+    let requested_wasm_profile = if options.release {
         WasmProfile::Release
     } else {
         config.wasm_profile()
     };
 
+    let build_cargo_args = resolve_build_cargo_args(config, &options.cargo_args);
+    let build_profile = resolve_build_profile(
+        matches!(requested_wasm_profile, WasmProfile::Release),
+        &build_cargo_args,
+    );
+
+    let wasm_artifact_profile = match build_profile {
+        CargoBuildProfile::Debug => WasmProfile::Debug,
+        CargoBuildProfile::Release => WasmProfile::Release,
+        CargoBuildProfile::Named(_) if config.wasm_has_artifact_path_override() => {
+            requested_wasm_profile
+        }
+        CargoBuildProfile::Named(profile_name) => {
+            return Err(CliError::CommandFailed {
+                command: format!(
+                    "custom cargo profile '{}' for wasm pack requires targets.wasm.artifact_path",
+                    profile_name
+                ),
+                status: None,
+            });
+        }
+    };
+
     if !options.no_build {
         let step = reporter.step("Building WASM target");
-        build_wasm_target(config, profile, &step)?;
+        build_wasm_target(config, requested_wasm_profile, &build_cargo_args, &step)?;
         step.finish_success();
     }
 
-    let wasm_artifact_path = config.wasm_artifact_path(profile);
+    let wasm_artifact_path = config.wasm_artifact_path(wasm_artifact_profile);
     if !wasm_artifact_path.exists() {
         return Err(CliError::FileNotFound(wasm_artifact_path));
     }
 
-    if config.wasm_optimize_enabled(profile) {
+    if config.wasm_optimize_enabled(wasm_artifact_profile) {
         let step = reporter.step("Optimizing WASM binary");
         optimize_wasm_binary(config, &wasm_artifact_path)?;
         step.finish_success();
@@ -370,9 +411,12 @@ fn pack_android(config: &Config, options: PackAndroidOptions, reporter: &Reporte
 
     reporter.section("🤖", "Packing Android");
 
+    let build_cargo_args = resolve_build_cargo_args(config, &options.cargo_args);
+    let build_profile = resolve_build_profile(options.release, &build_cargo_args);
+
     if !options.no_build {
         let step = reporter.step("Building Android targets");
-        build_android_targets(config, options.release, &step)?;
+        build_android_targets(config, options.release, &build_cargo_args, &step)?;
         step.finish_success();
     }
 
@@ -400,7 +444,10 @@ fn pack_android(config: &Config, options: PackAndroidOptions, reporter: &Reporte
         step.finish_success();
     }
 
-    let libraries = discover_built_libraries(&config.crate_artifact_name(), options.release)?;
+    let libraries = discover_built_libraries(
+        &config.crate_artifact_name(),
+        build_profile.output_directory_name(),
+    )?;
     let android_libraries: Vec<_> = libraries
         .into_iter()
         .filter(|lib| lib.target.platform() == Platform::Android)
@@ -412,7 +459,7 @@ fn pack_android(config: &Config, options: PackAndroidOptions, reporter: &Reporte
         });
     }
 
-    let packager = AndroidPackager::new(config, android_libraries, options.release);
+    let packager = AndroidPackager::new(config, android_libraries, build_profile.is_release_like());
     let step = reporter.step("Packaging jniLibs");
     packager.package()?;
     step.finish_success();
@@ -430,9 +477,12 @@ fn pack_java(config: &Config, options: PackJavaOptions, reporter: &Reporter) -> 
 
     reporter.section("☕", "Packing Java");
 
+    let build_cargo_args = resolve_build_cargo_args(config, &options.cargo_args);
+    let build_profile = resolve_build_profile(options.release, &build_cargo_args);
+
     if !options.no_build {
         let step = reporter.step("Building Rust cdylib");
-        build_jvm_native_library(config, options.release, &step)?;
+        build_jvm_native_library(config, options.release, &build_cargo_args, &step)?;
         step.finish_success();
     }
 
@@ -454,7 +504,7 @@ fn pack_java(config: &Config, options: PackJavaOptions, reporter: &Reporter) -> 
     }
 
     let step = reporter.step("Compiling JNI library");
-    compile_jni_library(config, options.release)?;
+    compile_jni_library(config, build_profile.output_directory_name())?;
     step.finish_success();
 
     reporter.finish();
@@ -499,7 +549,7 @@ fn generate_java_header(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn compile_jni_library(config: &Config, release: bool) -> Result<()> {
+fn compile_jni_library(config: &Config, profile_directory_name: &str) -> Result<()> {
     let java_output = config.java_jvm_output();
     let jni_dir = java_output.join("jni");
     let jni_glue = jni_dir.join("jni_glue.c");
@@ -515,9 +565,8 @@ fn compile_jni_library(config: &Config, release: bool) -> Result<()> {
     let artifact_name = config.library_name().replace('-', "_");
     let (lib_prefix, lib_ext, jni_platform, rpath_flag) = platform_lib_config()?;
 
-    let profile_dir = if release { "release" } else { "debug" };
     let rust_lib = PathBuf::from("target")
-        .join(profile_dir)
+        .join(profile_directory_name)
         .join(format!("{}{}.{}", lib_prefix, artifact_name, lib_ext));
 
     if !rust_lib.exists() {
@@ -588,7 +637,12 @@ fn platform_lib_config() -> Result<(
     }
 }
 
-fn build_jvm_native_library(config: &Config, release: bool, step: &Step) -> Result<()> {
+fn build_jvm_native_library(
+    config: &Config,
+    release: bool,
+    build_cargo_args: &[String],
+    step: &Step,
+) -> Result<()> {
     let on_output: Option<OutputCallback> = if step.is_verbose() {
         Some(Box::new(print_cargo_line))
     } else {
@@ -598,6 +652,7 @@ fn build_jvm_native_library(config: &Config, release: bool, step: &Step) -> Resu
     let options = BuildOptions {
         release,
         package: None,
+        cargo_args: build_cargo_args.to_vec(),
         on_output,
     };
 
@@ -613,7 +668,12 @@ fn build_jvm_native_library(config: &Config, release: bool, step: &Step) -> Resu
     Ok(())
 }
 
-fn build_apple_targets(config: &Config, release: bool, step: &Step) -> Result<()> {
+fn build_apple_targets(
+    config: &Config,
+    release: bool,
+    build_cargo_args: &[String],
+    step: &Step,
+) -> Result<()> {
     let on_output: Option<OutputCallback> = if step.is_verbose() {
         Some(Box::new(|line: &str| {
             print_cargo_line(line);
@@ -625,6 +685,7 @@ fn build_apple_targets(config: &Config, release: bool, step: &Step) -> Result<()
     let build_options = BuildOptions {
         release,
         package: Some(config.library_name().to_string()),
+        cargo_args: build_cargo_args.to_vec(),
         on_output,
     };
     let builder = Builder::new(config, build_options);
@@ -666,7 +727,12 @@ fn print_cargo_line(line: &str) {
     }
 }
 
-fn build_android_targets(config: &Config, release: bool, step: &Step) -> Result<()> {
+fn build_android_targets(
+    config: &Config,
+    release: bool,
+    build_cargo_args: &[String],
+    step: &Step,
+) -> Result<()> {
     let on_output: Option<OutputCallback> = if step.is_verbose() {
         Some(Box::new(|line: &str| print_cargo_line(line)))
     } else {
@@ -676,6 +742,7 @@ fn build_android_targets(config: &Config, release: bool, step: &Step) -> Result<
     let build_options = BuildOptions {
         release,
         package: Some(config.library_name().to_string()),
+        cargo_args: build_cargo_args.to_vec(),
         on_output,
     };
     let builder = Builder::new(config, build_options);
@@ -689,7 +756,12 @@ fn build_android_targets(config: &Config, release: bool, step: &Step) -> Result<
     Err(CliError::BuildFailed { targets: failed })
 }
 
-fn build_wasm_target(config: &Config, profile: WasmProfile, step: &Step) -> Result<()> {
+fn build_wasm_target(
+    config: &Config,
+    profile: WasmProfile,
+    build_cargo_args: &[String],
+    step: &Step,
+) -> Result<()> {
     let on_output: Option<OutputCallback> = if step.is_verbose() {
         Some(Box::new(|line: &str| print_cargo_line(line)))
     } else {
@@ -699,6 +771,7 @@ fn build_wasm_target(config: &Config, profile: WasmProfile, step: &Step) -> Resu
     let build_options = BuildOptions {
         release: matches!(profile, WasmProfile::Release),
         package: Some(config.library_name().to_string()),
+        cargo_args: build_cargo_args.to_vec(),
         on_output,
     };
     let builder = Builder::new(config, build_options);
@@ -710,6 +783,14 @@ fn build_wasm_target(config: &Config, profile: WasmProfile, step: &Step) -> Resu
 
     let failed = failed_targets(&results);
     Err(CliError::BuildFailed { targets: failed })
+}
+
+fn resolve_build_cargo_args(config: &Config, cli_cargo_args: &[String]) -> Vec<String> {
+    config
+        .cargo_args_for_command("build")
+        .into_iter()
+        .chain(cli_cargo_args.iter().cloned())
+        .collect()
 }
 
 fn generate_apple_bindings(config: &Config, layout: SpmLayout, package_root: &Path) -> Result<()> {
@@ -1032,12 +1113,15 @@ struct CargoMetadataTargetDirectory {
     target_directory: PathBuf,
 }
 
-fn discover_built_libraries(crate_artifact_name: &str, release: bool) -> Result<Vec<BuiltLibrary>> {
+fn discover_built_libraries(
+    crate_artifact_name: &str,
+    profile_directory_name: &str,
+) -> Result<Vec<BuiltLibrary>> {
     let target_directory = cargo_target_directory()?;
-    Ok(BuiltLibrary::discover(
+    Ok(BuiltLibrary::discover_for_profile(
         &target_directory,
         crate_artifact_name,
-        release,
+        profile_directory_name,
     ))
 }
 

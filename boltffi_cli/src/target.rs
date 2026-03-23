@@ -112,8 +112,12 @@ impl RustTarget {
         self.architecture
     }
 
-    pub fn library_path(&self, target_dir: &Path, lib_name: &str, release: bool) -> PathBuf {
-        let profile = if release { "release" } else { "debug" };
+    pub fn library_path_for_profile(
+        &self,
+        target_dir: &Path,
+        lib_name: &str,
+        profile_directory_name: &str,
+    ) -> PathBuf {
         let artifact_name = match self.platform {
             Platform::Wasm => format!("{}.wasm", lib_name),
             Platform::Ios | Platform::IosSimulator | Platform::MacOs => {
@@ -121,9 +125,10 @@ impl RustTarget {
             }
             Platform::Android => format!("lib{}.so", lib_name),
         };
+
         target_dir
             .join(self.triple)
-            .join(profile)
+            .join(profile_directory_name)
             .join(artifact_name)
     }
 }
@@ -156,7 +161,11 @@ pub struct BuiltLibrary {
 }
 
 impl BuiltLibrary {
-    pub fn discover(target_dir: &Path, lib_name: &str, release: bool) -> Vec<Self> {
+    pub fn discover_for_profile(
+        target_dir: &Path,
+        lib_name: &str,
+        profile_directory_name: &str,
+    ) -> Vec<Self> {
         let all_targets = RustTarget::ALL_IOS
             .iter()
             .chain(RustTarget::ALL_MACOS)
@@ -165,7 +174,8 @@ impl BuiltLibrary {
 
         all_targets
             .filter_map(|target| {
-                let path = target.library_path(target_dir, lib_name, release);
+                let path =
+                    target.library_path_for_profile(target_dir, lib_name, profile_directory_name);
                 path.exists().then(|| BuiltLibrary {
                     target: target.clone(),
                     path,
@@ -182,7 +192,8 @@ mod tests {
 
     #[test]
     fn apple_targets_use_static_libraries() {
-        let library_path = RustTarget::IOS_ARM64.library_path(Path::new("target"), "demo", false);
+        let library_path =
+            RustTarget::IOS_ARM64.library_path_for_profile(Path::new("target"), "demo", "debug");
 
         assert_eq!(RustTarget::IOS_ARM64.platform(), Platform::Ios);
         assert!(library_path.ends_with("target/aarch64-apple-ios/debug/libdemo.a"));
@@ -190,8 +201,11 @@ mod tests {
 
     #[test]
     fn android_targets_use_shared_libraries() {
-        let library_path =
-            RustTarget::ANDROID_ARM64.library_path(Path::new("target"), "demo", false);
+        let library_path = RustTarget::ANDROID_ARM64.library_path_for_profile(
+            Path::new("target"),
+            "demo",
+            "debug",
+        );
 
         assert_eq!(RustTarget::ANDROID_ARM64.platform(), Platform::Android);
         assert!(library_path.ends_with("target/aarch64-linux-android/debug/libdemo.so"));

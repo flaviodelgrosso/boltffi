@@ -52,9 +52,19 @@ impl Experimental {
 pub struct Config {
     #[serde(default)]
     pub experimental: Vec<String>,
+    #[serde(default)]
+    pub cargo: CargoConfig,
     pub package: PackageConfig,
     #[serde(default)]
     pub targets: TargetsConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct CargoConfig {
+    #[serde(default)]
+    pub global_args: Vec<String>,
+    #[serde(default)]
+    pub command_args: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -749,6 +759,21 @@ impl Config {
             && (!Experimental::is_target_experimental(target) || experimental_flag)
     }
 
+    pub fn cargo_args_for_command(&self, command_name: &str) -> Vec<String> {
+        self.cargo
+            .global_args
+            .iter()
+            .chain(
+                self.cargo
+                    .command_args
+                    .get(command_name)
+                    .into_iter()
+                    .flat_map(|args| args.iter()),
+            )
+            .cloned()
+            .collect()
+    }
+
     fn is_experimental_enabled(&self, exp: &Experimental) -> bool {
         let key = match exp {
             Experimental::WholeTarget(t) => t.name().to_string(),
@@ -820,6 +845,10 @@ impl Config {
                 .join(profile.as_str())
                 .join(format!("{}.wasm", self.crate_artifact_name()))
         })
+    }
+
+    pub fn wasm_has_artifact_path_override(&self) -> bool {
+        self.targets.wasm.artifact_path.is_some()
     }
 
     pub fn wasm_optimize_enabled(&self, profile: WasmProfile) -> bool {
@@ -1193,5 +1222,48 @@ name = "mylib"
         );
 
         assert!(!config.record_methods_enabled());
+    }
+
+    #[test]
+    fn merges_global_and_command_specific_cargo_args() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[cargo]
+global_args = ["--locked"]
+
+[cargo.command_args]
+build = ["--features", "mobile"]
+"#,
+        );
+
+        assert_eq!(
+            config.cargo_args_for_command("build"),
+            vec![
+                "--locked".to_string(),
+                "--features".to_string(),
+                "mobile".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn returns_global_cargo_args_when_command_specific_is_missing() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[cargo]
+global_args = ["--frozen"]
+"#,
+        );
+
+        assert_eq!(
+            config.cargo_args_for_command("test"),
+            vec!["--frozen".to_string()]
+        );
     }
 }
