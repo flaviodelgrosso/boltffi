@@ -93,42 +93,39 @@ public final class {{ class.class_name }} implements AutoCloseable {
 
     public static {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- if method.wire_writers.is_empty() %}
-{%- if method.strategy.is_void() %}
+{%- if method.return_plan.is_void() %}
         Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- elif method.strategy.is_direct() %}
+{%- elif method.return_plan.is_direct() %}
         return Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- elif method.strategy.is_c_style_enum() %}
-        return {{ method.strategy.c_style_enum_class() }}.fromValue(Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
-{%- elif method.strategy.is_handle() %}
+{%- elif method.return_plan.is_c_style_enum() %}
+        return {{ method.return_plan.c_style_enum_class() }}.fromValue(Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
+{%- elif method.return_plan.is_handle() %}
         long _handle = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- if method.strategy.handle_nullable() %}
+{%- if method.return_plan.handle_nullable() %}
         if (_handle == 0L) return null;
 {%- endif %}
-        return new {{ method.strategy.handle_class() }}(_handle);
-{%- elif method.strategy.is_wire() %}
+        return new {{ method.return_plan.handle_class() }}(_handle);
+{%- elif method.return_plan.is_decode() %}
         byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
-        return {{ method.strategy.decode_expr() }};
-{%- elif method.strategy.is_buffer() %}
-        byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-        return {{ method.strategy.decode_expr() }};
-{%- elif method.strategy.is_result() %}
+        return {{ method.return_plan.decode_expr() }};
+{%- elif method.return_plan.is_result() %}
         byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if method.strategy.result_has_typed_exception() %}
-            throw new {{ method.strategy.result_err_exception_class() }}({{ method.strategy.result_err_decode() }});
-{%- elif method.strategy.result_err_is_string() %}
-            throw new RuntimeException({{ method.strategy.result_err_decode() }});
+{%- if method.return_plan.result_has_typed_exception() %}
+            throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
+{%- elif method.return_plan.result_err_is_string() %}
+            throw new RuntimeException({{ method.return_plan.result_err_decode() }});
 {%- else %}
-            throw new RuntimeException(String.valueOf({{ method.strategy.result_err_decode() }}));
+            throw new RuntimeException(String.valueOf({{ method.return_plan.result_err_decode() }}));
 {%- endif %}
         }
 {%- if method.return_type == "void" %}
 {%- else %}
-        return {{ method.strategy.result_ok_decode() }};
+        return {{ method.return_plan.result_ok_decode() }};
 {%- endif %}
 {%- endif %}
 {%- else %}
@@ -140,42 +137,39 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- for writer in method.wire_writers %}
             {{ writer.encode_expr }};
 {%- endfor %}
-{%- if method.strategy.is_void() %}
+{%- if method.return_plan.is_void() %}
             Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- elif method.strategy.is_direct() %}
+{%- elif method.return_plan.is_direct() %}
             return Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- elif method.strategy.is_c_style_enum() %}
-            return {{ method.strategy.c_style_enum_class() }}.fromValue(Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
-{%- elif method.strategy.is_handle() %}
+{%- elif method.return_plan.is_c_style_enum() %}
+            return {{ method.return_plan.c_style_enum_class() }}.fromValue(Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
+{%- elif method.return_plan.is_handle() %}
             long _handle = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- if method.strategy.handle_nullable() %}
+{%- if method.return_plan.handle_nullable() %}
             if (_handle == 0L) return null;
 {%- endif %}
-            return new {{ method.strategy.handle_class() }}(_handle);
-{%- elif method.strategy.is_wire() %}
+            return new {{ method.return_plan.handle_class() }}(_handle);
+{%- elif method.return_plan.is_decode() %}
             byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
-            return {{ method.strategy.decode_expr() }};
-{%- elif method.strategy.is_buffer() %}
-            byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-            return {{ method.strategy.decode_expr() }};
-{%- elif method.strategy.is_result() %}
+            return {{ method.return_plan.decode_expr() }};
+{%- elif method.return_plan.is_result() %}
             byte[] _buf = Native.{{ method.ffi_name }}({% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if method.strategy.result_has_typed_exception() %}
-                throw new {{ method.strategy.result_err_exception_class() }}({{ method.strategy.result_err_decode() }});
-{%- elif method.strategy.result_err_is_string() %}
-                throw new RuntimeException({{ method.strategy.result_err_decode() }});
+{%- if method.return_plan.result_has_typed_exception() %}
+                throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
+{%- elif method.return_plan.result_err_is_string() %}
+                throw new RuntimeException({{ method.return_plan.result_err_decode() }});
 {%- else %}
-                throw new RuntimeException(String.valueOf({{ method.strategy.result_err_decode() }}));
+                throw new RuntimeException(String.valueOf({{ method.return_plan.result_err_decode() }}));
 {%- endif %}
             }
 {%- if method.return_type == "void" %}
 {%- else %}
-            return {{ method.strategy.result_ok_decode() }};
+            return {{ method.return_plan.result_ok_decode() }};
 {%- endif %}
 {%- endif %}
         }
@@ -185,7 +179,7 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- for method in class.methods %}{% if method.is_async() %}
 {%- let ac = method.async_call.as_ref().unwrap() %}
 {% if async_mode.is_virtual_thread() %}
-{%- if ac.complete_strategy.is_void() %}
+{%- if ac.complete_return_plan.is_void() %}
     public{% if method.is_static %} static{% endif %} void {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         BoltFFIAsync.callAsyncVoid(
 {%- else %}
@@ -193,7 +187,7 @@ public final class {{ class.class_name }} implements AutoCloseable {
         return BoltFFIAsync.callAsync(
 {%- endif %}
 {%- else %}
-{%- if ac.complete_strategy.is_void() %}
+{%- if ac.complete_return_plan.is_void() %}
     public{% if method.is_static %} static{% endif %} CompletableFuture<Void> {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
         return BoltFFIAsync.callAsyncVoid(
 {%- else %}
@@ -216,50 +210,45 @@ public final class {{ class.class_name }} implements AutoCloseable {
                 },
 {%- endif %}
                 (future, contHandle) -> Native.{{ ac.poll }}({% if !method.is_static %}handle, {% endif %}future, contHandle),
-{%- if ac.complete_strategy.is_void() %}
+{%- if ac.complete_return_plan.is_void() %}
                 future -> Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future),
-{%- elif ac.complete_strategy.is_direct() %}
+{%- elif ac.complete_return_plan.is_direct() %}
                 future -> Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future),
-{%- elif ac.complete_strategy.is_wire() %}
+{%- elif ac.complete_return_plan.is_decode() %}
                 future -> {
                     byte[] _buf = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
                     if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
                     WireReader reader = new WireReader(_buf);
-                    return {{ ac.complete_strategy.decode_expr() }};
+                    return {{ ac.complete_return_plan.decode_expr() }};
                 },
-{%- elif ac.complete_strategy.is_buffer() %}
-                future -> {
-                    byte[] _buf = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
-                    return {{ ac.complete_strategy.decode_expr() }};
-                },
-{%- elif ac.complete_strategy.is_c_style_enum() %}
-                future -> {{ ac.complete_strategy.c_style_enum_class() }}.fromValue(Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future)),
-{%- elif ac.complete_strategy.is_handle() %}
+{%- elif ac.complete_return_plan.is_c_style_enum() %}
+                future -> {{ ac.complete_return_plan.c_style_enum_class() }}.fromValue(Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future)),
+{%- elif ac.complete_return_plan.is_handle() %}
                 future -> {
                     long _handle = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
-{%- if ac.complete_strategy.handle_nullable() %}
+{%- if ac.complete_return_plan.handle_nullable() %}
                     if (_handle == 0L) return null;
 {%- endif %}
-                    return new {{ ac.complete_strategy.handle_class() }}(_handle);
+                    return new {{ ac.complete_return_plan.handle_class() }}(_handle);
                 },
-{%- elif ac.complete_strategy.is_result() %}
+{%- elif ac.complete_return_plan.is_result() %}
                 future -> {
                     byte[] _buf = Native.{{ ac.complete }}({% if !method.is_static %}handle, {% endif %}future);
                     if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
                     WireReader reader = new WireReader(_buf);
                     if (reader.readI8() != 0) {
-{%- if ac.complete_strategy.result_has_typed_exception() %}
-                        throw new {{ ac.complete_strategy.result_err_exception_class() }}({{ ac.complete_strategy.result_err_decode() }});
-{%- elif ac.complete_strategy.result_err_is_string() %}
-                        throw new RuntimeException({{ ac.complete_strategy.result_err_decode() }});
+{%- if ac.complete_return_plan.result_has_typed_exception() %}
+                        throw new {{ ac.complete_return_plan.result_err_exception_class() }}({{ ac.complete_return_plan.result_err_decode() }});
+{%- elif ac.complete_return_plan.result_err_is_string() %}
+                        throw new RuntimeException({{ ac.complete_return_plan.result_err_decode() }});
 {%- else %}
-                        throw new RuntimeException(String.valueOf({{ ac.complete_strategy.result_err_decode() }}));
+                        throw new RuntimeException(String.valueOf({{ ac.complete_return_plan.result_err_decode() }}));
 {%- endif %}
                     }
 {%- if method.return_type == "void" %}
                     return null;
 {%- else %}
-                    return {{ ac.complete_strategy.result_ok_decode() }};
+                    return {{ ac.complete_return_plan.result_ok_decode() }};
 {%- endif %}
                 },
 {%- endif %}
@@ -273,42 +262,39 @@ public final class {{ class.class_name }} implements AutoCloseable {
 
     public {{ method.return_type }} {{ method.name }}({% for param in method.params %}{{ param.java_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
 {%- if method.wire_writers.is_empty() %}
-{%- if method.strategy.is_void() %}
+{%- if method.return_plan.is_void() %}
         Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- elif method.strategy.is_direct() %}
+{%- elif method.return_plan.is_direct() %}
         return Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- elif method.strategy.is_c_style_enum() %}
-        return {{ method.strategy.c_style_enum_class() }}.fromValue(Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
-{%- elif method.strategy.is_handle() %}
+{%- elif method.return_plan.is_c_style_enum() %}
+        return {{ method.return_plan.c_style_enum_class() }}.fromValue(Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
+{%- elif method.return_plan.is_handle() %}
         long _handle = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- if method.strategy.handle_nullable() %}
+{%- if method.return_plan.handle_nullable() %}
         if (_handle == 0L) return null;
 {%- endif %}
-        return new {{ method.strategy.handle_class() }}(_handle);
-{%- elif method.strategy.is_wire() %}
+        return new {{ method.return_plan.handle_class() }}(_handle);
+{%- elif method.return_plan.is_decode() %}
         byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
-        return {{ method.strategy.decode_expr() }};
-{%- elif method.strategy.is_buffer() %}
-        byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-        return {{ method.strategy.decode_expr() }};
-{%- elif method.strategy.is_result() %}
+        return {{ method.return_plan.decode_expr() }};
+{%- elif method.return_plan.is_result() %}
         byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if method.strategy.result_has_typed_exception() %}
-            throw new {{ method.strategy.result_err_exception_class() }}({{ method.strategy.result_err_decode() }});
-{%- elif method.strategy.result_err_is_string() %}
-            throw new RuntimeException({{ method.strategy.result_err_decode() }});
+{%- if method.return_plan.result_has_typed_exception() %}
+            throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
+{%- elif method.return_plan.result_err_is_string() %}
+            throw new RuntimeException({{ method.return_plan.result_err_decode() }});
 {%- else %}
-            throw new RuntimeException(String.valueOf({{ method.strategy.result_err_decode() }}));
+            throw new RuntimeException(String.valueOf({{ method.return_plan.result_err_decode() }}));
 {%- endif %}
         }
 {%- if method.return_type == "void" %}
 {%- else %}
-        return {{ method.strategy.result_ok_decode() }};
+        return {{ method.return_plan.result_ok_decode() }};
 {%- endif %}
 {%- endif %}
 {%- else %}
@@ -320,42 +306,39 @@ public final class {{ class.class_name }} implements AutoCloseable {
 {%- for writer in method.wire_writers %}
             {{ writer.encode_expr }};
 {%- endfor %}
-{%- if method.strategy.is_void() %}
+{%- if method.return_plan.is_void() %}
             Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- elif method.strategy.is_direct() %}
+{%- elif method.return_plan.is_direct() %}
             return Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- elif method.strategy.is_c_style_enum() %}
-            return {{ method.strategy.c_style_enum_class() }}.fromValue(Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
-{%- elif method.strategy.is_handle() %}
+{%- elif method.return_plan.is_c_style_enum() %}
+            return {{ method.return_plan.c_style_enum_class() }}.fromValue(Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %}));
+{%- elif method.return_plan.is_handle() %}
             long _handle = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- if method.strategy.handle_nullable() %}
+{%- if method.return_plan.handle_nullable() %}
             if (_handle == 0L) return null;
 {%- endif %}
-            return new {{ method.strategy.handle_class() }}(_handle);
-{%- elif method.strategy.is_wire() %}
+            return new {{ method.return_plan.handle_class() }}(_handle);
+{%- elif method.return_plan.is_decode() %}
             byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
-            return {{ method.strategy.decode_expr() }};
-{%- elif method.strategy.is_buffer() %}
-            byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
-            return {{ method.strategy.decode_expr() }};
-{%- elif method.strategy.is_result() %}
+            return {{ method.return_plan.decode_expr() }};
+{%- elif method.return_plan.is_result() %}
             byte[] _buf = Native.{{ method.ffi_name }}(handle{% if !method.params.is_empty() %}, {% endif %}{% for param in method.params %}{{ param.native_expr }}{% if !loop.last %}, {% endif %}{% endfor %});
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if method.strategy.result_has_typed_exception() %}
-                throw new {{ method.strategy.result_err_exception_class() }}({{ method.strategy.result_err_decode() }});
-{%- elif method.strategy.result_err_is_string() %}
-                throw new RuntimeException({{ method.strategy.result_err_decode() }});
+{%- if method.return_plan.result_has_typed_exception() %}
+                throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
+{%- elif method.return_plan.result_err_is_string() %}
+                throw new RuntimeException({{ method.return_plan.result_err_decode() }});
 {%- else %}
-                throw new RuntimeException(String.valueOf({{ method.strategy.result_err_decode() }}));
+                throw new RuntimeException(String.valueOf({{ method.return_plan.result_err_decode() }}));
 {%- endif %}
             }
 {%- if method.return_type == "void" %}
 {%- else %}
-            return {{ method.strategy.result_ok_decode() }};
+            return {{ method.return_plan.result_ok_decode() }};
 {%- endif %}
 {%- endif %}
         }

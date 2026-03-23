@@ -198,21 +198,16 @@ pub struct TsCallbackMethod {
     pub ts_name: String,
     pub import_name: String,
     pub params: Vec<TsCallbackParam>,
-    pub return_kind: TsCallbackReturnKind,
+    pub return_type: Option<String>,
+    pub direct_import_return_type: Option<String>,
+    pub encoded_return: Option<TsEncodedCallbackReturn>,
     pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub enum TsCallbackReturnKind {
-    Void,
-    Primitive {
-        ts_type: String,
-    },
-    WireEncoded {
-        ts_type: String,
-        encode_expr: String,
-        size_expr: String,
-    },
+pub struct TsEncodedCallbackReturn {
+    pub encode_expr: String,
+    pub size_expr: String,
 }
 
 #[derive(Debug, Clone)]

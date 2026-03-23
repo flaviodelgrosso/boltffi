@@ -22,10 +22,21 @@ pub struct JniModule {
 pub struct JniFunction {
     pub ffi_name: String,
     pub jni_name: String,
-    pub jni_return: String,
+    pub return_info: JniFunctionReturn,
     pub jni_params: String,
-    pub return_kind: JniReturnKind,
     pub params: Vec<JniParam>,
+}
+
+#[derive(Clone)]
+pub struct JniFunctionReturn {
+    pub jni_return: String,
+    pub is_void: bool,
+}
+
+impl JniFunctionReturn {
+    pub fn is_void(&self) -> bool {
+        self.is_void
+    }
 }
 
 #[derive(Clone)]
@@ -773,60 +784,6 @@ impl JniResultView {
             JniResultVariant::DataEnum { jni_type, .. } => jni_type.clone(),
             _ => String::new(),
         }
-    }
-}
-
-#[derive(Clone)]
-pub enum JniReturnKind {
-    Void,
-    Primitive {
-        jni_type: String,
-    },
-    String {
-        ffi_name: String,
-    },
-    Vec {
-        len_fn: String,
-        copy_fn: String,
-    },
-    CStyleEnum {
-        jni_type: String,
-    },
-    DataEnum {
-        enum_name: String,
-        struct_size: usize,
-    },
-    Option(JniOptionView),
-    Result(JniResultView),
-}
-
-impl JniReturnKind {
-    pub fn is_void(&self) -> bool {
-        matches!(self, Self::Void)
-    }
-
-    pub fn is_string(&self) -> bool {
-        matches!(self, Self::String { .. })
-    }
-
-    pub fn is_vec(&self) -> bool {
-        matches!(self, Self::Vec { .. })
-    }
-
-    pub fn is_c_style_enum(&self) -> bool {
-        matches!(self, Self::CStyleEnum { .. })
-    }
-
-    pub fn is_data_enum(&self) -> bool {
-        matches!(self, Self::DataEnum { .. })
-    }
-
-    pub fn is_option(&self) -> bool {
-        matches!(self, Self::Option(_))
-    }
-
-    pub fn is_result(&self) -> bool {
-        matches!(self, Self::Result(_))
     }
 }
 

@@ -475,12 +475,12 @@ JNIEXPORT jbyteArray JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1last_1er
 
 {%- for func in functions %}
 
-JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
-{%- if func.return_kind.is_void() %}
+JNIEXPORT {{ func.return_info.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
+{%- if func.return_info.is_void() %}
     {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- else %}
-    {{ func.jni_return }} _result = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- if func.jni_return == "jboolean" %}
+    {{ func.return_info.jni_return }} _result = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- if func.return_info.jni_return == "jboolean" %}
     return (jboolean)_result;
 {%- else %}
     return _result;

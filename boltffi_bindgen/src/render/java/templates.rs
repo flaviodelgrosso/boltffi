@@ -69,7 +69,7 @@ mod tests {
     use crate::render::java::JavaVersion;
     use crate::render::java::plan::{
         JavaAsyncMode, JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaFunction,
-        JavaParam, JavaReturnStrategy, JavaWireWriter,
+        JavaParam, JavaReturnPlan, JavaReturnRender, JavaWireWriter,
     };
 
     fn java_param(name: &str, java_type: &str, native_type: &str, native_expr: &str) -> JavaParam {
@@ -122,9 +122,12 @@ mod tests {
                 is_static: false,
                 params: vec![],
                 return_type: "Node".to_string(),
-                strategy: JavaReturnStrategy::HandleReturn {
-                    class_name: "Node".to_string(),
-                    nullable: true,
+                return_plan: JavaReturnPlan {
+                    native_return_type: "long".to_string(),
+                    render: JavaReturnRender::Handle {
+                        class_name: "Node".to_string(),
+                        nullable: true,
+                    },
                 },
                 wire_writers: vec![],
                 async_call: None,
@@ -169,9 +172,11 @@ mod tests {
                     is_static: true,
                     params: vec![payload_param.clone()],
                     return_type: "Status".to_string(),
-                    strategy: JavaReturnStrategy::CStyleEnumDecode {
-                        class_name: "Status".to_string(),
-                        native_type: "int".to_string(),
+                    return_plan: JavaReturnPlan {
+                        native_return_type: "int".to_string(),
+                        render: JavaReturnRender::CStyleEnum {
+                            class_name: "Status".to_string(),
+                        },
                     },
                     wire_writers: vec![payload_writer.clone()],
                     async_call: None,
@@ -182,9 +187,11 @@ mod tests {
                     is_static: false,
                     params: vec![payload_param],
                     return_type: "Status".to_string(),
-                    strategy: JavaReturnStrategy::CStyleEnumDecode {
-                        class_name: "Status".to_string(),
-                        native_type: "int".to_string(),
+                    return_plan: JavaReturnPlan {
+                        native_return_type: "int".to_string(),
+                        render: JavaReturnRender::CStyleEnum {
+                            class_name: "Status".to_string(),
+                        },
                     },
                     wire_writers: vec![payload_writer],
                     async_call: None,
@@ -232,7 +239,10 @@ mod tests {
                     is_static: true,
                     params: vec![],
                     return_type: "int".to_string(),
-                    strategy: JavaReturnStrategy::Direct,
+                    return_plan: JavaReturnPlan {
+                        native_return_type: "int".to_string(),
+                        render: JavaReturnRender::Direct,
+                    },
                     wire_writers: vec![],
                     async_call: None,
                 },
@@ -242,7 +252,10 @@ mod tests {
                     is_static: false,
                     params: vec![],
                     return_type: "int".to_string(),
-                    strategy: JavaReturnStrategy::Direct,
+                    return_plan: JavaReturnPlan {
+                        native_return_type: "int".to_string(),
+                        render: JavaReturnRender::Direct,
+                    },
                     wire_writers: vec![],
                     async_call: None,
                 },
@@ -254,7 +267,10 @@ mod tests {
                 ffi_name: "boltffi_noop".to_string(),
                 params: vec![],
                 return_type: "void".to_string(),
-                strategy: JavaReturnStrategy::Void,
+                return_plan: JavaReturnPlan {
+                    native_return_type: "void".to_string(),
+                    render: JavaReturnRender::Void,
+                },
                 wire_writers: vec![],
                 async_call: None,
             }],

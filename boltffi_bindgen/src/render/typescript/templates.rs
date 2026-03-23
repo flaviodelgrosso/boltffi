@@ -894,9 +894,9 @@ mod tests {
                         call_expr: "value".to_string(),
                     },
                 }],
-                return_kind: TsCallbackReturnKind::Primitive {
-                    ts_type: "number".to_string(),
-                },
+                return_type: Some("number".to_string()),
+                direct_import_return_type: Some("number".to_string()),
+                encoded_return: None,
                 doc: None,
             }],
             async_methods: vec![],
