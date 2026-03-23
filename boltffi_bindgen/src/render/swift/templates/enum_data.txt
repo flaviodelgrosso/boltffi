@@ -16,7 +16,7 @@ extension {{ class_name }}: WireCodable {
         let tag = reader.readI32()
         switch tag {
 {%- for variant in variants %}
-        case {{ variant.discriminant }}:
+        case {{ loop.index0 }}:
 {%- if variant.is_unit() %}
             return .{{ variant.swift_name }}
 {%- elif variant.is_single_tuple() %}
@@ -35,14 +35,14 @@ extension {{ class_name }}: WireCodable {
 {%- for variant in variants %}
 {%- if variant.is_unit() %}
         case .{{ variant.swift_name }}:
-            writer.writeI32({{ variant.discriminant }})
+            writer.writeI32({{ loop.index0 }})
 {%- elif variant.is_single_tuple() %}
         case let .{{ variant.swift_name }}(value):
-            writer.writeI32({{ variant.discriminant }})
+            writer.writeI32({{ loop.index0 }})
             {{ variant.tuple_value_writer_encode() }}
 {%- else %}
         case let .{{ variant.swift_name }}({% for field in variant.fields() %}{{ field.swift_name }}{% if !loop.last %}, {% endif %}{% endfor %}):
-            writer.writeI32({{ variant.discriminant }})
+            writer.writeI32({{ loop.index0 }})
 {%- for field in variant.fields() %}
             {{ field.wire_writer_encode() }}
 {%- endfor %}
@@ -64,7 +64,7 @@ extension {{ class_name }} {
         return boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in reader.readOptional { reader in {{ class_name }}.decode(from: &reader) } }
 {%- elif ctor.is_fallible() %}
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in
-            try {{ class_name }}.decodeResultOrThrow(from: &reader)
+            try reader.readResultOrThrow(ok: { reader in {{ class_name }}.decode(from: &reader) }, err: { reader in {{ ctor.throw_decode_expr().unwrap() }} })
         }
 {%- else %}
         return boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in
@@ -88,7 +88,7 @@ extension {{ class_name }} {
         self = value
 {%- elif ctor.is_fallible() %}
         self = try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in
-            try {{ class_name }}.decodeResultOrThrow(from: &reader)
+            try reader.readResultOrThrow(ok: { reader in {{ class_name }}.decode(from: &reader) }, err: { reader in {{ ctor.throw_decode_expr().unwrap() }} })
         }
 {%- else %}
         self = boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in

@@ -72,6 +72,12 @@ impl ValueExpr {
 /// code. The [`Lowerer`](crate::ir::Lowerer) picks the right variant during
 /// codec planning.
 #[derive(Debug, Clone)]
+pub enum WireSizeOwner {
+    Record(RecordId),
+    Enum(EnumId),
+}
+
+#[derive(Debug, Clone)]
 pub enum SizeExpr {
     /// Statically known byte count. Used for primitives and blittable records.
     Fixed(usize),
@@ -85,11 +91,11 @@ pub enum SizeExpr {
     BytesLen(ValueExpr),
     /// Size determined by calling a type-specific size method on the value.
     ValueSize(ValueExpr),
-    /// Size of a wire-encoded compound value. The backend calls wireSize()
-    /// or equivalent on the value. For TypeScript, record_id enables codec-based size.
+    /// Size of a wire-encoded compound value. The backend calls the owning
+    /// codec size method when one exists.
     WireSize {
         value: ValueExpr,
-        record_id: Option<RecordId>,
+        owner: Option<WireSizeOwner>,
     },
     /// Size of a builtin type like Duration, Uuid, or Url.
     BuiltinSize { id: BuiltinId, value: ValueExpr },
@@ -282,9 +288,9 @@ fn remap_root_in_size(size: &SizeExpr, new_root: &ValueExpr) -> SizeExpr {
         SizeExpr::StringLen(value) => SizeExpr::StringLen(value.remap_root(new_root.clone())),
         SizeExpr::BytesLen(value) => SizeExpr::BytesLen(value.remap_root(new_root.clone())),
         SizeExpr::ValueSize(value) => SizeExpr::ValueSize(value.remap_root(new_root.clone())),
-        SizeExpr::WireSize { value, record_id } => SizeExpr::WireSize {
+        SizeExpr::WireSize { value, owner } => SizeExpr::WireSize {
             value: value.remap_root(new_root.clone()),
-            record_id: record_id.clone(),
+            owner: owner.clone(),
         },
         SizeExpr::BuiltinSize { id, value } => SizeExpr::BuiltinSize {
             id: id.clone(),

@@ -395,9 +395,10 @@ static {{ trampoline.c_return_type() }} {{ trampoline.trampoline_name }}(void* u
     }
     if (_jarr != NULL) {
         jsize _len = (*env)->GetArrayLength(env, _jarr);
-        _result = (uint8_t*)malloc((size_t)_len);
+        _result = (uint8_t*)malloc((size_t)_len + 1u);
         if (_result != NULL) {
             (*env)->GetByteArrayRegion(env, _jarr, 0, _len, (jbyte*)_result);
+            _result[(size_t)_len] = 0;
         }
         (*env)->DeleteLocalRef(env, _jarr);
     }
@@ -474,12 +475,12 @@ JNIEXPORT jbyteArray JNICALL Java_{{ jni_prefix }}_Native_{{ prefix }}_1last_1er
 
 {%- for func in functions %}
 
-JNIEXPORT {{ func.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
-{%- if func.return_kind.is_void() %}
+JNIEXPORT {{ func.return_info.jni_return }} JNICALL {{ func.jni_name }}(JNIEnv *env, jclass cls{{ func.jni_params }}) {
+{%- if func.return_info.is_void() %}
     {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- else %}
-    {{ func.jni_return }} _result = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
-{%- if func.jni_return == "jboolean" %}
+    {{ func.return_info.jni_return }} _result = {{ func.ffi_name }}({% for param in func.params %}{{ param.ffi_arg() }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- if func.return_info.jni_return == "jboolean" %}
     return (jboolean)_result;
 {%- else %}
     return _result;
@@ -597,12 +598,36 @@ JNIEXPORT jbyteArray JNICALL {{ stream.pop_batch_jni }}(JNIEnv *env, jclass cls,
         boltffi_throw_illegal_argument(env, "max_count must be a non-negative size");
         return NULL;
     }
+{%- if stream.pop_batch_is_direct() %}
+    if (_max_count == 0) {
+        return (*env)->NewByteArray(env, 0);
+    }
+    if (_max_count > (uintptr_t)(SIZE_MAX / {{ stream.pop_batch_direct_item_size() }}u)) {
+        boltffi_throw_illegal_argument(env, "max_count is too large");
+        return NULL;
+    }
+    size_t _byte_capacity = (size_t)_max_count * {{ stream.pop_batch_direct_item_size() }}u;
+    {{ stream.pop_batch_direct_item_c_type() }}* _items = ({{ stream.pop_batch_direct_item_c_type() }}*)malloc(_byte_capacity);
+    if (_items == NULL) {
+        boltffi_throw_out_of_memory(env, "Failed to allocate stream batch buffer");
+        return NULL;
+    }
+    uintptr_t _count = {{ stream.pop_batch_ffi }}((SubscriptionHandle)subscription_handle, _items, _max_count);
+    size_t _byte_len = (size_t)_count * {{ stream.pop_batch_direct_item_size() }}u;
+    jbyteArray _result = (*env)->NewByteArray(env, (jsize)_byte_len);
+    if (_result != NULL && _byte_len > 0) {
+        (*env)->SetByteArrayRegion(env, _result, 0, (jsize)_byte_len, (const jbyte*)_items);
+    }
+    free(_items);
+    return _result;
+{%- else %}
     FfiBuf_u8 _buf = {{ stream.pop_batch_ffi }}((SubscriptionHandle)subscription_handle, _max_count);
     if (_buf.len == 0) {
         if (_buf.ptr != NULL) {{ prefix }}_free_buf(_buf);
         return (*env)->NewByteArray(env, 0);
     }
     return boltffi_buf_to_jbytearray(env, _buf);
+{%- endif %}
 }
 
 JNIEXPORT jint JNICALL {{ stream.wait_jni }}(JNIEnv *env, jclass cls, jlong subscription_handle, jint timeout) {
@@ -935,13 +960,25 @@ JNIEXPORT void JNICALL {{ invoker.jni_fn_name }}(JNIEnv* env, jclass cls, jlong 
         return;
     }
     jsize _len = (*env)->GetArrayLength(env, result);
-    jbyte* _ptr = (*env)->GetByteArrayElements(env, result, NULL);
-    if (_ptr == NULL) {
-        callback((uint64_t)callback_data, NULL, 0, (FfiStatus){.code = 1});
-        return;
+    uint8_t* _copy = NULL;
+    if (_len > 0) {
+        _copy = (uint8_t*)malloc((size_t)_len);
+        if (_copy == NULL) {
+            callback((uint64_t)callback_data, NULL, 0, (FfiStatus){.code = 1});
+            return;
+        }
+        (*env)->GetByteArrayRegion(env, result, 0, _len, (jbyte*)_copy);
+        if ((*env)->ExceptionCheck(env)) {
+            free(_copy);
+            (*env)->ExceptionClear(env);
+            callback((uint64_t)callback_data, NULL, 0, (FfiStatus){.code = 1});
+            return;
+        }
     }
-    callback((uint64_t)callback_data, (const uint8_t*)_ptr, (size_t)_len, (FfiStatus){.code = 0});
-    (*env)->ReleaseByteArrayElements(env, result, _ptr, JNI_ABORT);
+    callback((uint64_t)callback_data, (const uint8_t*)_copy, (size_t)_len, (FfiStatus){.code = 0});
+    if (_copy != NULL) {
+        free(_copy);
+    }
 {%- elif invoker.has_result() %}
     (void)env; (void)cls;
     void (*callback)(uint64_t, {{ invoker.c_result_type() }}, FfiStatus) = (void (*)(uint64_t, {{ invoker.c_result_type() }}, FfiStatus))callback_ptr;

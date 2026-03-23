@@ -1,7 +1,12 @@
 use boltffi_ffi_rules::naming::{
     CreateFn, GlobalSymbol, Name, RegisterFn, VtableField, VtableType,
 };
+use boltffi_ffi_rules::transport::{
+    EncodedReturnStrategy, ErrorReturnStrategy, ReturnInvocationContext, ReturnPlatform,
+    ScalarReturnStrategy, ValueReturnMethod, ValueReturnStrategy,
+};
 
+use crate::ir::codec::EnumTagStrategy;
 use crate::ir::contract::PackageInfo;
 use crate::ir::definitions::StreamMode;
 use crate::ir::ids::{
@@ -9,7 +14,7 @@ use crate::ir::ids::{
     VariantName,
 };
 use crate::ir::ops::{ReadSeq, WriteSeq};
-use crate::ir::plan::{AbiType, Mutability, Transport};
+use crate::ir::plan::{AbiType, Mutability, ScalarOrigin, SpanContent, Transport};
 use crate::ir::types::TypeExpr;
 
 /// The resolved FFI boundary for the whole crate.
@@ -45,7 +50,14 @@ pub struct AbiEnum {
     pub decode_ops: ReadSeq,
     pub encode_ops: WriteSeq,
     pub is_c_style: bool,
+    pub codec_tag_strategy: EnumTagStrategy,
     pub variants: Vec<AbiEnumVariant>,
+}
+
+impl AbiEnum {
+    pub fn resolve_codec_tag(&self, ordinal: usize, discriminant: i128) -> i128 {
+        self.codec_tag_strategy.resolve_tag(ordinal, discriminant)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +93,8 @@ pub struct AbiStream {
     pub stream_id: StreamId,
     pub mode: StreamMode,
     pub item: StreamItemTransport,
+    pub item_transport: Transport,
+    pub item_size: Option<usize>,
     pub subscribe: Name<GlobalSymbol>,
     pub poll: Name<GlobalSymbol>,
     pub pop_batch: Name<GlobalSymbol>,
@@ -201,6 +215,67 @@ impl ReturnShape {
             encode_ops: None,
         }
     }
+
+    /// Classifies the returned value into the shared return vocabulary.
+    ///
+    /// This answers what kind of value comes back across the boundary:
+    /// nothing, a scalar, a fixed composite value, a direct element buffer,
+    /// an encoded buffer, an object handle, or a callback handle.
+    ///
+    /// It does not answer where the value is delivered in the ABI surface.
+    /// That part belongs to [`Self::value_return_method`].
+    ///
+    /// # Examples
+    ///
+    /// - a primitive scalar return becomes [`ValueReturnStrategy::Scalar`]
+    /// - a `repr(C)` record by value becomes [`ValueReturnStrategy::CompositeValue`]
+    /// - a direct `Vec<u32>` return becomes [`ValueReturnStrategy::Buffer`]
+    /// - a wire-encoded enum return becomes [`ValueReturnStrategy::Buffer`]
+    pub fn value_return_strategy(&self) -> ValueReturnStrategy {
+        match &self.transport {
+            None => ValueReturnStrategy::Void,
+            Some(Transport::Scalar(ScalarOrigin::Primitive(_))) => {
+                ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue)
+            }
+            Some(Transport::Scalar(ScalarOrigin::CStyleEnum { .. })) => {
+                ValueReturnStrategy::Scalar(ScalarReturnStrategy::CStyleEnumTag)
+            }
+            Some(Transport::Composite(_)) => ValueReturnStrategy::CompositeValue,
+            Some(Transport::Span(SpanContent::Scalar(_)))
+            | Some(Transport::Span(SpanContent::Composite(_))) => {
+                ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec)
+            }
+            Some(Transport::Span(_)) => {
+                ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded)
+            }
+            Some(Transport::Handle { .. }) => ValueReturnStrategy::ObjectHandle,
+            Some(Transport::Callback { .. }) => ValueReturnStrategy::CallbackHandle,
+        }
+    }
+
+    /// Decides how the already-classified value is delivered to the caller.
+    ///
+    /// This is about the ABI method, not about the value kind itself.
+    /// For example, both a direct element buffer and an encoded buffer are
+    /// still buffer-shaped returns, but encoded errors may force them to be
+    /// written through out pointer and length outputs instead of coming back
+    /// in the native return slot.
+    ///
+    /// # Examples
+    ///
+    /// - `u32` stays [`ValueReturnMethod::DirectReturn`]
+    /// - `Point` by value stays [`ValueReturnMethod::DirectReturn`]
+    /// - an encoded buffer with encoded errors becomes
+    ///   [`ValueReturnMethod::WriteToOutBufferParts`]
+    pub fn value_return_method(
+        &self,
+        error: &ErrorTransport,
+        context: ReturnInvocationContext,
+        platform: ReturnPlatform,
+    ) -> ValueReturnMethod {
+        self.value_return_strategy()
+            .return_method(error.return_strategy(), context, platform)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +286,22 @@ pub enum ErrorTransport {
         decode_ops: ReadSeq,
         encode_ops: Option<WriteSeq>,
     },
+}
+
+impl ErrorTransport {
+    /// Projects the bindgen error transport into the shared error return
+    /// vocabulary.
+    ///
+    /// This keeps backends from inventing their own meaning for whether a call
+    /// has no distinct failure path, reports failure through a status code, or
+    /// returns an encoded error payload.
+    pub fn return_strategy(&self) -> ErrorReturnStrategy {
+        match self {
+            Self::None => ErrorReturnStrategy::None,
+            Self::StatusCode => ErrorReturnStrategy::StatusCode,
+            Self::Encoded { .. } => ErrorReturnStrategy::Encoded,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

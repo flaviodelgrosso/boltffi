@@ -183,7 +183,7 @@ pub struct ClassTemplate<'a> {
     pub methods: &'a [KotlinMethod],
     pub streams: &'a [super::plan::KotlinStream],
     pub use_companion_methods: bool,
-    pub has_factory_ctors: bool,
+    pub has_companion_factories: bool,
     pub has_static_methods: bool,
     pub prefix: &'a str,
     pub ffi_free: &'a str,
@@ -423,7 +423,7 @@ impl KotlinEmitter {
                 methods: &class.methods,
                 streams: &class.streams,
                 use_companion_methods: class.use_companion_methods,
-                has_factory_ctors: class.has_factory_ctors(),
+                has_companion_factories: class.has_companion_factories(),
                 has_static_methods: class.has_static_methods(),
                 prefix: &class.prefix,
                 ffi_free: &class.ffi_free,
@@ -502,9 +502,9 @@ mod tests {
 
     use super::super::plan::{
         KotlinAsyncCallbackMethod, KotlinCallbackMethod, KotlinCallbackParam, KotlinCallbackReturn,
-        KotlinClass, KotlinConstructor, KotlinDataEnumField, KotlinDataEnumVariant,
-        KotlinEnumField, KotlinEnumVariant, KotlinMethod, KotlinMethodImpl, KotlinRecordField,
-        KotlinSignatureParam, KotlinWireWriter,
+        KotlinClass, KotlinConstructor, KotlinConstructorSurface, KotlinDataEnumField,
+        KotlinDataEnumVariant, KotlinEnumField, KotlinEnumVariant, KotlinMethod, KotlinMethodImpl,
+        KotlinRecordField, KotlinSignatureParam, KotlinWireWriter,
     };
     use super::*;
 
@@ -833,7 +833,7 @@ mod tests {
                 kotlin_type: "String".to_string(),
             }],
             return_type: Some("String"),
-            wire_writers: &[KotlinWireWriter {
+            wire_writers: &[KotlinWireWriter::WireBuffer {
                 binding_name: "nameWire".to_string(),
                 size_expr: "BoltFFIWire.sizeString(name)".to_string(),
                 encode_expr: "BoltFFIWire.writeString(name)".to_string(),
@@ -862,7 +862,7 @@ mod tests {
                 kotlin_type: "String".to_string(),
             }],
             return_type: Some("String"),
-            wire_writers: &[KotlinWireWriter {
+            wire_writers: &[KotlinWireWriter::WireBuffer {
                 binding_name: "urlWire".to_string(),
                 size_expr: "BoltFFIWire.sizeString(url)".to_string(),
                 encode_expr: "BoltFFIWire.writeString(url)".to_string(),
@@ -897,8 +897,15 @@ mod tests {
             constructors: vec![
                 KotlinConstructor {
                     name: "DataStore".to_string(),
-                    is_factory: false,
+                    surface: KotlinConstructorSurface::Constructor,
                     is_fallible: false,
+                    return_type: None,
+                    throws: false,
+                    err_type: "FfiException".to_string(),
+                    return_is_direct: false,
+                    return_cast: String::new(),
+                    decode_expr: String::new(),
+                    is_blittable_return: false,
                     signature_params: vec![KotlinSignatureParam {
                         name: "capacity".to_string(),
                         kotlin_type: "Int".to_string(),
@@ -911,8 +918,15 @@ mod tests {
                 },
                 KotlinConstructor {
                     name: "withDefaults".to_string(),
-                    is_factory: true,
+                    surface: KotlinConstructorSurface::CompanionFactory,
                     is_fallible: false,
+                    return_type: None,
+                    throws: false,
+                    err_type: "FfiException".to_string(),
+                    return_is_direct: false,
+                    return_cast: String::new(),
+                    decode_expr: String::new(),
+                    is_blittable_return: false,
                     signature_params: vec![],
                     wire_writers: vec![],
                     wire_writer_closes: vec![],
@@ -937,7 +951,7 @@ mod tests {
             methods: &cls.methods,
             streams: &cls.streams,
             use_companion_methods: cls.use_companion_methods,
-            has_factory_ctors: cls.has_factory_ctors(),
+            has_companion_factories: cls.has_companion_factories(),
             has_static_methods: cls.has_static_methods(),
             prefix: &cls.prefix,
             ffi_free: &cls.ffi_free,
@@ -954,13 +968,20 @@ mod tests {
             ffi_free: "boltffi_connection_free".to_string(),
             constructors: vec![KotlinConstructor {
                 name: "Connection".to_string(),
-                is_factory: false,
+                surface: KotlinConstructorSurface::Constructor,
                 is_fallible: true,
+                return_type: None,
+                throws: false,
+                err_type: "FfiException".to_string(),
+                return_is_direct: false,
+                return_cast: String::new(),
+                decode_expr: String::new(),
+                is_blittable_return: false,
                 signature_params: vec![KotlinSignatureParam {
                     name: "url".to_string(),
                     kotlin_type: "String".to_string(),
                 }],
-                wire_writers: vec![KotlinWireWriter {
+                wire_writers: vec![KotlinWireWriter::WireBuffer {
                     binding_name: "urlWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(url)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(url)".to_string(),
@@ -981,7 +1002,7 @@ mod tests {
             methods: &cls.methods,
             streams: &cls.streams,
             use_companion_methods: cls.use_companion_methods,
-            has_factory_ctors: cls.has_factory_ctors(),
+            has_companion_factories: cls.has_companion_factories(),
             has_static_methods: cls.has_static_methods(),
             prefix: &cls.prefix,
             ffi_free: &cls.ffi_free,
@@ -1014,7 +1035,7 @@ mod tests {
             methods: &cls.methods,
             streams: &cls.streams,
             use_companion_methods: cls.use_companion_methods,
-            has_factory_ctors: cls.has_factory_ctors(),
+            has_companion_factories: cls.has_companion_factories(),
             has_static_methods: cls.has_static_methods(),
             prefix: &cls.prefix,
             ffi_free: &cls.ffi_free,
@@ -1046,7 +1067,7 @@ mod tests {
             methods: &cls.methods,
             streams: &cls.streams,
             use_companion_methods: cls.use_companion_methods,
-            has_factory_ctors: cls.has_factory_ctors(),
+            has_companion_factories: cls.has_companion_factories(),
             has_static_methods: cls.has_static_methods(),
             prefix: &cls.prefix,
             ffi_free: &cls.ffi_free,
@@ -1112,6 +1133,41 @@ mod tests {
             async_methods: &[],
         };
         insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    #[test]
+    fn callback_trait_enum_return_uses_raw_value() {
+        let template = CallbackTraitTemplate {
+            interface_name: "StatusMapper",
+            handle_map_name: "StatusMapperHandleMap",
+            callbacks_object: "StatusMapperCallbacks",
+            bridge_name: "StatusMapperBridge",
+            doc: &None,
+            is_closure: false,
+            sync_methods: &[KotlinCallbackMethod {
+                name: "mapStatus".to_string(),
+                ffi_name: "map_status".to_string(),
+                params: vec![KotlinCallbackParam {
+                    name: "status".to_string(),
+                    kotlin_type: "Status".to_string(),
+                    jni_type: "ByteBuffer".to_string(),
+                    conversion: "status".to_string(),
+                }],
+                return_info: Some(KotlinCallbackReturn {
+                    kotlin_type: "Status".to_string(),
+                    jni_type: "Int".to_string(),
+                    default_value: "0".to_string(),
+                    to_jni: ".value".to_string(),
+                    to_jni_result: None,
+                    error_type: None,
+                    error_is_throwable: false,
+                }),
+                doc: None,
+            }],
+            async_methods: &[],
+        };
+        let rendered = template.render().unwrap();
+        assert!(rendered.contains("return impl.mapStatus(status).value"));
     }
 
     #[test]
@@ -1276,13 +1332,20 @@ mod tests {
             ffi_free: "boltffi_database_free".to_string(),
             constructors: vec![KotlinConstructor {
                 name: "Database".to_string(),
-                is_factory: false,
+                surface: KotlinConstructorSurface::Constructor,
                 is_fallible: false,
+                return_type: None,
+                throws: false,
+                err_type: "FfiException".to_string(),
+                return_is_direct: false,
+                return_cast: String::new(),
+                decode_expr: String::new(),
+                is_blittable_return: false,
                 signature_params: vec![KotlinSignatureParam {
                     name: "path".to_string(),
                     kotlin_type: "String".to_string(),
                 }],
-                wire_writers: vec![KotlinWireWriter {
+                wire_writers: vec![KotlinWireWriter::WireBuffer {
                     binding_name: "pathWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(path)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(path)".to_string(),
@@ -1308,12 +1371,84 @@ mod tests {
             methods: &cls.methods,
             streams: &cls.streams,
             use_companion_methods: cls.use_companion_methods,
-            has_factory_ctors: cls.has_factory_ctors(),
+            has_companion_factories: cls.has_companion_factories(),
             has_static_methods: cls.has_static_methods(),
             prefix: &cls.prefix,
             ffi_free: &cls.ffi_free,
         };
         insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    #[test]
+    fn class_template_demotes_colliding_named_constructor_to_companion_factory() {
+        let cls = KotlinClass {
+            class_name: "Inventory".to_string(),
+            doc: None,
+            prefix: "boltffi".to_string(),
+            ffi_free: "boltffi_inventory_free".to_string(),
+            constructors: vec![
+                KotlinConstructor {
+                    name: "withCapacity".to_string(),
+                    surface: KotlinConstructorSurface::Constructor,
+                    is_fallible: false,
+                    return_type: None,
+                    throws: false,
+                    err_type: "FfiException".to_string(),
+                    return_is_direct: false,
+                    return_cast: String::new(),
+                    decode_expr: String::new(),
+                    is_blittable_return: false,
+                    signature_params: vec![KotlinSignatureParam {
+                        name: "capacity".to_string(),
+                        kotlin_type: "UInt".to_string(),
+                    }],
+                    wire_writers: vec![],
+                    wire_writer_closes: vec![],
+                    native_args: vec!["capacity.toInt()".to_string()],
+                    ffi_name: "boltffi_inventory_with_capacity".to_string(),
+                    doc: None,
+                },
+                KotlinConstructor {
+                    name: "tryNew".to_string(),
+                    surface: KotlinConstructorSurface::CompanionFactory,
+                    is_fallible: true,
+                    return_type: None,
+                    throws: false,
+                    err_type: "FfiException".to_string(),
+                    return_is_direct: false,
+                    return_cast: String::new(),
+                    decode_expr: String::new(),
+                    is_blittable_return: false,
+                    signature_params: vec![KotlinSignatureParam {
+                        name: "capacity".to_string(),
+                        kotlin_type: "UInt".to_string(),
+                    }],
+                    wire_writers: vec![],
+                    wire_writer_closes: vec![],
+                    native_args: vec!["capacity.toInt()".to_string()],
+                    ffi_name: "boltffi_inventory_try_new".to_string(),
+                    doc: None,
+                },
+            ],
+            methods: vec![],
+            streams: vec![],
+            use_companion_methods: false,
+        };
+        let template = ClassTemplate {
+            class_name: &cls.class_name,
+            doc: &cls.doc,
+            constructors: &cls.constructors,
+            methods: &cls.methods,
+            streams: &cls.streams,
+            use_companion_methods: cls.use_companion_methods,
+            has_companion_factories: cls.has_companion_factories(),
+            has_static_methods: cls.has_static_methods(),
+            prefix: &cls.prefix,
+            ffi_free: &cls.ffi_free,
+        };
+        let rendered = template.render().unwrap();
+        assert_eq!(rendered.matches("constructor(capacity: UInt)").count(), 1);
+        assert!(rendered.contains("fun tryNew(capacity: UInt): Inventory"));
     }
 
     #[test]
@@ -1340,7 +1475,7 @@ mod tests {
             methods: &cls.methods,
             streams: &cls.streams,
             use_companion_methods: cls.use_companion_methods,
-            has_factory_ctors: cls.has_factory_ctors(),
+            has_companion_factories: cls.has_companion_factories(),
             has_static_methods: cls.has_static_methods(),
             prefix: &cls.prefix,
             ffi_free: &cls.ffi_free,
@@ -1357,7 +1492,7 @@ mod tests {
                 kotlin_type: "Point".to_string(),
             }],
             return_type: Some("Point"),
-            wire_writers: &[KotlinWireWriter {
+            wire_writers: &[KotlinWireWriter::WireBuffer {
                 binding_name: "pointWire".to_string(),
                 size_expr: "Point.WIRE_SIZE".to_string(),
                 encode_expr: "PointWriter.write(point)".to_string(),
@@ -1393,12 +1528,12 @@ mod tests {
             ],
             return_type: Some("String"),
             wire_writers: &[
-                KotlinWireWriter {
+                KotlinWireWriter::WireBuffer {
                     binding_name: "aWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(a)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(a)".to_string(),
                 },
-                KotlinWireWriter {
+                KotlinWireWriter::WireBuffer {
                     binding_name: "bWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(b)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(b)".to_string(),
@@ -1469,12 +1604,12 @@ mod tests {
             ],
             return_type: Some("ByteArray"),
             wire_writers: &[
-                KotlinWireWriter {
+                KotlinWireWriter::WireBuffer {
                     binding_name: "urlWire".to_string(),
                     size_expr: "BoltFFIWire.sizeString(url)".to_string(),
                     encode_expr: "BoltFFIWire.writeString(url)".to_string(),
                 },
-                KotlinWireWriter {
+                KotlinWireWriter::WireBuffer {
                     binding_name: "bodyWire".to_string(),
                     size_expr: "BoltFFIWire.sizeBytes(body)".to_string(),
                     encode_expr: "BoltFFIWire.writeBytes(body)".to_string(),

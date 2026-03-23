@@ -36,6 +36,7 @@ pub fn abi_type_c(abi_type: &AbiType) -> String {
         AbiType::ISize => "intptr_t".to_string(),
         AbiType::USize => "uintptr_t".to_string(),
         AbiType::Pointer(element) => format!("{}*", primitive_c_type(*element)),
+        AbiType::OwnedBuffer => "FfiBuf_u8".to_string(),
         AbiType::InlineCallbackFn {
             params,
             return_type,
@@ -89,14 +90,14 @@ mod tests {
     }
 
     #[test]
-    fn inline_callback_pointer_return_emits_pointer_fn_ptr() {
+    fn inline_callback_owned_buffer_return_emits_buffer_fn_ptr() {
         let ty = AbiType::InlineCallbackFn {
             params: vec![AbiType::Pointer(PrimitiveType::U8), AbiType::USize],
-            return_type: Box::new(AbiType::Pointer(PrimitiveType::U8)),
+            return_type: Box::new(AbiType::OwnedBuffer),
         };
         assert_eq!(
             abi_type_c(&ty),
-            "uint8_t* (*)(void*, const uint8_t*, uintptr_t)"
+            "FfiBuf_u8 (*)(void*, const uint8_t*, uintptr_t)"
         );
     }
 

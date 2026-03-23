@@ -8,3 +8,9 @@ Cargo.lock
 *.log
 swift_test/test_ffi
 bench_demo
+examples/platforms/kotlin/.gradle/
+examples/platforms/kotlin/.kotlin/
+examples/platforms/kotlin/build/
+examples/platforms/kotlin/generated/
+examples/platforms/apple/ffi
+examples/platforms/apple/.build

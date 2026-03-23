@@ -2,7 +2,7 @@ use boltffi_ffi_rules::naming::snake_to_camel as camel_case;
 
 use crate::ir::codec::VecLayout;
 use crate::ir::ids::BuiltinId;
-use crate::ir::ops::{ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq};
+use crate::ir::ops::{ReadOp, ReadSeq, SizeExpr, ValueExpr, WireSizeOwner, WriteOp, WriteSeq};
 use crate::ir::plan::CompositeLayout;
 use crate::ir::types::{PrimitiveType, TypeExpr};
 
@@ -50,6 +50,23 @@ pub fn composite_buf_decode_expr(layout: &CompositeLayout) -> String {
         .collect();
     let obj = fields.join(", ");
     format!("_module.takeBufStructArray(outPtr, {stride}, (v, o) => ({{ {obj} }}))")
+}
+
+pub fn composite_value_decode_expr(layout: &CompositeLayout, ptr_name: &str) -> String {
+    let fields: Vec<String> = layout
+        .fields
+        .iter()
+        .map(|field| {
+            let name = camel_case(field.name.as_str());
+            let read = dataview_get(field.primitive, &field.offset.to_string());
+            format!("{name}: {read}")
+        })
+        .collect();
+    let obj = fields.join(", ");
+    format!(
+        "(() => {{ const bytes = _module.readFromMemory({ptr_name}, {}); const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); return {{ {obj} }}; }})()",
+        layout.total_size
+    )
 }
 
 pub fn primitive_vec_read_expr(primitive: PrimitiveType) -> String {
@@ -393,10 +410,15 @@ pub fn emit_size_expr(size: &SizeExpr, root_value: &str) -> String {
             format!("(4 + {}.byteLength)", render_value(value, root_value))
         }
         SizeExpr::ValueSize(expr) => render_value(expr, root_value),
-        SizeExpr::WireSize { value, record_id } => {
+        SizeExpr::WireSize { value, owner } => {
             let val = render_value(value, root_value);
-            match record_id {
-                Some(id) => format!("{}Codec.size({})", to_pascal_case(id.as_str()), val),
+            match owner {
+                Some(WireSizeOwner::Record(id)) => {
+                    format!("{}Codec.size({})", to_pascal_case(id.as_str()), val)
+                }
+                Some(WireSizeOwner::Enum(id)) => {
+                    format!("{}Codec.size({})", to_pascal_case(id.as_str()), val)
+                }
                 None => format!("wireSize({})", val),
             }
         }
@@ -418,11 +440,12 @@ pub fn emit_size_expr(size: &SizeExpr, root_value: &str) -> String {
             format!("({rendered})")
         }
         SizeExpr::OptionSize { value, inner } => {
-            let inner_size = emit_size_expr(inner, root_value);
-            format!(
-                "({} !== null ? 1 + {inner_size} : 1)",
-                render_value(value, root_value),
-            )
+            let option_value = render_value(value, root_value);
+            let payload_size = emit_size_expr(
+                &remap_size_root(inner, ValueExpr::Var("value".into())),
+                &option_value,
+            );
+            format!("({option_value} !== null ? 1 + {payload_size} : 1)")
         }
         SizeExpr::VecSize {
             value,
@@ -442,8 +465,18 @@ pub fn emit_size_expr(size: &SizeExpr, root_value: &str) -> String {
         }
         SizeExpr::ResultSize { value, ok, err } => {
             let val = render_value(value, root_value);
-            let ok_size = emit_size_expr(ok, root_value);
-            let err_size = emit_size_expr(err, root_value);
+            let ok_payload = format!(
+                "((typeof {val} === \"object\" && {val} !== null && (\"tag\" in ({val} as any)) && ({val} as any).tag === \"ok\") ? ({val} as any).value : {val})"
+            );
+            let err_payload = format!("({val} instanceof Error ? {val} : ({val} as any).error)");
+            let ok_size = emit_size_expr(
+                &remap_size_root(ok, ValueExpr::Var("value".into())),
+                &ok_payload,
+            );
+            let err_size = emit_size_expr(
+                &remap_size_root(err, ValueExpr::Var("value".into())),
+                &err_payload,
+            );
             format!(
                 "(1 + (((typeof {val} === \"object\" && {val} !== null && (\"tag\" in ({val} as any)) && ({val} as any).tag === \"err\") || {val} instanceof Error) ? {err_size} : {ok_size}))"
             )
@@ -451,6 +484,93 @@ pub fn emit_size_expr(size: &SizeExpr, root_value: &str) -> String {
     }
 }
 
+fn remap_size_root(size: &SizeExpr, new_root: ValueExpr) -> SizeExpr {
+    match size {
+        SizeExpr::Fixed(value) => SizeExpr::Fixed(*value),
+        SizeExpr::Runtime => SizeExpr::Runtime,
+        SizeExpr::StringLen(value) => SizeExpr::StringLen(value.remap_root(new_root)),
+        SizeExpr::BytesLen(value) => SizeExpr::BytesLen(value.remap_root(new_root)),
+        SizeExpr::ValueSize(value) => SizeExpr::ValueSize(value.remap_root(new_root)),
+        SizeExpr::WireSize { value, owner } => SizeExpr::WireSize {
+            value: value.remap_root(new_root),
+            owner: owner.clone(),
+        },
+        SizeExpr::BuiltinSize { id, value } => SizeExpr::BuiltinSize {
+            id: id.clone(),
+            value: value.remap_root(new_root),
+        },
+        SizeExpr::Sum(parts) => SizeExpr::Sum(
+            parts
+                .iter()
+                .map(|part| remap_size_root(part, new_root.clone()))
+                .collect(),
+        ),
+        SizeExpr::OptionSize { value, inner } => SizeExpr::OptionSize {
+            value: value.remap_root(new_root.clone()),
+            inner: Box::new(remap_size_root(inner, new_root)),
+        },
+        SizeExpr::VecSize {
+            value,
+            inner,
+            layout,
+        } => SizeExpr::VecSize {
+            value: value.remap_root(new_root.clone()),
+            inner: Box::new(remap_size_root(inner, new_root)),
+            layout: layout.clone(),
+        },
+        SizeExpr::ResultSize { value, ok, err } => SizeExpr::ResultSize {
+            value: value.remap_root(new_root.clone()),
+            ok: Box::new(remap_size_root(ok, new_root.clone())),
+            err: Box::new(remap_size_root(err, new_root)),
+        },
+    }
+}
+
 fn to_pascal_case(name: &str) -> String {
     boltffi_ffi_rules::naming::to_upper_camel_case(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::ops::ValueExpr;
+
+    #[test]
+    fn option_size_uses_optional_payload_binding() {
+        let rendered = emit_size_expr(
+            &SizeExpr::OptionSize {
+                value: ValueExpr::Var("value".into()),
+                inner: Box::new(SizeExpr::Sum(vec![
+                    SizeExpr::Fixed(4),
+                    SizeExpr::StringLen(ValueExpr::Var("v".into())),
+                ])),
+            },
+            "email",
+        );
+
+        assert_eq!(
+            rendered,
+            "(email !== null ? 1 + (4 + wireStringSize(email)) : 1)"
+        );
+    }
+
+    #[test]
+    fn result_size_uses_result_branch_bindings() {
+        let rendered = emit_size_expr(
+            &SizeExpr::ResultSize {
+                value: ValueExpr::Var("value".into()),
+                ok: Box::new(SizeExpr::Fixed(4)),
+                err: Box::new(SizeExpr::Sum(vec![
+                    SizeExpr::Fixed(4),
+                    SizeExpr::StringLen(ValueExpr::Var("errVal".into())),
+                ])),
+            },
+            "result",
+        );
+
+        assert_eq!(
+            rendered,
+            "(1 + (((typeof result === \"object\" && result !== null && (\"tag\" in (result as any)) && (result as any).tag === \"err\") || result instanceof Error) ? (4 + wireStringSize((result instanceof Error ? result : (result as any).error))) : 4))"
+        );
+    }
 }

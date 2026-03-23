@@ -53,6 +53,7 @@ impl<'a> CHeaderLowerer<'a> {
         out.push_str(&self.enum_typedefs());
         out.push_str(&self.callback_vtables());
         out.push_str(&self.function_declarations());
+        out.push_str(&self.value_type_declarations());
         out.push_str(&self.class_declarations());
         out.push_str(&self.free_functions());
 
@@ -233,6 +234,30 @@ impl<'a> CHeaderLowerer<'a> {
             .collect()
     }
 
+    fn value_type_declarations(&self) -> String {
+        let declarations: String = self
+            .abi
+            .calls
+            .iter()
+            .filter(|call| {
+                matches!(
+                    call.id,
+                    CallId::RecordConstructor { .. }
+                        | CallId::RecordMethod { .. }
+                        | CallId::EnumConstructor { .. }
+                        | CallId::EnumMethod { .. }
+                )
+            })
+            .map(|call| self.render_call(call))
+            .collect();
+
+        if declarations.is_empty() {
+            declarations
+        } else {
+            format!("{declarations}\n")
+        }
+    }
+
     fn class_declarations(&self) -> String {
         let mut out = String::new();
 
@@ -329,10 +354,26 @@ impl<'a> CHeaderLowerer<'a> {
     }
 
     fn render_stream(&self, stream: &AbiStream) -> String {
+        let pop_batch_decl = match &stream.item_transport {
+            Transport::Scalar(origin) => format!(
+                "uintptr_t {}(SubscriptionHandle sub, {}* output_ptr, uintptr_t output_capacity);",
+                stream.pop_batch.as_str(),
+                emit::primitive_c_type(origin.primitive())
+            ),
+            Transport::Composite(layout) => format!(
+                "uintptr_t {}(SubscriptionHandle sub, ___{}* output_ptr, uintptr_t output_capacity);",
+                stream.pop_batch.as_str(),
+                layout.record_id.as_str()
+            ),
+            _ => format!(
+                "FfiBuf_u8 {}(SubscriptionHandle sub, uintptr_t max_count);",
+                stream.pop_batch.as_str()
+            ),
+        };
         StreamTemplate {
             class_name: stream.class_id.as_str(),
             subscribe: stream.subscribe.as_str(),
-            pop_batch: stream.pop_batch.as_str(),
+            pop_batch_decl: &pop_batch_decl,
             wait: stream.wait.as_str(),
             poll: stream.poll.as_str(),
             unsubscribe: stream.unsubscribe.as_str(),
@@ -429,9 +470,9 @@ impl<'a> CHeaderLowerer<'a> {
 mod tests {
     use crate::ir;
     use crate::model::{
-        CallbackTrait, Class, Constructor, Enumeration, Function, Method, Module, Parameter,
-        Primitive, Receiver, Record, RecordField, ReturnType, TraitMethod, TraitMethodParam, Type,
-        Variant,
+        CallbackTrait, Class, Constructor, ConstructorParam, Enumeration, Function, Method, Module,
+        Parameter, Primitive, Receiver, Record, RecordField, ReturnType, TraitMethod,
+        TraitMethodParam, Type, Variant,
     };
 
     use super::CHeaderLowerer;
@@ -495,6 +536,20 @@ mod tests {
     }
 
     #[test]
+    fn pointer_sized_vec_param_uses_native_integer_pointer_signature() {
+        let mut module = Module::new("test").with_function(
+            Function::new("echo_vec_isize")
+                .with_param(Parameter::new(
+                    "v",
+                    Type::Vec(Box::new(Type::Primitive(Primitive::ISize))),
+                ))
+                .with_output(Type::Vec(Box::new(Type::Primitive(Primitive::ISize)))),
+        );
+        let header = generate_header(&mut module);
+        assert!(header.contains("boltffi_echo_vec_isize(const intptr_t* v, uintptr_t v_len);"));
+    }
+
+    #[test]
     fn class_produces_constructor_destructor_method() {
         let mut module = Module::new("test").with_class(
             Class::new("Player")
@@ -509,6 +564,51 @@ mod tests {
         assert!(header.contains("boltffi_player_new("));
         assert!(header.contains("boltffi_player_free(struct Player * handle);"));
         assert!(header.contains("boltffi_player_get_score("));
+    }
+
+    #[test]
+    fn value_type_methods_and_constructors_are_declared() {
+        let mut module = Module::new("test")
+            .with_record(
+                Record::new("Point")
+                    .with_field(RecordField::new("x", Type::Primitive(Primitive::F64)))
+                    .with_field(RecordField::new("y", Type::Primitive(Primitive::F64)))
+                    .with_constructor(
+                        Constructor::new()
+                            .with_param(ConstructorParam::new("x", Type::Primitive(Primitive::F64)))
+                            .with_param(ConstructorParam::new(
+                                "y",
+                                Type::Primitive(Primitive::F64),
+                            )),
+                    )
+                    .with_method(
+                        Method::new("origin", Receiver::None)
+                            .with_output(Type::Record("Point".into())),
+                    )
+                    .with_method(
+                        Method::new("distance", Receiver::Ref)
+                            .with_output(Type::Primitive(Primitive::F64)),
+                    ),
+            )
+            .with_enum(
+                Enumeration::new("Direction")
+                    .with_variant(Variant::new("north").with_discriminant(0))
+                    .with_variant(Variant::new("south").with_discriminant(1))
+                    .with_method(
+                        Method::new("cardinal", Receiver::None)
+                            .with_output(Type::Enum("Direction".into())),
+                    )
+                    .with_method(
+                        Method::new("opposite", Receiver::Ref)
+                            .with_output(Type::Enum("Direction".into())),
+                    ),
+            );
+        let header = generate_header(&mut module);
+        assert!(header.contains("___Point boltffi_point_new(double x, double y);"));
+        assert!(header.contains("___Point boltffi_point_origin(void);"));
+        assert!(header.contains("double boltffi_point_distance("));
+        assert!(header.contains("boltffi_direction_cardinal(void);"));
+        assert!(header.contains("boltffi_direction_opposite("));
     }
 
     #[test]

@@ -59,7 +59,7 @@ pub struct CallbackVtableTemplate<'a> {
 pub struct StreamTemplate<'a> {
     pub class_name: &'a str,
     pub subscribe: &'a str,
-    pub pop_batch: &'a str,
+    pub pop_batch_decl: &'a str,
     pub wait: &'a str,
     pub poll: &'a str,
     pub unsubscribe: &'a str,

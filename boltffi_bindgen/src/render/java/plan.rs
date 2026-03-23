@@ -30,7 +30,7 @@ pub struct JavaAsyncCall {
     pub complete: String,
     pub cancel: String,
     pub free: String,
-    pub complete_strategy: JavaReturnStrategy,
+    pub complete_return_plan: JavaReturnPlan,
 }
 
 #[derive(Debug, Clone)]
@@ -196,24 +196,26 @@ pub struct JavaRecordField {
 }
 
 #[derive(Debug, Clone)]
-pub enum JavaReturnStrategy {
+pub struct JavaReturnPlan {
+    pub native_return_type: String,
+    pub render: JavaReturnRender,
+}
+
+#[derive(Debug, Clone)]
+pub enum JavaReturnRender {
     Void,
     Direct,
-    CStyleEnumDecode {
+    CStyleEnum {
         class_name: String,
-        native_type: String,
     },
-    WireDecode {
+    Decode {
         decode_expr: String,
     },
-    BufferDecode {
-        decode_expr: String,
-    },
-    HandleReturn {
+    Handle {
         class_name: String,
         nullable: bool,
     },
-    ResultDecode {
+    Result {
         ok_decode_expr: String,
         err_decode_expr: String,
         err_is_string: bool,
@@ -221,45 +223,41 @@ pub enum JavaReturnStrategy {
     },
 }
 
-impl JavaReturnStrategy {
+impl JavaReturnPlan {
     pub fn is_void(&self) -> bool {
-        matches!(self, Self::Void)
+        matches!(self.render, JavaReturnRender::Void)
     }
 
     pub fn is_direct(&self) -> bool {
-        matches!(self, Self::Direct)
+        matches!(self.render, JavaReturnRender::Direct)
     }
 
     pub fn is_c_style_enum(&self) -> bool {
-        matches!(self, Self::CStyleEnumDecode { .. })
+        matches!(self.render, JavaReturnRender::CStyleEnum { .. })
     }
 
-    pub fn is_wire(&self) -> bool {
-        matches!(self, Self::WireDecode { .. })
-    }
-
-    pub fn is_buffer(&self) -> bool {
-        matches!(self, Self::BufferDecode { .. })
+    pub fn is_decode(&self) -> bool {
+        matches!(self.render, JavaReturnRender::Decode { .. })
     }
 
     pub fn is_handle(&self) -> bool {
-        matches!(self, Self::HandleReturn { .. })
+        matches!(self.render, JavaReturnRender::Handle { .. })
     }
 
     pub fn is_result(&self) -> bool {
-        matches!(self, Self::ResultDecode { .. })
+        matches!(self.render, JavaReturnRender::Result { .. })
     }
 
     pub fn result_ok_decode(&self) -> &str {
-        match self {
-            Self::ResultDecode { ok_decode_expr, .. } => ok_decode_expr,
+        match &self.render {
+            JavaReturnRender::Result { ok_decode_expr, .. } => ok_decode_expr,
             _ => "",
         }
     }
 
     pub fn result_err_decode(&self) -> &str {
-        match self {
-            Self::ResultDecode {
+        match &self.render {
+            JavaReturnRender::Result {
                 err_decode_expr, ..
             } => err_decode_expr,
             _ => "",
@@ -268,8 +266,8 @@ impl JavaReturnStrategy {
 
     pub fn result_err_is_string(&self) -> bool {
         matches!(
-            self,
-            Self::ResultDecode {
+            self.render,
+            JavaReturnRender::Result {
                 err_is_string: true,
                 ..
             }
@@ -277,8 +275,8 @@ impl JavaReturnStrategy {
     }
 
     pub fn result_err_exception_class(&self) -> &str {
-        match self {
-            Self::ResultDecode {
+        match &self.render {
+            JavaReturnRender::Result {
                 err_exception_class: Some(class),
                 ..
             } => class,
@@ -288,8 +286,8 @@ impl JavaReturnStrategy {
 
     pub fn result_has_typed_exception(&self) -> bool {
         matches!(
-            self,
-            Self::ResultDecode {
+            self.render,
+            JavaReturnRender::Result {
                 err_exception_class: Some(_),
                 ..
             }
@@ -297,40 +295,28 @@ impl JavaReturnStrategy {
     }
 
     pub fn decode_expr(&self) -> &str {
-        match self {
-            Self::WireDecode { decode_expr } | Self::BufferDecode { decode_expr } => decode_expr,
+        match &self.render {
+            JavaReturnRender::Decode { decode_expr } => decode_expr,
             _ => "",
         }
     }
 
     pub fn c_style_enum_class(&self) -> &str {
-        match self {
-            Self::CStyleEnumDecode { class_name, .. } => class_name,
+        match &self.render {
+            JavaReturnRender::CStyleEnum { class_name } => class_name,
             _ => "",
         }
     }
 
     pub fn handle_class(&self) -> &str {
-        match self {
-            Self::HandleReturn { class_name, .. } => class_name,
+        match &self.render {
+            JavaReturnRender::Handle { class_name, .. } => class_name,
             _ => "",
         }
     }
 
     pub fn handle_nullable(&self) -> bool {
-        matches!(self, Self::HandleReturn { nullable: true, .. })
-    }
-
-    pub fn native_return_type<'a>(&'a self, return_type: &'a str) -> &'a str {
-        match self {
-            Self::Void => "void",
-            Self::Direct => return_type,
-            Self::CStyleEnumDecode { native_type, .. } => native_type,
-            Self::HandleReturn { .. } => "long",
-            Self::WireDecode { .. } | Self::BufferDecode { .. } | Self::ResultDecode { .. } => {
-                "byte[]"
-            }
-        }
+        matches!(self.render, JavaReturnRender::Handle { nullable: true, .. })
     }
 }
 
@@ -340,7 +326,7 @@ pub struct JavaFunction {
     pub ffi_name: String,
     pub params: Vec<JavaParam>,
     pub return_type: String,
-    pub strategy: JavaReturnStrategy,
+    pub return_plan: JavaReturnPlan,
     pub wire_writers: Vec<JavaWireWriter>,
     pub async_call: Option<JavaAsyncCall>,
 }
@@ -355,7 +341,7 @@ impl JavaFunction {
     }
 
     pub fn native_return_type(&self) -> &str {
-        self.strategy.native_return_type(&self.return_type)
+        &self.return_plan.native_return_type
     }
 }
 
@@ -434,7 +420,7 @@ pub struct JavaClassMethod {
     pub is_static: bool,
     pub params: Vec<JavaParam>,
     pub return_type: String,
-    pub strategy: JavaReturnStrategy,
+    pub return_plan: JavaReturnPlan,
     pub wire_writers: Vec<JavaWireWriter>,
     pub async_call: Option<JavaAsyncCall>,
 }
@@ -449,7 +435,7 @@ impl JavaClassMethod {
     }
 
     pub fn native_return_type(&self) -> &str {
-        self.strategy.native_return_type(&self.return_type)
+        &self.return_plan.native_return_type
     }
 }
 

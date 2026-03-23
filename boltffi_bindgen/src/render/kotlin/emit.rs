@@ -1,4 +1,4 @@
-use crate::ir::codec::{EnumLayout, VecLayout};
+use crate::ir::codec::{EnumLayout, EnumTagStrategy, VecLayout};
 use crate::ir::ids::BuiltinId;
 use crate::ir::ops::{ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq};
 use crate::ir::types::{PrimitiveType, TypeExpr};
@@ -197,17 +197,21 @@ pub fn emit_reader_read(seq: &ReadSeq) -> String {
         ReadOp::Enum { id, layout, .. } => match layout {
             EnumLayout::CStyle {
                 tag_type,
-                is_error: false,
-            } => {
-                format!(
-                    "{}.fromValue(reader.{}())",
-                    render_type_name(id.as_str()),
-                    enum_tag_read_method(*tag_type),
-                )
-            }
-            EnumLayout::CStyle { is_error: true, .. }
-            | EnumLayout::Data { .. }
-            | EnumLayout::Recursive => {
+                tag_strategy,
+                ..
+            } => match tag_strategy {
+                EnumTagStrategy::Discriminant => {
+                    format!(
+                        "{}.fromValue(reader.{}())",
+                        render_type_name(id.as_str()),
+                        enum_tag_read_method(*tag_type),
+                    )
+                }
+                EnumTagStrategy::OrdinalIndex => {
+                    format!("{}.decode(reader)", render_type_name(id.as_str()))
+                }
+            },
+            EnumLayout::Data { .. } | EnumLayout::Recursive => {
                 format!("{}.decode(reader)", render_type_name(id.as_str()))
             }
         },
@@ -323,11 +327,17 @@ pub fn emit_write_expr(seq: &WriteSeq) -> String {
         WriteOp::Enum { value, layout, .. } => match layout {
             EnumLayout::CStyle {
                 tag_type,
-                is_error: false,
-            } => enum_tag_write_expr(*tag_type, &format!("{}.value", render_value(value))),
-            EnumLayout::CStyle { is_error: true, .. }
-            | EnumLayout::Data { .. }
-            | EnumLayout::Recursive => {
+                tag_strategy,
+                ..
+            } => match tag_strategy {
+                EnumTagStrategy::Discriminant => {
+                    enum_tag_write_expr(*tag_type, &format!("{}.value", render_value(value)))
+                }
+                EnumTagStrategy::OrdinalIndex => {
+                    format!("{}.wireEncodeTo(wire)", render_value(value))
+                }
+            },
+            EnumLayout::Data { .. } | EnumLayout::Recursive => {
                 format!("{}.wireEncodeTo(wire)", render_value(value))
             }
         },
@@ -354,7 +364,7 @@ fn emit_vec_size(value: &str, inner: &SizeExpr, layout: &VecLayout) -> String {
         }
         VecLayout::Encoded => {
             format!(
-                "(4 + {}.sumOf {{ item -> {} }})",
+                "(4 + {}.sumOf {{ item -> ({}).toInt() }})",
                 value,
                 emit_size_expr(inner)
             )

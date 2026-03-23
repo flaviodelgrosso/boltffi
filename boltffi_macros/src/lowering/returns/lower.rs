@@ -1,0 +1,235 @@
+use boltffi_ffi_rules::primitive::Primitive;
+use proc_macro2::Span;
+use quote::quote;
+use syn::Type;
+
+use crate::registries::custom_types::{self, CustomTypeRegistry};
+
+use super::classify::{extract_option_inner, primitive_for_type};
+use super::model::{
+    EncodedReturnStrategy, ResolvedReturn, ScalarReturnStrategy, ValueReturnStrategy,
+    WasmOptionScalarEncoding,
+};
+
+impl ResolvedReturn {
+    pub fn invalid_arg_early_return_statement(&self) -> proc_macro2::TokenStream {
+        match self.value_return_strategy() {
+            ValueReturnStrategy::Void => quote! {
+                return ::boltffi::__private::FfiStatus::INVALID_ARG;
+            },
+            ValueReturnStrategy::Scalar(_) => quote! {
+                return ::core::default::Default::default();
+            },
+            ValueReturnStrategy::Buffer(EncodedReturnStrategy::OptionScalar) => {
+                let _ = WasmOptionScalarEncoding::from_option_rust_type(self.rust_type())
+                    .expect("OptionScalar return must have a primitive Option inner type");
+                quote! {
+                    return f64::NAN;
+                }
+            }
+            ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec) => {
+                quote! {
+                    return;
+                }
+            }
+            ValueReturnStrategy::Buffer(_) => quote! {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    return ::boltffi::__private::FfiBuf::default().into_packed();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    return ::boltffi::__private::FfiBuf::default();
+                }
+            },
+            ValueReturnStrategy::CompositeValue => {
+                let rust_type = self.rust_type();
+                quote! {
+                    return unsafe {
+                        ::core::mem::MaybeUninit::<<#rust_type as ::boltffi::__private::Passable>::Out>::zeroed().assume_init()
+                    };
+                }
+            }
+            ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => quote! {
+                return ::core::default::Default::default();
+            },
+        }
+    }
+
+    pub fn async_ffi_return_type(&self) -> proc_macro2::TokenStream {
+        let rust_type = self.rust_type();
+        match self.value_return_strategy() {
+            ValueReturnStrategy::Void => quote! { () },
+            ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue) => {
+                quote! { #rust_type }
+            }
+            ValueReturnStrategy::Scalar(ScalarReturnStrategy::CStyleEnumTag)
+            | ValueReturnStrategy::CompositeValue => {
+                quote! { <#rust_type as ::boltffi::__private::Passable>::Out }
+            }
+            ValueReturnStrategy::Buffer(_) => quote! { ::boltffi::__private::FfiBuf },
+            ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => {
+                quote! { #rust_type }
+            }
+        }
+    }
+
+    pub fn async_rust_return_type(&self) -> proc_macro2::TokenStream {
+        let rust_type = self.rust_type();
+        match self.value_return_strategy() {
+            ValueReturnStrategy::Void => quote! { () },
+            _ => quote! { #rust_type },
+        }
+    }
+
+    pub fn async_complete_conversion(
+        &self,
+        return_lowering: &super::model::ReturnLoweringContext<'_>,
+    ) -> proc_macro2::TokenStream {
+        match self.value_return_strategy() {
+            ValueReturnStrategy::Void => quote! {
+                if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
+                ()
+            },
+            ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue) => quote! {
+                if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
+                result
+            },
+            ValueReturnStrategy::Scalar(ScalarReturnStrategy::CStyleEnumTag)
+            | ValueReturnStrategy::CompositeValue => quote! {
+                if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
+                ::boltffi::__private::Passable::pack(result)
+            },
+            ValueReturnStrategy::Buffer(strategy) => {
+                let result_ident = syn::Ident::new("result", Span::call_site());
+                let encode_expression = encoded_return_buffer_expression(
+                    self.rust_type(),
+                    strategy,
+                    &result_ident,
+                    Some(return_lowering.custom_types()),
+                );
+                quote! {
+                    if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
+                    #encode_expression
+                }
+            }
+            ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => quote! {
+                if !out_status.is_null() { *out_status = ::boltffi::__private::FfiStatus::OK; }
+                result
+            },
+        }
+    }
+
+    pub fn async_default_ffi_value(&self) -> proc_macro2::TokenStream {
+        match self.value_return_strategy() {
+            ValueReturnStrategy::Void => quote! { () },
+            ValueReturnStrategy::Scalar(_)
+            | ValueReturnStrategy::CompositeValue
+            | ValueReturnStrategy::ObjectHandle
+            | ValueReturnStrategy::CallbackHandle => quote! { Default::default() },
+            ValueReturnStrategy::Buffer(_) => quote! { ::boltffi::__private::FfiBuf::default() },
+        }
+    }
+}
+
+impl WasmOptionScalarEncoding {
+    pub fn from_option_rust_type(rust_type: &Type) -> Option<Self> {
+        extract_option_inner(rust_type)
+            .and_then(|inner| primitive_for_type(&inner))
+            .map(|primitive| Self { primitive })
+    }
+
+    pub fn some_expression(self, value_ident: &syn::Ident) -> proc_macro2::TokenStream {
+        match self.primitive {
+            Primitive::Bool => quote! {
+                if #value_ident { 1.0 } else { 0.0 }
+            },
+            Primitive::F64 => quote! { #value_ident },
+            Primitive::I8
+            | Primitive::U8
+            | Primitive::I16
+            | Primitive::U16
+            | Primitive::I32
+            | Primitive::U32
+            | Primitive::I64
+            | Primitive::U64
+            | Primitive::ISize
+            | Primitive::USize
+            | Primitive::F32 => quote! {
+                #value_ident as f64
+            },
+        }
+    }
+}
+
+pub fn encoded_return_body(
+    rust_type: &syn::Type,
+    strategy: EncodedReturnStrategy,
+    result_ident: &syn::Ident,
+    evaluate_result_expression: proc_macro2::TokenStream,
+    conversions: &[proc_macro2::TokenStream],
+    custom_type_registry: &CustomTypeRegistry,
+) -> proc_macro2::TokenStream {
+    let encode_expression = encoded_return_buffer_expression(
+        rust_type,
+        strategy,
+        result_ident,
+        Some(custom_type_registry),
+    );
+
+    quote! {
+        #(#conversions)*
+        let #result_ident: #rust_type = #evaluate_result_expression;
+        #encode_expression
+    }
+}
+
+pub fn encoded_return_buffer_expression(
+    rust_type: &syn::Type,
+    strategy: EncodedReturnStrategy,
+    result_ident: &syn::Ident,
+    custom_type_registry: Option<&CustomTypeRegistry>,
+) -> proc_macro2::TokenStream {
+    match strategy {
+        EncodedReturnStrategy::DirectVec => quote! {
+            <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident)
+        },
+        EncodedReturnStrategy::Utf8String => quote! {
+            #[cfg(target_arch = "wasm32")]
+            {
+                ::boltffi::__private::FfiBuf::from_vec(#result_ident.into_bytes())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+            }
+        },
+        EncodedReturnStrategy::OptionScalar | EncodedReturnStrategy::ResultScalar => quote! {
+            ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+        },
+        EncodedReturnStrategy::WireEncoded => {
+            wire_encode_expression(rust_type, result_ident, custom_type_registry)
+        }
+    }
+}
+
+fn wire_encode_expression(
+    rust_type: &syn::Type,
+    result_ident: &syn::Ident,
+    custom_type_registry: Option<&CustomTypeRegistry>,
+) -> proc_macro2::TokenStream {
+    match custom_type_registry {
+        Some(registry) if custom_types::contains_custom_types(rust_type, registry) => {
+            let wire_ty = custom_types::wire_type_for(rust_type, registry);
+            let wire_value_ident = syn::Ident::new("__boltffi_wire_value", result_ident.span());
+            let to_wire = custom_types::to_wire_expr_owned(rust_type, registry, result_ident);
+            quote! {
+                let #wire_value_ident: #wire_ty = { #to_wire };
+                ::boltffi::__private::FfiBuf::wire_encode(&#wire_value_ident)
+            }
+        }
+        _ => quote! {
+            ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+        },
+    }
+}

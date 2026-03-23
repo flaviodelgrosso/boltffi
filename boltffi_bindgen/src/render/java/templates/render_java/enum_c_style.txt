@@ -20,4 +20,15 @@ public enum {{ enumeration.class_name }} {
         }
         throw new IllegalArgumentException("Unknown {{ enumeration.class_name }} value: " + value);
     }
+
+    static {{ enumeration.class_name }} fromTag(int tag) {
+        if (tag < 0 || tag >= VALUES.length) {
+            throw new IllegalArgumentException("Unknown {{ enumeration.class_name }} wire tag: " + tag);
+        }
+        return VALUES[tag];
+    }
+
+    int wireTag() {
+        return ordinal();
+    }
 }

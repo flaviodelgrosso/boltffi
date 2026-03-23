@@ -6,10 +6,10 @@
     "lib": ["ES2021", "DOM"],
     "declaration": true,
     "outDir": "./dist",
-    "rootDir": "./generated/typescript",
+    "rootDir": "./generated",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "include": ["generated/typescript/*.ts"]
+  "include": ["generated/*.ts"]
 }

@@ -162,7 +162,7 @@ internal class BoltFFIStreamContext(
     private val poll: (SubscriptionHandle, Long) -> Unit,
     private val unsubscribe: (SubscriptionHandle) -> Unit,
     private val freeFn: (SubscriptionHandle) -> Unit,
-    private val processItems: (WireReader) -> Unit,
+    private val processItems: (ByteArray) -> Unit,
     private val finish: () -> Unit
 ) {
     // 0 = running, 1 = unsubscribe called, 2 = unsubscribed, 3 = freed
@@ -219,8 +219,7 @@ internal class BoltFFIStreamContext(
                 val bytes = popBatch(subscription, batchSize)
                     ?: throw RuntimeException("BoltFFI: stream pop_batch failed (null)")
                 if (bytes.isEmpty()) break
-                val reader = WireReader(bytes)
-                processItems(reader)
+                processItems(bytes)
             }
         } finally {
             callbackTag.compareAndSet(1, 0)

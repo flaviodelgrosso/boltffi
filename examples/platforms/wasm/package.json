@@ -6,7 +6,7 @@
     "test": "node test.mjs"
   },
   "dependencies": {
-    "@boltffi/runtime": "file:../../runtime/typescript",
+    "@boltffi/runtime": "file:../../../runtime/typescript",
     "@boltffi/demo": "file:./dist"
   },
   "devDependencies": {

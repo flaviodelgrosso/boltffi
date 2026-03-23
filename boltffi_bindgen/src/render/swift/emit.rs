@@ -1,6 +1,6 @@
 use boltffi_ffi_rules::naming::to_upper_camel_case as pascal_case;
 
-use crate::ir::codec::{EnumLayout, VecLayout};
+use crate::ir::codec::{EnumLayout, EnumTagStrategy, VecLayout};
 use crate::ir::ids::BuiltinId;
 use crate::ir::ops::{OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq};
 use crate::ir::types::{PrimitiveType, TypeExpr};
@@ -109,13 +109,38 @@ pub fn swift_type(type_expr: &TypeExpr) -> String {
             }
         }
         TypeExpr::Result { ok, err } => {
-            format!("Result<{}, {}>", swift_type(ok), swift_type(err))
+            format!(
+                "Result<{}, {}>",
+                swift_type(ok),
+                swift_result_error_type_from_type(err)
+            )
         }
         TypeExpr::Record(id) => pascal_case(id.as_str()),
         TypeExpr::Enum(id) => pascal_case(id.as_str()),
         TypeExpr::Custom(id) => pascal_case(id.as_str()),
         TypeExpr::Handle(id) => pascal_case(id.as_str()),
         TypeExpr::Callback(id) => pascal_case(id.as_str()),
+    }
+}
+
+fn swift_result_error_type_from_type(type_expr: &TypeExpr) -> String {
+    match type_expr {
+        TypeExpr::String => "FfiError".to_string(),
+        _ => swift_type(type_expr),
+    }
+}
+
+fn swift_result_failure_expr(err_seq: &ReadSeq, err_expr: String) -> String {
+    match err_seq.ops.first() {
+        Some(ReadOp::String { .. }) => format!("FfiError(message: {})", err_expr),
+        _ => err_expr,
+    }
+}
+
+fn swift_result_failure_binding(err_op: &WriteOp, binding_name: &str) -> String {
+    match err_op {
+        WriteOp::String { .. } => format!("{}.message", binding_name),
+        _ => binding_name.to_string(),
     }
 }
 
@@ -524,14 +549,28 @@ fn emit_read_op(op: &ReadOp, base_name: &str, base_expr: &str) -> (String, ReadR
         ReadOp::Enum { id, offset, layout } => {
             let offset_expr = emit_offset_expr(offset, base_name, base_expr);
             match layout {
-                EnumLayout::CStyle { tag_type, .. } => (
-                    format!(
-                        "{}(fromC: {})",
-                        pascal_case(id.as_str()),
-                        c_style_enum_read_at(*tag_type, &offset_expr)
+                EnumLayout::CStyle {
+                    tag_type,
+                    tag_strategy,
+                    ..
+                } => match tag_strategy {
+                    EnumTagStrategy::Discriminant => (
+                        format!(
+                            "{}(fromC: {})",
+                            pascal_case(id.as_str()),
+                            c_style_enum_read_at(*tag_type, &offset_expr)
+                        ),
+                        ReadReturn::BareValue(tag_type.wire_size_bytes()),
                     ),
-                    ReadReturn::BareValue(tag_type.wire_size_bytes()),
-                ),
+                    EnumTagStrategy::OrdinalIndex => (
+                        format!(
+                            "{}(wireTag: wire.readI32(at: {}))",
+                            pascal_case(id.as_str()),
+                            offset_expr
+                        ),
+                        ReadReturn::BareValue(PrimitiveType::I32.wire_size_bytes()),
+                    ),
+                },
                 EnumLayout::Data { .. } | EnumLayout::Recursive => (
                     format!(
                         "{}.decode(wireBuffer: wire, at: {})",
@@ -597,9 +636,18 @@ fn emit_write_data_op(op: &WriteOp) -> String {
         WriteOp::Enum { value, layout, .. } => {
             let v = render_value(value);
             match layout {
-                EnumLayout::CStyle { tag_type, .. } => {
-                    c_style_enum_write_data(*tag_type, &format!("{}.rawValue", v))
-                }
+                EnumLayout::CStyle {
+                    tag_type,
+                    tag_strategy,
+                    ..
+                } => match tag_strategy {
+                    EnumTagStrategy::Discriminant => {
+                        c_style_enum_write_data(*tag_type, &format!("{}.rawValue", v))
+                    }
+                    EnumTagStrategy::OrdinalIndex => {
+                        c_style_enum_write_data(PrimitiveType::I32, &format!("{}.wireTag", v))
+                    }
+                },
                 EnumLayout::Data { .. } | EnumLayout::Recursive => {
                     format!("{}.wireEncodeTo(&data)", v)
                 }
@@ -609,9 +657,13 @@ fn emit_write_data_op(op: &WriteOp) -> String {
             let v = render_value(value);
             let ok_data = emit_write_data(ok);
             let err_data = emit_write_data(err);
+            let err_value =
+                swift_result_failure_binding(err.ops.first().expect("result err op"), "errVal");
             format!(
                 "switch {} {{ case .success(let okVal): data.appendU8(0); {}; case .failure(let errVal): data.appendU8(1); {} }}",
-                v, ok_data, err_data
+                v,
+                ok_data,
+                err_data.replace("errVal", &err_value)
             )
         }
         WriteOp::Custom { underlying, .. } => emit_write_data(underlying),
@@ -689,9 +741,18 @@ fn emit_write_bytes_op(op: &WriteOp) -> String {
         WriteOp::Enum { value, layout, .. } => {
             let v = render_value(value);
             match layout {
-                EnumLayout::CStyle { tag_type, .. } => {
-                    c_style_enum_write_bytes(*tag_type, &format!("{}.rawValue", v))
-                }
+                EnumLayout::CStyle {
+                    tag_type,
+                    tag_strategy,
+                    ..
+                } => match tag_strategy {
+                    EnumTagStrategy::Discriminant => {
+                        c_style_enum_write_bytes(*tag_type, &format!("{}.rawValue", v))
+                    }
+                    EnumTagStrategy::OrdinalIndex => {
+                        c_style_enum_write_bytes(PrimitiveType::I32, &format!("{}.wireTag", v))
+                    }
+                },
                 EnumLayout::Data { .. } | EnumLayout::Recursive => {
                     format!("{}.wireEncodeToBytes(&bytes)", v)
                 }
@@ -701,9 +762,13 @@ fn emit_write_bytes_op(op: &WriteOp) -> String {
             let v = render_value(value);
             let ok_bytes = emit_write_bytes(ok);
             let err_bytes = emit_write_bytes(err);
+            let err_value =
+                swift_result_failure_binding(err.ops.first().expect("result err op"), "errVal");
             format!(
                 "switch {} {{ case .success(let okVal): bytes.appendU8(0); {}; case .failure(let errVal): bytes.appendU8(1); {} }}",
-                v, ok_bytes, err_bytes
+                v,
+                ok_bytes,
+                err_bytes.replace("errVal", &err_value)
             )
         }
         WriteOp::Custom { underlying, .. } => emit_write_bytes(underlying),
@@ -819,20 +884,29 @@ fn emit_reader_read_op(op: &ReadOp) -> String {
             format!("{}.decode(from: &reader)", pascal_case(id.as_str()))
         }
         ReadOp::Enum { id, layout, .. } => match layout {
-            EnumLayout::CStyle { tag_type, .. } => {
-                format!(
-                    "{}(fromC: {})",
-                    pascal_case(id.as_str()),
-                    c_style_enum_read(*tag_type)
-                )
-            }
+            EnumLayout::CStyle {
+                tag_type,
+                tag_strategy,
+                ..
+            } => match tag_strategy {
+                EnumTagStrategy::Discriminant => {
+                    format!(
+                        "{}(fromC: {})",
+                        pascal_case(id.as_str()),
+                        c_style_enum_read(*tag_type)
+                    )
+                }
+                EnumTagStrategy::OrdinalIndex => {
+                    format!("{}(wireTag: reader.readI32())", pascal_case(id.as_str()))
+                }
+            },
             EnumLayout::Data { .. } | EnumLayout::Recursive => {
                 format!("{}.decode(from: &reader)", pascal_case(id.as_str()))
             }
         },
         ReadOp::Result { ok, err, .. } => {
             let ok_read = emit_reader_read(ok);
-            let err_read = emit_reader_read(err);
+            let err_read = swift_result_failure_expr(err, emit_reader_read(err));
             format!(
                 "{{ let tag = reader.readU8(); if tag == 0 {{ return .success({}) }} else {{ return .failure({}) }} }}()",
                 ok_read, err_read
@@ -912,9 +986,18 @@ fn emit_writer_write_op(op: &WriteOp) -> String {
         WriteOp::Enum { value, layout, .. } => {
             let v = render_value(value);
             match layout {
-                EnumLayout::CStyle { tag_type, .. } => {
-                    c_style_enum_write_writer(*tag_type, &format!("{}.rawValue", v))
-                }
+                EnumLayout::CStyle {
+                    tag_type,
+                    tag_strategy,
+                    ..
+                } => match tag_strategy {
+                    EnumTagStrategy::Discriminant => {
+                        c_style_enum_write_writer(*tag_type, &format!("{}.rawValue", v))
+                    }
+                    EnumTagStrategy::OrdinalIndex => {
+                        c_style_enum_write_writer(PrimitiveType::I32, &format!("{}.wireTag", v))
+                    }
+                },
                 EnumLayout::Data { .. } | EnumLayout::Recursive => {
                     format!("{}.encode(to: &writer)", v)
                 }
@@ -924,9 +1007,13 @@ fn emit_writer_write_op(op: &WriteOp) -> String {
             let v = render_value(value);
             let ok_write = emit_writer_write(ok);
             let err_write = emit_writer_write(err);
+            let err_value =
+                swift_result_failure_binding(err.ops.first().expect("result err op"), "errVal");
             format!(
                 "switch {} {{ case .success(let okVal): writer.writeU8(0); {}; case .failure(let errVal): writer.writeU8(1); {} }}",
-                v, ok_write, err_write
+                v,
+                ok_write,
+                err_write.replace("errVal", &err_value)
             )
         }
         WriteOp::Custom { underlying, .. } => emit_writer_write(underlying),

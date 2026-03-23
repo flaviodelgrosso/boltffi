@@ -1,5 +1,5 @@
 use crate::ir::abi::AbiContract;
-use crate::ir::codec::{EnumLayout, VecLayout};
+use crate::ir::codec::{EnumLayout, EnumTagStrategy, VecLayout};
 use crate::ir::contract::FfiContract;
 use crate::ir::ops::{ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq};
 use crate::ir::types::{PrimitiveType, TypeExpr};
@@ -223,20 +223,23 @@ fn emit_reader_read_with_context(seq: &ReadSeq, context: &mut JavaEmitContext) -
         ReadOp::Enum { id, layout, .. } => match layout {
             EnumLayout::CStyle {
                 tag_type,
-                is_error: false,
-            } => {
-                format!(
-                    "{}.fromValue(reader.{}())",
-                    NamingConvention::class_name(id.as_str()),
-                    primitive_read_method(*tag_type),
-                )
-            }
-            EnumLayout::CStyle { is_error: true, .. } => {
-                format!(
-                    "{}.fromTag(reader.readI32())",
-                    NamingConvention::class_name(id.as_str()),
-                )
-            }
+                tag_strategy,
+                ..
+            } => match tag_strategy {
+                EnumTagStrategy::Discriminant => {
+                    format!(
+                        "{}.fromValue(reader.{}())",
+                        NamingConvention::class_name(id.as_str()),
+                        primitive_read_method(*tag_type),
+                    )
+                }
+                EnumTagStrategy::OrdinalIndex => {
+                    format!(
+                        "{}.fromTag(reader.readI32())",
+                        NamingConvention::class_name(id.as_str()),
+                    )
+                }
+            },
             EnumLayout::Data { .. } | EnumLayout::Recursive => {
                 format!(
                     "{}.decode(reader)",
@@ -358,22 +361,25 @@ fn emit_write_expr_with_context(
         WriteOp::Enum { value, layout, .. } => match layout {
             EnumLayout::CStyle {
                 tag_type,
-                is_error: false,
-            } => {
-                format!(
-                    "{}.{}({}.value)",
-                    writer_name,
-                    primitive_write_method(*tag_type),
-                    render_value(value),
-                )
-            }
-            EnumLayout::CStyle { is_error: true, .. } => {
-                format!(
-                    "{}.writeI32({}.ordinal())",
-                    writer_name,
-                    render_value(value),
-                )
-            }
+                tag_strategy,
+                ..
+            } => match tag_strategy {
+                EnumTagStrategy::Discriminant => {
+                    format!(
+                        "{}.{}({}.value)",
+                        writer_name,
+                        primitive_write_method(*tag_type),
+                        render_value(value),
+                    )
+                }
+                EnumTagStrategy::OrdinalIndex => {
+                    format!(
+                        "{}.writeI32({}.wireTag())",
+                        writer_name,
+                        render_value(value),
+                    )
+                }
+            },
             EnumLayout::Data { .. } | EnumLayout::Recursive => {
                 format!("{}.wireEncodeTo({})", render_value(value), writer_name)
             }

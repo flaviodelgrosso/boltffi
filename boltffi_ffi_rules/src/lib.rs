@@ -772,7 +772,13 @@ pub mod transport {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum BufferTransport {
+        /// Packs a buffer descriptor into a single integer return value.
+        ///
+        /// Example: WASM can return `ptr + len` as one packed `u64`.
         Packed,
+        /// Returns a dedicated descriptor struct with pointer and length fields.
+        ///
+        /// Example: native 64-bit targets return an `FfiBuf`-style descriptor.
         Descriptor,
     }
 
@@ -793,13 +799,356 @@ pub mod transport {
         }
     }
 
+    /// Describes which side of the ABI surface is making the return-shape
+    /// decision.
+    ///
+    /// The returned value may mean the same thing in all cases, while the
+    /// surrounding call boundary still changes how that value is delivered.
+    ///
+    /// # Examples
+    ///
+    /// - exported Rust functions use [`Self::HostCall`]
+    /// - sync Rust exports use [`Self::SyncExport`]
+    /// - inline closure trampolines use [`Self::InlineClosure`]
+    /// - callback vtable methods use [`Self::CallbackVtable`]
+    /// - exported async completions use [`Self::AsyncCompletion`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ReturnInvocationContext {
+        /// A host binding is reading the result of a normal exported call.
+        ///
+        /// Example: Kotlin calling `boltffi_echo_string(...)`
+        HostCall,
+        /// Rust is exposing a synchronous export function.
+        ///
+        /// Example: `#[boltffi::export] fn greeting() -> String`
+        SyncExport,
+        /// Rust is crossing an inline closure trampoline boundary.
+        ///
+        /// Example: invoking an inline closure parameter from exported Rust
+        InlineClosure,
+        /// Rust is reading or writing through a callback vtable method.
+        ///
+        /// Example: a generated sync callback trait vtable method
+        CallbackVtable,
+        /// The value arrives later through an async completion surface.
+        ///
+        /// Example: an exported future completion callback
+        AsyncCompletion,
+    }
+
+    /// Describes the platform family whose ABI return rules are in play.
+    ///
+    /// # Examples
+    ///
+    /// - `wasm32-unknown-unknown` uses [`Self::Wasm`]
+    /// - `aarch64-apple-darwin` uses [`Self::Native`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ReturnPlatform {
+        /// WebAssembly targets.
+        ///
+        /// Example: `wasm32-unknown-unknown`
+        Wasm,
+        /// Native targets outside the wasm calling convention.
+        ///
+        /// Example: `aarch64-apple-darwin`
+        Native,
+    }
+
+    impl ReturnPlatform {
+        pub fn inferred() -> Self {
+            if cfg!(target_arch = "wasm32") {
+                Self::Wasm
+            } else {
+                Self::Native
+            }
+        }
+    }
+
+    /// Describes the encoded shape used when a return value is already crossing
+    /// the boundary as bytes.
+    ///
+    /// # Examples
+    ///
+    /// - `String` uses [`Self::Utf8String`]
+    /// - `Vec<u32>` on a wire path uses [`Self::DirectVec`]
+    /// - `Option<u32>` can use [`Self::OptionScalar`]
+    /// - `Result<u32, String>` can use [`Self::ResultScalar`]
+    /// - nested records and enums use [`Self::WireEncoded`]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub enum EncodedReturnStrategy {
+        /// Returns a UTF-8 string buffer.
+        ///
+        /// The host receives bytes that already represent a UTF-8 string.
+        ///
+        /// Example: `fn greeting() -> String`
         Utf8String,
+        /// Returns a vector whose elements are already laid out directly in the
+        /// output buffer.
+        ///
+        /// "Direct" here means the buffer already contains the element ABI
+        /// layout for that vector, not a filesystem directory and not a
+        /// secondary wrapping format.
+        ///
+        /// Example: `fn numbers() -> Vec<u32>`
         DirectVec,
+        /// Returns an `Option<T>` where the presence tag and scalar payload fit
+        /// the compact scalar option layout.
+        ///
+        /// This is the compact path for simple scalar payloads such as
+        /// `Option<u32>` or `Option<bool>`.
+        ///
+        /// Example: `fn maybe_count() -> Option<u32>`
         OptionScalar,
+        /// Returns a `Result<T, E>` where the `Ok` payload uses the compact
+        /// scalar result layout.
+        ///
+        /// This is the compact path for result values whose success payload can
+        /// stay in the scalar result layout.
+        ///
+        /// Example: `fn parse_code() -> Result<u32, String>`
         ResultScalar,
+        /// Returns a value through the general wire format.
+        ///
+        /// This is the fallback when the value does not fit one of the compact
+        /// encoded layouts above.
+        ///
+        /// Example: `fn shape() -> Shape`
         WireEncoded,
+    }
+
+    /// Describes what kind of scalar the caller gets back.
+    ///
+    /// We need this because a plain integer and a c-style enum tag may share the
+    /// same ABI type but they do not mean the same thing to host code.
+    /// # Examples
+    ///
+    /// - `fn count() -> u32` uses [`Self::PrimitiveValue`]
+    /// - `fn status() -> Status` where `Status` is a c-style enum uses
+    ///   [`Self::CStyleEnumTag`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ScalarReturnStrategy {
+        /// Returns a plain scalar value with no enum meaning attached to it.
+        ///
+        /// The caller should treat the bits as the scalar itself, not as an
+        /// enum discriminant.
+        ///
+        /// Example: `fn count() -> u32`
+        PrimitiveValue,
+        /// Returns the raw discriminant of a c-style enum.
+        ///
+        /// The ABI value may still be an integer, but it represents an enum
+        /// case tag rather than a free-standing numeric result.
+        ///
+        /// Example: `fn status() -> Status`
+        CStyleEnumTag,
+    }
+
+    /// Describes the value itself that comes back across the boundary.
+    ///
+    /// This is about the returned value, not about the surrounding call shape.
+    /// A function, method, callback, or inline closure can all use the same value
+    /// return strategy even when they deliver that value through different ABI
+    /// wiring.
+    /// # Examples
+    ///
+    /// - `fn ping()` uses [`Self::Void`]
+    /// - `fn count() -> u32` uses [`Self::Scalar`]
+    /// - `fn point() -> Point` uses [`Self::CompositeValue`]
+    /// - `fn counts() -> Vec<u32>` can use [`Self::Buffer`]
+    /// - `fn shape() -> Shape` can use [`Self::Buffer`]
+    /// - `fn inventory() -> Inventory` uses [`Self::ObjectHandle`]
+    /// - `fn callback() -> Box<dyn Mapper>` uses [`Self::CallbackHandle`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ValueReturnStrategy {
+        /// Returns no value.
+        ///
+        /// The call exists for its side effects only.
+        ///
+        /// Example: `fn ping()`
+        Void,
+        /// Returns a scalar value directly.
+        ///
+        /// This keeps the value in its scalar ABI form instead of routing it
+        /// through a buffer or handle.
+        ///
+        /// Example: `fn count() -> u32`
+        Scalar(ScalarReturnStrategy),
+        /// Returns a fixed composite value by value.
+        ///
+        /// The returned bits already match the ABI layout of the composite
+        /// record or struct.
+        ///
+        /// Example: `fn point() -> Point`
+        CompositeValue,
+        /// Returns a sequence in its direct element layout instead of the
+        /// general wire format.
+        ///
+        /// "Direct" here means the elements are exposed in their native ABI
+        /// layout in the returned buffer. It does not mean a filesystem
+        /// directory, and it does not mean the function must use the native
+        /// return slot.
+        ///
+        /// Example: `fn counts() -> Vec<u32>`
+        Buffer(EncodedReturnStrategy),
+        /// Returns a foreign object handle.
+        ///
+        /// The caller receives an identity for an object that continues to live
+        /// on the foreign side.
+        ///
+        /// Example: `fn inventory() -> Inventory`
+        ObjectHandle,
+        /// Returns a callback or trait-object handle.
+        ///
+        /// The caller receives a handle that can be used to invoke a callback
+        /// surface later.
+        ///
+        /// Example: `fn callback() -> Box<dyn Mapper>`
+        CallbackHandle,
+    }
+
+    /// Describes how failure is reported for a returned value.
+    ///
+    /// This is intentionally separate from [`ValueReturnStrategy`]. A call can
+    /// return a primitive value, a handle, or an encoded buffer and still use a
+    /// different error path.
+    /// # Examples
+    ///
+    /// - `fn count() -> u32` uses [`Self::None`]
+    /// - `fn inventory(capacity: u32) -> Result<Inventory, String>` can use
+    ///   [`Self::StatusCode`]
+    /// - `fn validate() -> Result<Point, ValidationError>` can use
+    ///   [`Self::Encoded`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ErrorReturnStrategy {
+        /// The call has no separate failure channel.
+        ///
+        /// Any failure would have to be expressed in the value itself, because
+        /// the ABI surface does not reserve a distinct error path.
+        ///
+        /// Example: `fn count() -> u32`
+        None,
+        /// The call reports failure with a status code.
+        ///
+        /// The value path and the failure path are split: status tells the
+        /// caller whether to read the value or fetch error details.
+        ///
+        /// Example: `fn inventory(capacity: u32) -> Result<Inventory, String>`
+        StatusCode,
+        /// The call reports failure with an encoded error payload.
+        ///
+        /// The error itself crosses the boundary as data rather than through a
+        /// small status flag.
+        ///
+        /// Example: `fn validate() -> Result<Point, ValidationError>`
+        Encoded,
+    }
+
+    /// Describes where the returned value is delivered in the ABI surface.
+    ///
+    /// Backends should not guess this from local templates. This tells them
+    /// whether the value is carried as the native return value or written into
+    /// output storage owned by the caller.
+    /// # Examples
+    ///
+    /// - `fn count() -> u32` uses [`Self::DirectReturn`]
+    /// - `fn point() -> Point` can use [`Self::WriteToOutParameter`]
+    /// - `fn counts() -> Vec<u32>` with encoded errors can use
+    ///   [`Self::WriteToOutBufferParts`]
+    /// - a trampoline that writes into caller-owned scratch space can use
+    ///   [`Self::WriteToReturnSlot`]
+    /// - async completion handlers use [`Self::AsyncCallback`]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ValueReturnMethod {
+        /// Returns the value in the native function return position.
+        ///
+        /// The ABI return slot itself carries the result.
+        ///
+        /// Example: `fn count() -> u32`
+        DirectReturn,
+        /// Writes the value into a caller-provided out parameter.
+        ///
+        /// The caller allocates storage and passes a pointer where the callee
+        /// writes the result.
+        ///
+        /// Example: `fn point(out: *mut Point)`
+        WriteToOutParameter,
+        /// Writes a buffer result through caller-provided pointer/length
+        /// outputs.
+        ///
+        /// This is common when the returned bytes or element buffer need
+        /// separate pointer and length outputs.
+        ///
+        /// Example: `fn counts(data_out: *mut *const u32, len_out: *mut usize)`
+        WriteToOutBufferParts,
+        /// Writes the value into a reserved caller-owned return slot.
+        ///
+        /// The caller already reserved result storage and the callee fills that
+        /// storage in place.
+        ///
+        /// Example: callback vtable methods that receive a preallocated result
+        /// slot for a composite return
+        WriteToReturnSlot,
+        /// Delivers the value through an async completion callback.
+        ///
+        /// The original call returns immediately, and the value arrives later
+        /// through a completion boundary.
+        ///
+        /// Example: exported async functions that complete later
+        AsyncCallback,
+    }
+
+    impl ValueReturnStrategy {
+        pub fn return_method(
+            self,
+            error_strategy: ErrorReturnStrategy,
+            context: ReturnInvocationContext,
+            platform: ReturnPlatform,
+        ) -> ValueReturnMethod {
+            match context {
+                ReturnInvocationContext::AsyncCompletion => ValueReturnMethod::AsyncCallback,
+                ReturnInvocationContext::HostCall => match self {
+                    Self::Void
+                    | Self::Scalar(_)
+                    | Self::CompositeValue
+                    | Self::ObjectHandle
+                    | Self::CallbackHandle => ValueReturnMethod::DirectReturn,
+                    Self::Buffer(_) => {
+                        if matches!(error_strategy, ErrorReturnStrategy::Encoded) {
+                            ValueReturnMethod::WriteToOutBufferParts
+                        } else {
+                            ValueReturnMethod::DirectReturn
+                        }
+                    }
+                },
+                ReturnInvocationContext::SyncExport => match self {
+                    Self::Buffer(EncodedReturnStrategy::DirectVec)
+                        if matches!(platform, ReturnPlatform::Wasm) =>
+                    {
+                        ValueReturnMethod::WriteToReturnSlot
+                    }
+                    _ => ValueReturnMethod::DirectReturn,
+                },
+                ReturnInvocationContext::InlineClosure => match (self, platform) {
+                    (Self::Void, _)
+                    | (Self::Scalar(_), _)
+                    | (Self::CompositeValue, ReturnPlatform::Native)
+                    | (Self::Buffer(_), ReturnPlatform::Native)
+                    | (Self::ObjectHandle, ReturnPlatform::Native)
+                    | (Self::CallbackHandle, ReturnPlatform::Native) => {
+                        ValueReturnMethod::DirectReturn
+                    }
+                    _ => ValueReturnMethod::WriteToReturnSlot,
+                },
+                ReturnInvocationContext::CallbackVtable => match self {
+                    Self::Void => ValueReturnMethod::DirectReturn,
+                    Self::Scalar(_) => ValueReturnMethod::WriteToOutParameter,
+                    Self::CompositeValue
+                    | Self::Buffer(_)
+                    | Self::ObjectHandle
+                    | Self::CallbackHandle => ValueReturnMethod::WriteToOutBufferParts,
+                },
+            }
+        }
     }
 
     #[cfg(test)]
@@ -835,6 +1184,70 @@ pub mod transport {
             assert_eq!(
                 BufferTransport::for_target("aarch64-linux-android"),
                 BufferTransport::Descriptor
+            );
+        }
+
+        #[test]
+        fn scalar_return_strategy_distinguishes_enum_tags() {
+            assert_ne!(
+                ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue),
+                ValueReturnStrategy::Scalar(ScalarReturnStrategy::CStyleEnumTag)
+            );
+        }
+
+        #[test]
+        fn value_return_method_distinguishes_direct_and_written_results() {
+            assert_ne!(
+                ValueReturnMethod::DirectReturn,
+                ValueReturnMethod::WriteToOutBufferParts
+            );
+        }
+
+        #[test]
+        fn sync_export_direct_buffer_uses_wasm_return_slot() {
+            assert_eq!(
+                ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec).return_method(
+                    ErrorReturnStrategy::None,
+                    ReturnInvocationContext::SyncExport,
+                    ReturnPlatform::Wasm,
+                ),
+                ValueReturnMethod::WriteToReturnSlot
+            );
+        }
+
+        #[test]
+        fn inline_closure_composite_uses_native_direct_return() {
+            assert_eq!(
+                ValueReturnStrategy::CompositeValue.return_method(
+                    ErrorReturnStrategy::None,
+                    ReturnInvocationContext::InlineClosure,
+                    ReturnPlatform::Native,
+                ),
+                ValueReturnMethod::DirectReturn
+            );
+        }
+
+        #[test]
+        fn inline_closure_composite_uses_wasm_return_slot() {
+            assert_eq!(
+                ValueReturnStrategy::CompositeValue.return_method(
+                    ErrorReturnStrategy::None,
+                    ReturnInvocationContext::InlineClosure,
+                    ReturnPlatform::Wasm,
+                ),
+                ValueReturnMethod::WriteToReturnSlot
+            );
+        }
+
+        #[test]
+        fn callback_vtable_scalar_uses_out_parameter() {
+            assert_eq!(
+                ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue).return_method(
+                    ErrorReturnStrategy::None,
+                    ReturnInvocationContext::CallbackVtable,
+                    ReturnPlatform::Native,
+                ),
+                ValueReturnMethod::WriteToOutParameter
             );
         }
     }

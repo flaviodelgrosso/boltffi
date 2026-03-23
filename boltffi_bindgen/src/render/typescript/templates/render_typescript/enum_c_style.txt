@@ -5,15 +5,23 @@
 }
 
 const {{ name }}Codec: WireCodec<{{ name }}> = {
-  size: (_v) => {{ self::ts_c_style_enum_size_bytes(tag_type) }},
-  encode: (writer, v) => { {{ self::ts_c_style_enum_write_expr(tag_type) }}; },
+  size: (_v) => 4,
+  encode: (writer, v) => {
+    switch (v) {
+{%- for variant in variants %}
+      case {{ name }}.{{ variant.name }}:
+        writer.writeI32({{ loop.index0 }});
+        break;
+{%- endfor %}
+    }
+  },
   decode: (reader) => {
-    const value = {{ self::ts_c_style_enum_read_expr(tag_type) }};
+    const value = reader.readI32();
     switch (value) {
 {%- for variant in variants %}
-      case {{ variant.discriminant }}: return {{ name }}.{{ variant.name }};
+      case {{ loop.index0 }}: return {{ name }}.{{ variant.name }};
 {%- endfor %}
-      default: throw new Error(`Unknown {{ name }} discriminant: ${value}`);
+      default: throw new Error(`Unknown {{ name }} wire tag: ${value}`);
     }
   },
 };

@@ -1,5 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use serde::{Deserialize, Serialize};
 
 use crate::build::{
     BuildOptions, Builder, CargoBuildProfile, OutputCallback, all_successful, failed_targets,
@@ -186,7 +189,7 @@ fn pack_apple(config: &Config, options: PackAppleOptions, reporter: &Reporter) -
     let libraries = discover_built_libraries(
         &config.crate_artifact_name(),
         build_profile.output_directory_name(),
-    );
+    )?;
     let apple_libraries: Vec<_> = libraries
         .into_iter()
         .filter(|lib| lib.target.platform().is_apple())
@@ -444,7 +447,7 @@ fn pack_android(config: &Config, options: PackAndroidOptions, reporter: &Reporte
     let libraries = discover_built_libraries(
         &config.crate_artifact_name(),
         build_profile.output_directory_name(),
-    );
+    )?;
     let android_libraries: Vec<_> = libraries
         .into_iter()
         .filter(|lib| lib.target.platform() == Platform::Android)
@@ -999,72 +1002,39 @@ fn generate_wasm_package_json(
         "./node.js"
     };
 
-    let mut export_map = serde_json::Map::new();
-    export_map.insert(
-        "types".to_string(),
-        serde_json::Value::String(format!("./{}.d.ts", module_name)),
-    );
-    if has_web {
-        export_map.insert(
-            "browser".to_string(),
-            serde_json::Value::String("./web.js".to_string()),
-        );
-    }
-    if has_node {
-        export_map.insert(
-            "node".to_string(),
-            serde_json::Value::String("./node.js".to_string()),
-        );
-    }
-    export_map.insert(
-        "default".to_string(),
-        serde_json::Value::String(default_entry.to_string()),
-    );
-
     let runtime_package = config.wasm_runtime_package();
     let runtime_version = config.wasm_runtime_version();
-    let mut dependencies = serde_json::Map::new();
-    dependencies.insert(runtime_package, serde_json::Value::String(runtime_version));
+    let mut dependencies = BTreeMap::new();
+    dependencies.insert(runtime_package, runtime_version);
 
-    let package_json = serde_json::json!({
-        "name": package_name,
-        "version": package_version,
-        "type": "module",
-        "exports": {
-            ".": serde_json::Value::Object(export_map)
+    let package_json = WasmPackageJson {
+        name: package_name.to_string(),
+        version: package_version,
+        package_type: "module".to_string(),
+        exports: WasmPackageExports {
+            root: WasmPackageEntry {
+                types: format!("./{}.d.ts", module_name),
+                browser: has_web.then(|| "./web.js".to_string()),
+                node: has_node.then(|| "./node.js".to_string()),
+                default: default_entry.to_string(),
+            },
         },
-        "types": format!("./{}.d.ts", module_name),
-        "files": [
+        types: format!("./{}.d.ts", module_name),
+        files: vec![
             format!("{}.js", module_name),
             format!("{}.d.ts", module_name),
             format!("{}_bg.wasm", module_name),
-            "bundler.js",
-            "web.js",
-            "node.js"
+            "bundler.js".to_string(),
+            "web.js".to_string(),
+            "node.js".to_string(),
         ],
-        "dependencies": serde_json::Value::Object(dependencies)
-    });
+        dependencies,
+        license: config.wasm_npm_license(),
+        repository: config.wasm_npm_repository(),
+    };
 
-    let mut package_json_object =
-        package_json
-            .as_object()
-            .cloned()
-            .ok_or_else(|| CliError::CommandFailed {
-                command: "failed to construct package.json payload".to_string(),
-                status: None,
-            })?;
-    if let Some(license) = config.wasm_npm_license() {
-        package_json_object.insert("license".to_string(), serde_json::Value::String(license));
-    }
-    if let Some(repository) = config.wasm_npm_repository() {
-        package_json_object.insert(
-            "repository".to_string(),
-            serde_json::Value::String(repository),
-        );
-    }
-
-    let rendered = serde_json::to_string_pretty(&serde_json::Value::Object(package_json_object))
-        .map_err(|source| CliError::CommandFailed {
+    let rendered =
+        serde_json::to_string_pretty(&package_json).map_err(|source| CliError::CommandFailed {
             command: format!("failed to serialize package.json: {}", source),
             status: None,
         })?;
@@ -1075,6 +1045,38 @@ fn generate_wasm_package_json(
     })?;
 
     Ok(package_json_path)
+}
+
+#[derive(Serialize)]
+struct WasmPackageJson {
+    name: String,
+    version: String,
+    #[serde(rename = "type")]
+    package_type: String,
+    exports: WasmPackageExports,
+    types: String,
+    files: Vec<String>,
+    dependencies: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WasmPackageExports {
+    #[serde(rename = ".")]
+    root: WasmPackageEntry,
+}
+
+#[derive(Serialize)]
+struct WasmPackageEntry {
+    types: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    browser: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node: Option<String>,
+    default: String,
 }
 
 fn generate_wasm_readme(
@@ -1106,15 +1108,54 @@ fn generate_wasm_readme(
     Ok(readme_path)
 }
 
+#[derive(Deserialize)]
+struct CargoMetadataTargetDirectory {
+    target_directory: PathBuf,
+}
+
 fn discover_built_libraries(
     crate_artifact_name: &str,
     profile_directory_name: &str,
-) -> Vec<BuiltLibrary> {
-    BuiltLibrary::discover_for_profile(
-        &PathBuf::from("target"),
+) -> Result<Vec<BuiltLibrary>> {
+    let target_directory = cargo_target_directory()?;
+    Ok(BuiltLibrary::discover_for_profile(
+        &target_directory,
         crate_artifact_name,
         profile_directory_name,
-    )
+    ))
+}
+
+fn cargo_target_directory() -> Result<PathBuf> {
+    let crate_dir = std::env::current_dir().map_err(|source| CliError::CommandFailed {
+        command: format!("current_dir: {source}"),
+        status: None,
+    })?;
+    let output = Command::new("cargo")
+        .current_dir(&crate_dir)
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .output()
+        .map_err(|source| CliError::CommandFailed {
+            command: format!("cargo metadata: {source}"),
+            status: None,
+        })?;
+
+    if !output.status.success() {
+        return Err(CliError::CommandFailed {
+            command: "cargo metadata --format-version 1 --no-deps".to_string(),
+            status: output.status.code(),
+        });
+    }
+
+    parse_cargo_target_directory(&output.stdout)
+}
+
+fn parse_cargo_target_directory(metadata: &[u8]) -> Result<PathBuf> {
+    serde_json::from_slice::<CargoMetadataTargetDirectory>(metadata)
+        .map(|parsed| parsed.target_directory)
+        .map_err(|source| CliError::CommandFailed {
+            command: format!("parse cargo metadata target_directory: {source}"),
+            status: None,
+        })
 }
 
 fn existing_xcframework_checksum(config: &Config) -> Result<String> {
@@ -1142,4 +1183,28 @@ fn detect_version() -> Option<String> {
                         .map(|s| s.trim().trim_matches('"').to_string())
                 })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cargo_target_directory;
+    use std::path::PathBuf;
+
+    #[test]
+    fn parses_target_directory_from_cargo_metadata() {
+        let metadata = br#"{
+            "packages": [],
+            "workspace_members": [],
+            "workspace_default_members": [],
+            "resolve": null,
+            "target_directory": "/tmp/boltffi-target",
+            "version": 1,
+            "workspace_root": "/tmp/demo"
+        }"#;
+
+        let target_directory =
+            parse_cargo_target_directory(metadata).expect("expected target directory");
+
+        assert_eq!(target_directory, PathBuf::from("/tmp/boltffi-target"));
+    }
 }

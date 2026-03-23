@@ -19,7 +19,7 @@ const {{ name }}Codec: WireCodec<{{ name }}> = {
     switch (v.tag) {
 {%- for variant in variants %}
       case "{{ variant.name }}":
-        writer.writeI32({{ variant.discriminant }});
+        writer.writeI32({{ loop.index0 }});
 {%- for field in variant.fields %}
         {{ field.wire_encode_expr("writer", "v") }};
 {%- endfor %}
@@ -31,14 +31,14 @@ const {{ name }}Codec: WireCodec<{{ name }}> = {
     const tag = reader.readI32();
     switch (tag) {
 {%- for variant in variants %}
-      case {{ variant.discriminant }}:
+      case {{ loop.index0 }}:
 {%- if variant.is_unit() %}
         return { tag: "{{ variant.name }}" };
 {%- else %}
         return { tag: "{{ variant.name }}", {% for field in variant.fields %}{{ field.name }}: {{ field.wire_decode_expr() }}{% if !loop.last %}, {% endif %}{% endfor %} };
 {%- endif %}
 {%- endfor %}
-      default: throw new Error(`Unknown {{ name }} discriminant: ${tag}`);
+      default: throw new Error(`Unknown {{ name }} wire tag: ${tag}`);
     }
   },
 };

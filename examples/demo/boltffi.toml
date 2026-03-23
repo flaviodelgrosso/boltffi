@@ -5,12 +5,14 @@ name = "demo"
 
 [targets.apple]
 enabled = true
+include_macos = true
 
 [targets.apple.xcframework]
-output = "../platforms/apple/Demo.xcframework"
+output = "../platforms/apple/ffi/Demo.xcframework"
 
 [targets.apple.spm]
-output = "../platforms/apple"
+output = "../platforms/apple/ffi"
+layout = "split"
 
 [targets.apple.swift]
 output = "../platforms/apple/Sources/Demo"
@@ -19,7 +21,8 @@ output = "../platforms/apple/Sources/Demo"
 enabled = true
 
 [targets.android.kotlin]
-output = "../platforms/android/src/main/kotlin"
+package = "com.boltffi.demo"
+output = "../platforms/kotlin/generated"
 
 [targets.android.pack]
 output = "../platforms/android/src/main/jniLibs"

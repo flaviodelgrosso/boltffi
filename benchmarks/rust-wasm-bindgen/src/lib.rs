@@ -293,6 +293,10 @@ impl DataStore {
         self.items.push(point);
     }
 
+    pub fn add_parts(&mut self, x: f64, y: f64, timestamp: i64) {
+        self.items.push(DataPoint { x, y, timestamp });
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }

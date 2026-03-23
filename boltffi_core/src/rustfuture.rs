@@ -1,6 +1,8 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::ptr;
+#[cfg(target_arch = "wasm32")]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
@@ -226,6 +228,54 @@ impl AtomicContinuationScheduler {
 unsafe impl Send for AtomicContinuationScheduler {}
 unsafe impl Sync for AtomicContinuationScheduler {}
 
+struct FutureWakeTarget {
+    continuation_scheduler: AtomicContinuationScheduler,
+    #[cfg(target_arch = "wasm32")]
+    wasm_handle: AtomicU32,
+}
+
+impl FutureWakeTarget {
+    fn new() -> Self {
+        Self {
+            continuation_scheduler: AtomicContinuationScheduler::new(),
+            #[cfg(target_arch = "wasm32")]
+            wasm_handle: AtomicU32::new(0),
+        }
+    }
+
+    fn store_continuation(
+        &self,
+        continuation_callback: ContinuationCallback,
+        callback_data: ContinuationData,
+    ) {
+        self.continuation_scheduler
+            .store_continuation(continuation_callback, callback_data);
+    }
+
+    fn wake_continuation(&self) {
+        self.continuation_scheduler.wake_continuation();
+    }
+
+    fn mark_cancelled(&self) {
+        self.continuation_scheduler.mark_cancelled();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.continuation_scheduler.is_cancelled()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn initialize_wasm_handle<T: Send + 'static>(&self, future: &Arc<RustFuture<T>>) {
+        self.wasm_handle
+            .store(Arc::as_ptr(future) as usize as u32, Ordering::Release);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn wasm_handle(&self) -> u32 {
+        self.wasm_handle.load(Ordering::Acquire)
+    }
+}
+
 #[derive(Debug)]
 pub enum TerminalState {
     Ready,
@@ -274,7 +324,7 @@ impl<T> FutureExecutionState<T> {
 
 pub struct RustFuture<T: Send + 'static> {
     future_execution_state: Mutex<FutureExecutionState<T>>,
-    continuation_scheduler: AtomicContinuationScheduler,
+    wake_target: Arc<FutureWakeTarget>,
 }
 
 impl<T: Send + 'static> RustFuture<T> {
@@ -282,10 +332,14 @@ impl<T: Send + 'static> RustFuture<T> {
     where
         F: Future<Output = T> + Send + 'static,
     {
-        Arc::new(Self {
+        let wake_target = Arc::new(FutureWakeTarget::new());
+        let rust_future = Arc::new(Self {
             future_execution_state: Mutex::new(FutureExecutionState::Running(Box::pin(future))),
-            continuation_scheduler: AtomicContinuationScheduler::new(),
-        })
+            wake_target: Arc::clone(&wake_target),
+        });
+        #[cfg(target_arch = "wasm32")]
+        wake_target.initialize_wasm_handle(&rust_future);
+        rust_future
     }
 
     fn poll_future_once(&self, waker: &Waker) -> bool {
@@ -314,7 +368,7 @@ impl<T: Send + 'static> RustFuture<T> {
         continuation_callback: RustFutureContinuationCallback,
         callback_data: u64,
     ) {
-        let is_cancelled = self.continuation_scheduler.is_cancelled();
+        let is_cancelled = self.wake_target.is_cancelled();
 
         let is_ready = is_cancelled || {
             let waker = self.clone().create_waker();
@@ -324,7 +378,7 @@ impl<T: Send + 'static> RustFuture<T> {
         if is_ready {
             continuation_callback(callback_data, RustFuturePoll::Ready);
         } else {
-            self.continuation_scheduler.store_continuation(
+            self.wake_target.store_continuation(
                 ContinuationCallback(continuation_callback),
                 ContinuationData::from_raw(callback_data),
             );
@@ -343,16 +397,16 @@ impl<T: Send + 'static> RustFuture<T> {
     }
 
     pub fn cancel(&self) {
-        self.continuation_scheduler.mark_cancelled();
+        self.wake_target.mark_cancelled();
     }
 
     pub fn free(self: Arc<Self>) {
-        self.continuation_scheduler.mark_cancelled();
+        self.wake_target.mark_cancelled();
     }
 
     #[cfg(target_arch = "wasm32")]
     pub fn poll_sync(self: &Arc<Self>) -> WasmPollStatus {
-        if self.continuation_scheduler.is_cancelled() {
+        if self.wake_target.is_cancelled() {
             return WasmPollStatus::Cancelled;
         }
 
@@ -382,56 +436,77 @@ impl<T: Send + 'static> RustFuture<T> {
 
     #[cfg(target_arch = "wasm32")]
     fn create_wasm_waker(self: Arc<Self>) -> Waker {
-        let handle = Arc::into_raw(self) as u32;
+        let wake_target = Arc::clone(&self.wake_target);
+        let handle = Arc::into_raw(wake_target) as *const ();
         let raw_waker = RawWaker::new(handle as *const (), &WASM_WAKER_VTABLE);
         unsafe { Waker::from_raw(raw_waker) }
     }
 
     fn create_waker(self: Arc<Self>) -> Waker {
-        let raw_waker = RawWaker::new(Arc::into_raw(self) as *const (), &RUST_FUTURE_WAKER_VTABLE);
+        let wake_target = Arc::clone(&self.wake_target);
+        let raw_waker = RawWaker::new(
+            Arc::into_raw(wake_target) as *const (),
+            &RUST_FUTURE_WAKER_VTABLE,
+        );
         unsafe { Waker::from_raw(raw_waker) }
     }
 }
 
 const RUST_FUTURE_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
-    waker_clone_fn::<()>,
-    waker_wake_fn::<()>,
-    waker_wake_by_ref_fn::<()>,
-    waker_drop_fn::<()>,
+    wake_target_clone,
+    wake_target_wake,
+    wake_target_wake_by_ref,
+    wake_target_drop,
 );
 
 #[cfg(target_arch = "wasm32")]
 const WASM_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
-    wasm_waker_clone,
-    wasm_waker_wake,
-    wasm_waker_wake_by_ref,
-    wasm_waker_drop,
+    wasm_wake_target_clone,
+    wasm_wake_target_wake,
+    wasm_wake_target_wake_by_ref,
+    wasm_wake_target_drop,
 );
 
+fn wake_target_clone(waker_data_ptr: *const ()) -> RawWaker {
+    unsafe { Arc::increment_strong_count(waker_data_ptr as *const FutureWakeTarget) };
+    RawWaker::new(waker_data_ptr, &RUST_FUTURE_WAKER_VTABLE)
+}
+
+fn wake_target_wake(waker_data_ptr: *const ()) {
+    let wake_target = unsafe { Arc::from_raw(waker_data_ptr as *const FutureWakeTarget) };
+    wake_target.wake_continuation();
+}
+
+fn wake_target_wake_by_ref(waker_data_ptr: *const ()) {
+    let wake_target = unsafe { &*(waker_data_ptr as *const FutureWakeTarget) };
+    wake_target.wake_continuation();
+}
+
+fn wake_target_drop(waker_data_ptr: *const ()) {
+    drop(unsafe { Arc::from_raw(waker_data_ptr as *const FutureWakeTarget) });
+}
+
 #[cfg(target_arch = "wasm32")]
-fn wasm_waker_clone(data: *const ()) -> RawWaker {
-    let handle = data as u32;
-    unsafe { Arc::increment_strong_count(handle as *const RustFuture<()>) };
+fn wasm_wake_target_clone(data: *const ()) -> RawWaker {
+    unsafe { Arc::increment_strong_count(data as *const FutureWakeTarget) };
     RawWaker::new(data, &WASM_WAKER_VTABLE)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_waker_wake(data: *const ()) {
-    let handle = data as u32;
-    unsafe { __boltffi_wake(handle) };
-    unsafe { Arc::decrement_strong_count(handle as *const RustFuture<()>) };
+fn wasm_wake_target_wake(data: *const ()) {
+    let wake_target = unsafe { Arc::from_raw(data as *const FutureWakeTarget) };
+    unsafe { __boltffi_wake(wake_target.wasm_handle()) };
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_waker_wake_by_ref(data: *const ()) {
-    let handle = data as u32;
-    unsafe { __boltffi_wake(handle) };
+fn wasm_wake_target_wake_by_ref(data: *const ()) {
+    let wake_target = unsafe { &*(data as *const FutureWakeTarget) };
+    unsafe { __boltffi_wake(wake_target.wasm_handle()) };
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_waker_drop(data: *const ()) {
-    let handle = data as u32;
-    unsafe { Arc::decrement_strong_count(handle as *const RustFuture<()>) };
+fn wasm_wake_target_drop(data: *const ()) {
+    drop(unsafe { Arc::from_raw(data as *const FutureWakeTarget) });
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -443,29 +518,6 @@ fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
         return s.clone();
     }
     "unknown panic".to_string()
-}
-
-fn waker_clone_fn<T: Send + 'static>(waker_data_ptr: *const ()) -> RawWaker {
-    unsafe { Arc::increment_strong_count(waker_data_ptr as *const RustFuture<T>) };
-    RawWaker::new(waker_data_ptr, &RUST_FUTURE_WAKER_VTABLE)
-}
-
-fn waker_wake_fn<T: Send + 'static>(waker_data_ptr: *const ()) {
-    let rust_future_arc = unsafe { Arc::from_raw(waker_data_ptr as *const RustFuture<T>) };
-    rust_future_arc.continuation_scheduler.wake_continuation();
-}
-
-fn waker_wake_by_ref_fn<T: Send + 'static>(waker_data_ptr: *const ()) {
-    let rust_future_ptr = waker_data_ptr as *const RustFuture<T>;
-    unsafe {
-        (*rust_future_ptr)
-            .continuation_scheduler
-            .wake_continuation()
-    };
-}
-
-fn waker_drop_fn<T: Send + 'static>(waker_data_ptr: *const ()) {
-    drop(unsafe { Arc::from_raw(waker_data_ptr as *const RustFuture<T>) });
 }
 
 pub type RustFutureHandle = *const core::ffi::c_void;
@@ -522,4 +574,115 @@ pub unsafe fn rust_future_panic_message<T: Send + 'static>(
     let message = rust_future_arc.panic_message();
     std::mem::forget(rust_future_arc);
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    struct DelayedWakeState<T> {
+        is_ready: AtomicBool,
+        wake_scheduled: AtomicBool,
+        output: Mutex<Option<T>>,
+        pending_waker: Mutex<Option<Waker>>,
+    }
+
+    struct DelayedWakeFuture<T> {
+        state: Arc<DelayedWakeState<T>>,
+        delay: Duration,
+    }
+
+    impl<T: Send + 'static> DelayedWakeFuture<T> {
+        fn new(output: T, delay: Duration) -> Self {
+            let state = Arc::new(DelayedWakeState {
+                is_ready: AtomicBool::new(false),
+                wake_scheduled: AtomicBool::new(false),
+                output: Mutex::new(Some(output)),
+                pending_waker: Mutex::new(None),
+            });
+
+            Self { state, delay }
+        }
+    }
+
+    impl<T: Send + 'static> Future for DelayedWakeFuture<T> {
+        type Output = T;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if self.state.is_ready.load(Ordering::Acquire) {
+                Poll::Ready(
+                    self.state
+                        .output
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("delayed wake future output"),
+                )
+            } else {
+                *self.state.pending_waker.lock().unwrap() = Some(cx.waker().clone());
+                if self
+                    .state
+                    .wake_scheduled
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    let delayed_state = Arc::clone(&self.state);
+                    let delay = self.delay;
+                    thread::spawn(move || {
+                        thread::sleep(delay);
+                        delayed_state.is_ready.store(true, Ordering::Release);
+                        if let Some(waker) = delayed_state.pending_waker.lock().unwrap().take() {
+                            waker.wake();
+                        }
+                    });
+                }
+                Poll::Pending
+            }
+        }
+    }
+
+    extern "C" fn send_poll_status(callback_data: u64, poll: RustFuturePoll) {
+        let sender = unsafe { &*(callback_data as *const mpsc::Sender<RustFuturePoll>) };
+        sender.send(poll).unwrap();
+    }
+
+    fn callback_data(sender: &mpsc::Sender<RustFuturePoll>) -> u64 {
+        sender as *const mpsc::Sender<RustFuturePoll> as usize as u64
+    }
+
+    #[test]
+    fn delayed_wake_future_completes_through_exported_handle() {
+        let (sender, receiver) = mpsc::channel();
+        let sender = Box::new(sender);
+        let handle = rust_future_new(DelayedWakeFuture::new(
+            "boltffi".to_string(),
+            Duration::from_millis(10),
+        ));
+
+        unsafe {
+            rust_future_poll::<String>(handle, send_poll_status, callback_data(sender.as_ref()))
+        };
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(RustFuturePoll::MaybeReady)
+        );
+
+        unsafe {
+            rust_future_poll::<String>(handle, send_poll_status, callback_data(sender.as_ref()))
+        };
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(RustFuturePoll::Ready)
+        );
+        assert_eq!(
+            unsafe { rust_future_complete::<String>(handle) },
+            Some("boltffi".to_string())
+        );
+
+        unsafe { rust_future_free::<String>(handle) };
+    }
 }

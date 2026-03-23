@@ -1,6 +1,6 @@
 {{ self::kdoc_block(doc, "") }}class {{ class_name }} private constructor(internal val handle: Long) : AutoCloseable {
     private val closed = AtomicBoolean(false)
-{%- for ctor in constructors %}{% if !ctor.is_factory %}
+{%- for ctor in constructors %}{% if ctor.renders_as_constructor() %}
 
 {{ self::kdoc_block(ctor.doc, "    ") }}    constructor({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : this(
 {%- if ctor.wire_writers.is_empty() %}
@@ -16,15 +16,9 @@
 {%- else %}
         kotlin.run {
 {%- for binding in ctor.wire_writers %}
-            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+            {{ binding.setup_code() }}
 {%- endfor %}
             try {
-{%- for binding in ctor.wire_writers %}
-                kotlin.run {
-                    val wire = {{ binding.binding_name }}.writer
-                    {{ binding.encode_expr }}
-                }
-{%- endfor %}
 {%- if ctor.is_fallible %}
                 val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
                 if (handle == 0L) throw FfiException(1, takeLastErrorMessage())
@@ -33,48 +27,8 @@
                 Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
 {%- endif %}
             } finally {
-{%- for binding_name in ctor.wire_writer_closes %}
-                {{ binding_name }}.close()
-{%- endfor %}
-            }
-        }
-{%- endif %}
-    )
-{%- elif !use_companion_methods && !ctor.signature_params.is_empty() %}
-
-    constructor({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}) : this(
-{%- if ctor.wire_writers.is_empty() %}
-{%- if ctor.is_fallible %}
-        kotlin.run {
-            val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
-            if (handle == 0L) throw FfiException(1, takeLastErrorMessage())
-            handle
-        }
-{%- else %}
-        Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
-{%- endif %}
-{%- else %}
-        kotlin.run {
-{%- for binding in ctor.wire_writers %}
-            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
-{%- endfor %}
-            try {
-{%- for binding in ctor.wire_writers %}
-                kotlin.run {
-                    val wire = {{ binding.binding_name }}.writer
-                    {{ binding.encode_expr }}
-                }
-{%- endfor %}
-{%- if ctor.is_fallible %}
-                val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
-                if (handle == 0L) throw FfiException(1, takeLastErrorMessage())
-                handle
-{%- else %}
-                Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
-{%- endif %}
-            } finally {
-{%- for binding_name in ctor.wire_writer_closes %}
-                {{ binding_name }}.close()
+{%- for close_code in ctor.wire_writer_closes %}
+                {{ close_code }}
 {%- endfor %}
             }
         }
@@ -86,10 +40,10 @@
         if (!closed.compareAndSet(false, true)) return
         Native.{{ ffi_free }}(handle)
     }
-{%- if has_factory_ctors || has_static_methods %}
+{%- if has_companion_factories || has_static_methods %}
 
     companion object {
-{%- for ctor in constructors %}{% if ctor.is_factory && (use_companion_methods || ctor.signature_params.is_empty()) %}
+{%- for ctor in constructors %}{% if ctor.renders_in_companion() %}
 {{ self::kdoc_block(ctor.doc, "        ") }}        fun {{ ctor.name }}({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}): {{ class_name }} {
 {%- if ctor.wire_writers.is_empty() %}
 {%- if ctor.is_fallible %}
@@ -101,15 +55,9 @@
 {%- endif %}
 {%- else %}
 {%- for binding in ctor.wire_writers %}
-            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+            {{ binding.setup_code() }}
 {%- endfor %}
             try {
-{%- for binding in ctor.wire_writers %}
-                kotlin.run {
-                    val wire = {{ binding.binding_name }}.writer
-                    {{ binding.encode_expr }}
-                }
-{%- endfor %}
 {%- if ctor.is_fallible %}
                 val handle = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
                 if (handle == 0L) throw FfiException(1, takeLastErrorMessage())
@@ -118,8 +66,8 @@
                 return {{ class_name }}(Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}))
 {%- endif %}
             } finally {
-{%- for binding_name in ctor.wire_writer_closes %}
-                {{ binding_name }}.close()
+{%- for close_code in ctor.wire_writer_closes %}
+                {{ close_code }}
 {%- endfor %}
             }
 {%- endif %}
@@ -165,10 +113,8 @@
             poll = Native::{{ stream.poll }},
             unsubscribe = Native::{{ stream.unsubscribe }},
             freeFn = Native::{{ stream.free }},
-            processItems = { reader ->
-                val count = reader.readI32()
-                repeat(count) {
-                    val item = {{ stream.item_decode_expr() }}
+            processItems = { bytes ->
+                for (item in {{ stream.pop_batch_items_expr }}) {
                     trySend(item)
                 }
             },
@@ -200,10 +146,8 @@
             poll = Native::{{ stream.poll }},
             unsubscribe = Native::{{ stream.unsubscribe }},
             freeFn = Native::{{ stream.free }},
-            processItems = { reader ->
-                val count = reader.readI32()
-                repeat(count) {
-                    val item = {{ stream.item_decode_expr() }}
+            processItems = { bytes ->
+                for (item in {{ stream.pop_batch_items_expr }}) {
                     callback(item)
                 }
             },
@@ -239,14 +183,7 @@ class {{ class_name }}{{ method_name_pascal }}Subscription(
         val bytes = popBatchFn(handle, maxCount)
             ?: throw RuntimeException("BoltFFI: stream pop_batch failed (null)")
         if (bytes.isEmpty()) return emptyList()
-        val reader = WireReader(bytes)
-        val count = reader.readI32()
-        val result = ArrayList<{{ stream.item_type }}>(count)
-        repeat(count) {
-            val item = {{ stream.item_decode_expr() }}
-            result.add(item)
-        }
-        return result
+        return {{ stream.pop_batch_items_expr }}
     }
 
     fun wait(timeout: Int): Int {

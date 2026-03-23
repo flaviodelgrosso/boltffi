@@ -11,6 +11,11 @@ console.log('Note: UniFFI does not have WASM support, defaulting to wasm-bindgen
 
 const results = [];
 
+const dataPointTuples1k = Array.from(
+  { length: 1000 },
+  (_, index) => [index, index * 2, BigInt(index)]
+);
+
 function runSuite(name, boltffiFn, wasmbindgenFn) {
   return new Promise((resolve) => {
     const suite = new Benchmark.Suite(name);
@@ -156,24 +161,7 @@ await runSuite('roundtrip_i32_vec_1k',
   }
 );
 
-await runSuite('counter_increment_1k (mutex)',
-  () => {
-    const counter = boltffi.Counter.new();
-    for (let i = 0; i < 1000; i++) counter.increment();
-    const v = counter.get();
-    counter.dispose();
-    return v;
-  },
-  () => {
-    const counter = new wasmbindgen.Counter();
-    for (let i = 0; i < 1000; i++) counter.increment();
-    const v = counter.get();
-    counter.free();
-    return v;
-  }
-);
-
-await runSuite('counter_increment_1k (single_threaded)',
+await runSuite('counter_increment_1k',
   () => {
     const counter = boltffi.CounterSingleThreaded.new();
     for (let i = 0; i < 1000; i++) counter.increment();
@@ -190,47 +178,49 @@ await runSuite('counter_increment_1k (single_threaded)',
   }
 );
 
-await runSuite('datastore_add_1k',
+await runSuite('datastore_add_record_1k',
   () => {
     const store = boltffi.DataStore.new();
-    for (let i = 0; i < 1000; i++) {
-      store.add({ x: i, y: i * 2, timestamp: BigInt(i) });
-    }
+    dataPointTuples1k.forEach(([x, y, timestamp]) => {
+      store.add({ x, y, timestamp });
+    });
     const len = store.len();
     store.dispose();
     return len;
   },
   () => {
     const store = new wasmbindgen.DataStore();
-    for (let i = 0; i < 1000; i++) {
-      store.add(new wasmbindgen.DataPoint(i, i * 2, BigInt(i)));
-    }
+    dataPointTuples1k.forEach(([x, y, timestamp]) => {
+      store.add(new wasmbindgen.DataPoint(x, y, timestamp));
+    });
     const len = store.len();
     store.free();
     return len;
   }
 );
 
-await runSuite('accumulator_1k (mutex)',
+await runSuite('datastore_add_scalars_1k',
   () => {
-    const acc = boltffi.Accumulator.new();
-    for (let i = 0n; i < 1000n; i++) acc.add(i);
-    const v = acc.get();
-    acc.reset();
-    acc.dispose();
-    return v;
+    const store = boltffi.DataStore.new();
+    dataPointTuples1k.forEach(([x, y, timestamp]) => {
+      store.addParts(x, y, timestamp);
+    });
+    const len = store.len();
+    store.dispose();
+    return len;
   },
   () => {
-    const acc = new wasmbindgen.Accumulator();
-    for (let i = 0n; i < 1000n; i++) acc.add(i);
-    const v = acc.get();
-    acc.reset();
-    acc.free();
-    return v;
+    const store = new wasmbindgen.DataStore();
+    dataPointTuples1k.forEach(([x, y, timestamp]) => {
+      store.add_parts(x, y, timestamp);
+    });
+    const len = store.len();
+    store.free();
+    return len;
   }
 );
 
-await runSuite('accumulator_1k (single_threaded)',
+await runSuite('accumulator_1k',
   () => {
     const acc = boltffi.AccumulatorSingleThreaded.new();
     for (let i = 0n; i < 1000n; i++) acc.add(i);

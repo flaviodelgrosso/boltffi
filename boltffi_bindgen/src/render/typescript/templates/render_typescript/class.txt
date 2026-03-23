@@ -97,6 +97,14 @@ export class {{ cls.class_name }} {
 {%- else %}
     return (_exports.{{ method.ffi_name }} as Function)({{ method.ffi_call_args() }}){{ sync_method.return_route.ts_cast() }};
 {%- endif %}
+{%- elif sync_method.return_route.is_struct_return_slot() %}
+    const __outPtr = _module.exports.boltffi_wasm_alloc({{ sync_method.return_route.return_slot_size().unwrap() }});
+    try {
+      (_exports.{{ method.ffi_name }} as Function)({% if method.ffi_call_args().is_empty() %}__outPtr{% else %}__outPtr, {{ method.ffi_call_args() }}{% endif %});
+      return {{ sync_method.return_route.decode_expr() }};
+    } finally {
+      _module.exports.boltffi_wasm_free(__outPtr, {{ sync_method.return_route.return_slot_size().unwrap() }});
+    }
 {%- elif sync_method.return_route.is_packed() %}
     const packed = (_exports.{{ method.ffi_name }} as Function)({{ method.ffi_call_args() }}) as bigint;
     const reader = _module.takePackedBuffer(packed);
@@ -171,6 +179,14 @@ export class {{ cls.class_name }} {
 {%- else %}
       return (_exports.{{ method.ffi_name }} as Function)({{ method.ffi_call_args() }}){{ sync_method.return_route.ts_cast() }};
 {%- endif %}
+{%- elif sync_method.return_route.is_struct_return_slot() %}
+      const __outPtr = _module.exports.boltffi_wasm_alloc({{ sync_method.return_route.return_slot_size().unwrap() }});
+      try {
+        (_exports.{{ method.ffi_name }} as Function)({% if method.ffi_call_args().is_empty() %}__outPtr{% else %}__outPtr, {{ method.ffi_call_args() }}{% endif %});
+        return {{ sync_method.return_route.decode_expr() }};
+      } finally {
+        _module.exports.boltffi_wasm_free(__outPtr, {{ sync_method.return_route.return_slot_size().unwrap() }});
+      }
 {%- elif sync_method.return_route.is_packed() %}
       const packed = (_exports.{{ method.ffi_name }} as Function)({{ method.ffi_call_args() }}) as bigint;
       const reader = _module.takePackedBuffer(packed);

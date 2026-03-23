@@ -1,10 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
+use boltffi_ffi_rules::transport::{ScalarReturnStrategy, ValueReturnStrategy};
+
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
     AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, AbiStream, CallId, CallMode,
     ErrorTransport, ParamRole, ReturnShape, StreamItemTransport,
 };
+use crate::ir::codec::EnumTagStrategy;
 use crate::ir::codec::VecLayout;
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::Receiver;
@@ -586,9 +589,9 @@ impl<'a> KotlinLowerer<'a> {
             SizeExpr::ValueSize(value) => {
                 SizeExpr::ValueSize(self.strip_field_access_in_value(value))
             }
-            SizeExpr::WireSize { value, record_id } => SizeExpr::WireSize {
+            SizeExpr::WireSize { value, owner } => SizeExpr::WireSize {
                 value: self.strip_field_access_in_value(value),
-                record_id: record_id.clone(),
+                owner: owner.clone(),
             },
             SizeExpr::BuiltinSize { id, value } => SizeExpr::BuiltinSize {
                 id: id.clone(),
@@ -726,14 +729,21 @@ impl<'a> KotlinLowerer<'a> {
             .iter()
             .enumerate()
             .map(|(i, variant)| {
-                let mut v = self.lower_enum_variant(variant, kind, &variant_names);
+                let mut v = self.lower_enum_variant(abi_enum, variant, i, kind, &variant_names);
                 v.doc = variant_docs.get(i).cloned().flatten();
                 v
             })
             .collect::<Vec<_>>();
         let constructors = enumeration
             .constructor_calls()
-            .map(|(call_id, ctor)| self.lower_constructor(ctor, self.find_abi_call(&call_id)))
+            .map(|(call_id, ctor)| {
+                self.lower_value_type_constructor(
+                    ctor,
+                    self.find_abi_call(&call_id),
+                    TypeExpr::Enum(enumeration.id.clone()),
+                    KotlinConstructorSurface::CompanionFactory,
+                )
+            })
             .collect::<Vec<_>>();
         let methods = enumeration
             .method_calls()
@@ -754,7 +764,9 @@ impl<'a> KotlinLowerer<'a> {
 
     fn lower_enum_variant(
         &self,
+        abi_enum: &AbiEnum,
         variant: &AbiEnumVariant,
+        ordinal: usize,
         kind: KotlinEnumKind,
         variant_names: &HashSet<String>,
     ) -> KotlinEnumVariant {
@@ -771,7 +783,7 @@ impl<'a> KotlinLowerer<'a> {
         };
         KotlinEnumVariant {
             name,
-            tag: variant.discriminant,
+            tag: self.kotlin_enum_variant_tag(abi_enum, kind, ordinal, variant.discriminant),
             fields,
             doc: None,
         }
@@ -803,6 +815,7 @@ impl<'a> KotlinLowerer<'a> {
     }
 
     fn lower_data_enum_codec(&self, enumeration: &EnumDef) -> KotlinDataEnumCodec {
+        let abi_enum = self.abi_enum_for(enumeration);
         let layout = self.data_enum_layout(enumeration);
         let class_name = NamingConvention::class_name(enumeration.id.as_str());
         let codec_name = format!("{}Codec", class_name);
@@ -813,7 +826,7 @@ impl<'a> KotlinLowerer<'a> {
                 .map(|(index, variant)| KotlinDataEnumVariant {
                     name: NamingConvention::class_name(variant.name.as_str()),
                     const_name: variant.name.as_str().to_uppercase(),
-                    tag_value: variant.discriminant,
+                    tag_value: abi_enum.resolve_codec_tag(index, variant.discriminant),
                     fields: self.lower_data_enum_codec_fields(
                         &variant.payload,
                         layout.variant_offsets.get(index),
@@ -828,6 +841,22 @@ impl<'a> KotlinLowerer<'a> {
             struct_size: layout.as_ref().map(|l| l.struct_size).unwrap_or(0),
             payload_offset: layout.as_ref().map(|l| l.payload_offset).unwrap_or(0),
             variants,
+        }
+    }
+
+    fn kotlin_enum_variant_tag(
+        &self,
+        abi_enum: &AbiEnum,
+        kind: KotlinEnumKind,
+        ordinal: usize,
+        discriminant: i128,
+    ) -> i128 {
+        match kind {
+            KotlinEnumKind::CStyle => discriminant,
+            KotlinEnumKind::Sealed | KotlinEnumKind::Error => match abi_enum.codec_tag_strategy {
+                EnumTagStrategy::Discriminant => discriminant,
+                EnumTagStrategy::OrdinalIndex => abi_enum.resolve_codec_tag(ordinal, discriminant),
+            },
         }
     }
 
@@ -897,7 +926,14 @@ impl<'a> KotlinLowerer<'a> {
             .collect::<Vec<_>>();
         let constructors = record
             .constructor_calls()
-            .map(|(call_id, ctor)| self.lower_constructor(ctor, self.find_abi_call(&call_id)))
+            .map(|(call_id, ctor)| {
+                self.lower_value_type_constructor(
+                    ctor,
+                    self.find_abi_call(&call_id),
+                    TypeExpr::Record(record.id.clone()),
+                    KotlinConstructorSurface::CompanionFactory,
+                )
+            })
             .collect::<Vec<_>>();
         let methods = record
             .method_calls()
@@ -1057,7 +1093,7 @@ impl<'a> KotlinLowerer<'a> {
         let wire_writers = self.wire_writers_for_params(call);
         let wire_writer_closes: Vec<String> = wire_writers
             .iter()
-            .map(|w| w.binding_name.clone())
+            .filter_map(KotlinWireWriter::cleanup_code)
             .collect();
         let native_args = self.native_args_for_params(call, &func.params, &wire_writers);
         let return_type = self.kotlin_return_type_from_def(&func.returns, output_route);
@@ -1090,13 +1126,14 @@ impl<'a> KotlinLowerer<'a> {
 
     fn lower_class(&self, class: &ClassDef) -> KotlinClass {
         let class_name = NamingConvention::class_name(class.id.as_str());
+        let constructor_surfaces = self.class_constructor_surfaces(&class.constructors);
         let constructors = class
             .constructors
             .iter()
             .enumerate()
             .map(|(index, ctor)| {
                 let call = self.abi_call_for_constructor(class, index);
-                self.lower_constructor(ctor, call)
+                self.lower_constructor(ctor, call, constructor_surfaces[index])
             })
             .collect::<Vec<_>>();
         let methods = class
@@ -1127,11 +1164,16 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
-    fn lower_constructor(&self, ctor: &ConstructorDef, call: &AbiCall) -> KotlinConstructor {
-        let (name, is_factory) = match ctor {
-            ConstructorDef::Default { .. } => ("new".to_string(), false),
-            ConstructorDef::NamedFactory { name, .. } => (name.as_str().to_string(), true),
-            ConstructorDef::NamedInit { name, .. } => (name.as_str().to_string(), true),
+    fn lower_constructor(
+        &self,
+        ctor: &ConstructorDef,
+        call: &AbiCall,
+        surface: KotlinConstructorSurface,
+    ) -> KotlinConstructor {
+        let name = match ctor {
+            ConstructorDef::Default { .. } => "new".to_string(),
+            ConstructorDef::NamedFactory { name, .. } => name.as_str().to_string(),
+            ConstructorDef::NamedInit { name, .. } => name.as_str().to_string(),
         };
         let signature_params = ctor
             .params()
@@ -1144,14 +1186,21 @@ impl<'a> KotlinLowerer<'a> {
         let wire_writers = self.wire_writers_for_params(call);
         let wire_writer_closes: Vec<String> = wire_writers
             .iter()
-            .map(|w| w.binding_name.clone())
+            .filter_map(KotlinWireWriter::cleanup_code)
             .collect();
         let ctor_param_defs: Vec<ParamDef> = ctor.params().into_iter().cloned().collect();
         let native_args = self.native_args_for_params(call, &ctor_param_defs, &wire_writers);
         KotlinConstructor {
             name: NamingConvention::method_name(&name),
-            is_factory,
+            surface,
             is_fallible: ctor.is_fallible(),
+            return_type: None,
+            throws: false,
+            err_type: "FfiException".to_string(),
+            return_is_direct: false,
+            return_cast: String::new(),
+            decode_expr: String::new(),
+            is_blittable_return: false,
             signature_params,
             wire_writers,
             wire_writer_closes,
@@ -1161,6 +1210,107 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
+    fn lower_value_type_constructor(
+        &self,
+        ctor: &ConstructorDef,
+        call: &AbiCall,
+        owner_type: TypeExpr,
+        surface: KotlinConstructorSurface,
+    ) -> KotlinConstructor {
+        let returns = if ctor.is_fallible() {
+            ReturnDef::Result {
+                ok: owner_type.clone(),
+                err: TypeExpr::String,
+            }
+        } else if ctor.is_optional() {
+            ReturnDef::Value(TypeExpr::Option(Box::new(owner_type.clone())))
+        } else {
+            ReturnDef::Value(owner_type)
+        };
+        let output_route = &call.returns;
+        let return_type = self.kotlin_return_type_from_def(&returns, output_route);
+        let return_meta = self.kotlin_return_meta(output_route);
+        let decode_expr = self.decode_expr_for_call_return(output_route, &returns);
+        let is_blittable_return = self.is_blittable_return(output_route, &returns);
+        let err_type = self.error_type_name(&returns);
+        let mut constructor = self.lower_constructor(ctor, call, surface);
+        constructor.return_type = return_type;
+        constructor.throws = self.is_throwing_return(&returns);
+        constructor.err_type = err_type;
+        constructor.return_is_direct = return_meta.is_direct;
+        constructor.return_cast = return_meta.cast;
+        constructor.decode_expr = decode_expr;
+        constructor.is_blittable_return = is_blittable_return;
+        constructor
+    }
+
+    fn class_constructor_surfaces(
+        &self,
+        constructors: &[ConstructorDef],
+    ) -> Vec<KotlinConstructorSurface> {
+        let prefer_companion_methods =
+            matches!(self.options.factory_style, FactoryStyle::CompanionMethods);
+        let mut surfaces = constructors
+            .iter()
+            .map(|constructor| match constructor {
+                ConstructorDef::Default { .. } => KotlinConstructorSurface::Constructor,
+                ConstructorDef::NamedFactory { .. } => KotlinConstructorSurface::CompanionFactory,
+                ConstructorDef::NamedInit { .. } if prefer_companion_methods => {
+                    KotlinConstructorSurface::CompanionFactory
+                }
+                ConstructorDef::NamedInit { .. } => KotlinConstructorSurface::Constructor,
+            })
+            .collect::<Vec<_>>();
+
+        if prefer_companion_methods {
+            return surfaces;
+        }
+
+        let mut constructors_by_signature = HashMap::<Vec<String>, Vec<usize>>::new();
+        constructors
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| matches!(surfaces[*index], KotlinConstructorSurface::Constructor))
+            .for_each(|(index, constructor)| {
+                constructors_by_signature
+                    .entry(self.constructor_signature_key(constructor))
+                    .or_default()
+                    .push(index);
+            });
+
+        constructors_by_signature
+            .into_values()
+            .filter(|indices| indices.len() > 1)
+            .for_each(|indices| {
+                let preferred_index = indices
+                    .iter()
+                    .copied()
+                    .min_by_key(|index| {
+                        let constructor = &constructors[*index];
+                        (
+                            !matches!(constructor, ConstructorDef::Default { .. }),
+                            constructor.is_fallible(),
+                            *index,
+                        )
+                    })
+                    .expect("constructor collision group must be non-empty");
+                indices
+                    .into_iter()
+                    .filter(|index| *index != preferred_index)
+                    .for_each(|index| surfaces[index] = KotlinConstructorSurface::CompanionFactory);
+            });
+
+        surfaces
+    }
+
+    fn constructor_signature_key(&self, constructor: &ConstructorDef) -> Vec<String> {
+        constructor
+            .params()
+            .iter()
+            .map(|param| self.kotlin_type(&param.type_expr))
+            .collect()
+    }
+
     fn lower_method(&self, class: &ClassDef, method: &MethodDef) -> KotlinMethod {
         let call = Self::strip_receiver(self.abi_call_for_method(class, method));
         let call = &call;
@@ -1168,7 +1318,7 @@ impl<'a> KotlinLowerer<'a> {
         let wire_writers = self.wire_writers_for_params(call);
         let wire_writer_closes: Vec<String> = wire_writers
             .iter()
-            .map(|w| w.binding_name.clone())
+            .filter_map(KotlinWireWriter::cleanup_code)
             .collect();
         let native_args = self.native_args_for_params(call, &method.params, &wire_writers);
         let signature_params = method
@@ -1285,7 +1435,7 @@ impl<'a> KotlinLowerer<'a> {
         let all_wire_writers: Vec<_> = self_wire.into_iter().chain(wire_writers).collect();
         let all_wire_writer_closes: Vec<String> = all_wire_writers
             .iter()
-            .map(|w| w.binding_name.clone())
+            .filter_map(KotlinWireWriter::cleanup_code)
             .collect();
         let all_native_args: Vec<_> = self_native_arg.into_iter().chain(native_args).collect();
 
@@ -1339,7 +1489,7 @@ impl<'a> KotlinLowerer<'a> {
         } = &param.role
         {
             let remapped = remap_root_in_seq(ops, ValueExpr::Var("this".into()));
-            vec![KotlinWireWriter {
+            vec![KotlinWireWriter::WireBuffer {
                 binding_name: "wire_writer_self".to_string(),
                 size_expr: emit::emit_size_expr_for_write_seq(&remapped),
                 encode_expr: emit::emit_write_expr(&remapped),
@@ -1358,7 +1508,7 @@ impl<'a> KotlinLowerer<'a> {
             ParamRole::Input {
                 encode_ops: Some(_),
                 ..
-            } => vec!["wire_writer_self.bytes".to_string()],
+            } => vec!["wire_writer_self.buffer".to_string()],
             ParamRole::Input {
                 transport: Transport::Scalar(_),
                 ..
@@ -1373,7 +1523,6 @@ impl<'a> KotlinLowerer<'a> {
         stream: &AbiStream,
         class_name: &str,
     ) -> KotlinStream {
-        let StreamItemTransport::WireEncoded { decode_ops } = &stream.item;
         let method_name_pascal = NamingConvention::class_name(stream.stream_id.as_str());
         let mode = match stream.mode {
             StreamMode::Async => KotlinStreamMode::Async,
@@ -1390,13 +1539,82 @@ impl<'a> KotlinLowerer<'a> {
             name: NamingConvention::method_name(stream.stream_id.as_str()),
             mode,
             item_type: self.kotlin_type(&stream_def.item_type),
-            item_decode: self.rebase_read_seq(decode_ops, "pos", "0"),
+            pop_batch_items_expr: self.stream_pop_batch_items_expr(stream),
             subscribe: stream.subscribe.to_string(),
             poll: stream.poll.to_string(),
             pop_batch: stream.pop_batch.to_string(),
             wait: stream.wait.to_string(),
             unsubscribe: stream.unsubscribe.to_string(),
             free: stream.free.to_string(),
+        }
+    }
+
+    fn stream_pop_batch_items_expr(&self, stream: &AbiStream) -> String {
+        match &stream.item_transport {
+            Transport::Scalar(origin) => self.direct_scalar_stream_items_expr(origin),
+            Transport::Composite(layout) => {
+                let reader_name = format!(
+                    "{}Reader",
+                    NamingConvention::class_name(layout.record_id.as_str())
+                );
+                format!(
+                    "ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).let {{ buffer -> {}.readAll(buffer, 0, bytes.size / {}.STRUCT_SIZE) }}",
+                    reader_name, reader_name
+                )
+            }
+            _ => {
+                let StreamItemTransport::WireEncoded { decode_ops } = &stream.item;
+                let item_decode =
+                    emit::emit_reader_read(&self.rebase_read_seq(decode_ops, "pos", "0"));
+                format!(
+                    "run {{ val reader = WireReader(bytes); val count = reader.readI32(); List(count) {{ {} }} }}",
+                    item_decode
+                )
+            }
+        }
+    }
+
+    fn direct_scalar_stream_items_expr(&self, origin: &ScalarOrigin) -> String {
+        match origin {
+            ScalarOrigin::Primitive(primitive) => match primitive {
+                PrimitiveType::Bool => {
+                    "List(bytes.size) { index -> bytes[index].toInt() != 0 }".to_string()
+                }
+                PrimitiveType::I8 => "List(bytes.size) { index -> bytes[index] }".to_string(),
+                PrimitiveType::U8 => {
+                    "List(bytes.size) { index -> bytes[index].toUByte() }".to_string()
+                }
+                PrimitiveType::I16 => {
+                    "ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asShortBuffer().let { buffer -> List(buffer.remaining()) { buffer.get() } }".to_string()
+                }
+                PrimitiveType::U16 => {
+                    "ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asShortBuffer().let { buffer -> List(buffer.remaining()) { buffer.get().toUShort() } }".to_string()
+                }
+                PrimitiveType::I32 => {
+                    "ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asIntBuffer().let { buffer -> List(buffer.remaining()) { buffer.get() } }".to_string()
+                }
+                PrimitiveType::U32 => {
+                    "ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asIntBuffer().let { buffer -> List(buffer.remaining()) { buffer.get().toUInt() } }".to_string()
+                }
+                PrimitiveType::I64 | PrimitiveType::ISize => {
+                    "ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asLongBuffer().let { buffer -> List(buffer.remaining()) { buffer.get() } }".to_string()
+                }
+                PrimitiveType::U64 | PrimitiveType::USize => {
+                    "ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asLongBuffer().let { buffer -> List(buffer.remaining()) { buffer.get().toULong() } }".to_string()
+                }
+                PrimitiveType::F32 => {
+                    "ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asFloatBuffer().let { buffer -> List(buffer.remaining()) { buffer.get() } }".to_string()
+                }
+                PrimitiveType::F64 => {
+                    "ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()).asDoubleBuffer().let { buffer -> List(buffer.remaining()) { buffer.get() } }".to_string()
+                }
+            },
+            ScalarOrigin::CStyleEnum { enum_id, tag_type } => {
+                let enum_name = NamingConvention::class_name(enum_id.as_str());
+                let values_expr =
+                    self.direct_scalar_stream_items_expr(&ScalarOrigin::Primitive(*tag_type));
+                format!("{}.map {{ value -> {}.fromValue(value) }}", values_expr, enum_name)
+            }
         }
     }
 
@@ -1650,15 +1868,20 @@ impl<'a> KotlinLowerer<'a> {
     }
 
     fn invoker_suffix_from_return_shape(&self, ret_shape: &ReturnShape) -> String {
-        match &ret_shape.transport {
-            None => "Void".to_string(),
-            Some(Transport::Scalar(origin)) => {
+        match ret_shape.value_return_strategy() {
+            ValueReturnStrategy::Void => "Void".to_string(),
+            ValueReturnStrategy::Scalar(_) => {
+                let Some(Transport::Scalar(origin)) = &ret_shape.transport else {
+                    unreachable!("scalar return strategy requires scalar transport");
+                };
                 self.invoker_suffix_from_primitive(origin.primitive())
             }
-            Some(Transport::Handle { .. }) | Some(Transport::Callback { .. }) => {
+            ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => {
                 "Handle".to_string()
             }
-            Some(_) => "Wire".to_string(),
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                "Wire".to_string()
+            }
         }
     }
 
@@ -1684,19 +1907,21 @@ impl<'a> KotlinLowerer<'a> {
         error: &ErrorTransport,
     ) -> Option<KotlinCallbackReturn> {
         let kotlin_type = self.kotlin_return_type_from_def(returns, ret_shape)?;
-        let (jni_type, default_value, to_jni) = match &ret_shape.transport {
-            None => return None,
-            Some(Transport::Scalar(origin)) => {
+        let return_type = self.callback_return_type(returns);
+        let (jni_type, default_value, to_jni) = match ret_shape.value_return_strategy() {
+            ValueReturnStrategy::Void => return None,
+            ValueReturnStrategy::Scalar(_) => {
+                let Some(Transport::Scalar(origin)) = &ret_shape.transport else {
+                    unreachable!("scalar return strategy requires scalar transport");
+                };
                 let abi_type = AbiType::from(origin.primitive());
                 (
                     self.jni_type_for_abi(&abi_type),
                     self.callback_default_value_for_abi(&abi_type),
-                    self.callback_return_cast_for_abi(&abi_type),
+                    self.callback_return_cast(return_type, &abi_type),
                 )
             }
-            Some(Transport::Span(SpanContent::Encoded(_)))
-            | Some(Transport::Composite(_))
-            | Some(Transport::Span(_)) => {
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
                 let to_jni = ret_shape
                     .encode_ops
                     .as_ref()
@@ -1710,20 +1935,31 @@ impl<'a> KotlinLowerer<'a> {
                     .unwrap_or_default();
                 ("ByteArray".to_string(), "byteArrayOf()".to_string(), to_jni)
             }
-            Some(Transport::Handle { class_id, nullable }) => (
-                "Long".to_string(),
-                "0L".to_string(),
-                self.callback_return_handle_cast(class_id, *nullable),
-            ),
-            Some(Transport::Callback {
-                callback_id,
-                nullable,
-                ..
-            }) => (
-                "Long".to_string(),
-                "0L".to_string(),
-                self.callback_return_callback_cast(callback_id, *nullable),
-            ),
+            ValueReturnStrategy::ObjectHandle => {
+                let Some(Transport::Handle { class_id, nullable }) = &ret_shape.transport else {
+                    unreachable!("object handle return strategy requires handle transport");
+                };
+                (
+                    "Long".to_string(),
+                    "0L".to_string(),
+                    self.callback_return_handle_cast(class_id, *nullable),
+                )
+            }
+            ValueReturnStrategy::CallbackHandle => {
+                let Some(Transport::Callback {
+                    callback_id,
+                    nullable,
+                    ..
+                }) = &ret_shape.transport
+                else {
+                    unreachable!("callback handle return strategy requires callback transport");
+                };
+                (
+                    "Long".to_string(),
+                    "0L".to_string(),
+                    self.callback_return_callback_cast(callback_id, *nullable),
+                )
+            }
         };
         let (error_type, error_is_throwable) = match returns {
             ReturnDef::Result { err, .. } => {
@@ -1838,6 +2074,21 @@ impl<'a> KotlinLowerer<'a> {
             "run {{ val reader = WireReader({}); {} }}",
             name, decode_expr
         )
+    }
+
+    fn callback_return_cast(&self, ty: Option<&TypeExpr>, abi: &AbiType) -> String {
+        match ty {
+            Some(TypeExpr::Enum(enum_id)) => self
+                .contract
+                .catalog
+                .resolve_enum(enum_id)
+                .and_then(|enumeration| match enumeration.repr {
+                    EnumRepr::CStyle { .. } => Some(".value".to_string()),
+                    EnumRepr::Data { .. } => None,
+                })
+                .unwrap_or_else(|| self.callback_return_cast_for_abi(abi)),
+            _ => self.callback_return_cast_for_abi(abi),
+        }
     }
 
     fn callback_return_cast_for_abi(&self, abi: &AbiType) -> String {
@@ -1960,7 +2211,7 @@ impl<'a> KotlinLowerer<'a> {
         match seq.ops.first() {
             Some(WriteOp::Custom { value, .. }) => SizeExpr::WireSize {
                 value: value.clone(),
-                record_id: None,
+                owner: None,
             },
             _ => seq.size.clone(),
         }
@@ -2192,13 +2443,20 @@ impl<'a> KotlinLowerer<'a> {
     }
 
     fn jni_type_for_return_shape(&self, ret_shape: &ReturnShape) -> String {
-        match &ret_shape.transport {
-            None => "Unit".to_string(),
-            Some(Transport::Scalar(origin)) => {
+        match ret_shape.value_return_strategy() {
+            ValueReturnStrategy::Void => "Unit".to_string(),
+            ValueReturnStrategy::Scalar(_) => {
+                let Some(Transport::Scalar(origin)) = &ret_shape.transport else {
+                    unreachable!("scalar return strategy requires scalar transport");
+                };
                 self.jni_type_for_abi(&AbiType::from(origin.primitive()))
             }
-            Some(Transport::Handle { .. }) | Some(Transport::Callback { .. }) => "Long".to_string(),
-            _ => "ByteArray?".to_string(),
+            ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => {
+                "Long".to_string()
+            }
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                "ByteArray?".to_string()
+            }
         }
     }
 
@@ -2218,6 +2476,7 @@ impl<'a> KotlinLowerer<'a> {
             AbiType::F32 => "Float".to_string(),
             AbiType::F64 => "Double".to_string(),
             AbiType::Pointer(_)
+            | AbiType::OwnedBuffer
             | AbiType::InlineCallbackFn { .. }
             | AbiType::Handle(_)
             | AbiType::CallbackHandle => "Long".to_string(),
@@ -2340,7 +2599,9 @@ impl<'a> KotlinLowerer<'a> {
         match element_abi {
             AbiType::I32 | AbiType::U32 => "IntArray".to_string(),
             AbiType::I16 | AbiType::U16 => "ShortArray".to_string(),
-            AbiType::I64 | AbiType::U64 => "LongArray".to_string(),
+            AbiType::I64 | AbiType::U64 | AbiType::ISize | AbiType::USize => {
+                "LongArray".to_string()
+            }
             AbiType::F32 => "FloatArray".to_string(),
             AbiType::F64 => "DoubleArray".to_string(),
             AbiType::U8 | AbiType::I8 => "ByteArray".to_string(),
@@ -2549,6 +2810,7 @@ impl<'a> KotlinLowerer<'a> {
             AbiType::F32 => "Float".to_string(),
             AbiType::F64 => "Double".to_string(),
             AbiType::Pointer(_)
+            | AbiType::OwnedBuffer
             | AbiType::InlineCallbackFn { .. }
             | AbiType::Handle(_)
             | AbiType::CallbackHandle => "Long".to_string(),
@@ -2574,13 +2836,17 @@ impl<'a> KotlinLowerer<'a> {
     }
 
     fn kotlin_return_meta(&self, ret_shape: &ReturnShape) -> KotlinReturnMeta {
-        match &ret_shape.transport {
-            None => KotlinReturnMeta {
+        match ret_shape.value_return_strategy() {
+            ValueReturnStrategy::Void => KotlinReturnMeta {
                 is_unit: true,
                 is_direct: false,
                 cast: String::new(),
             },
-            Some(Transport::Scalar(origin)) => {
+            ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue)
+            | ValueReturnStrategy::Scalar(ScalarReturnStrategy::CStyleEnumTag) => {
+                let Some(Transport::Scalar(origin)) = &ret_shape.transport else {
+                    unreachable!("scalar return strategy requires scalar transport");
+                };
                 let cast = match origin {
                     ScalarOrigin::CStyleEnum { enum_id, .. } => {
                         let enum_name = NamingConvention::class_name(enum_id.as_str());
@@ -2594,25 +2860,38 @@ impl<'a> KotlinLowerer<'a> {
                     cast,
                 }
             }
-            Some(Transport::Handle { class_id, nullable }) => KotlinReturnMeta {
-                is_unit: false,
-                is_direct: true,
-                cast: self.kotlin_handle_return_cast(class_id, *nullable),
-            },
-            Some(Transport::Callback {
-                callback_id,
-                nullable,
-                ..
-            }) => KotlinReturnMeta {
-                is_unit: false,
-                is_direct: true,
-                cast: self.kotlin_callback_return_cast(callback_id, *nullable),
-            },
-            _ => KotlinReturnMeta {
-                is_unit: false,
-                is_direct: false,
-                cast: String::new(),
-            },
+            ValueReturnStrategy::ObjectHandle => {
+                let Some(Transport::Handle { class_id, nullable }) = &ret_shape.transport else {
+                    unreachable!("object handle return strategy requires handle transport");
+                };
+                KotlinReturnMeta {
+                    is_unit: false,
+                    is_direct: true,
+                    cast: self.kotlin_handle_return_cast(class_id, *nullable),
+                }
+            }
+            ValueReturnStrategy::CallbackHandle => {
+                let Some(Transport::Callback {
+                    callback_id,
+                    nullable,
+                    ..
+                }) = &ret_shape.transport
+                else {
+                    unreachable!("callback handle return strategy requires callback transport");
+                };
+                KotlinReturnMeta {
+                    is_unit: false,
+                    is_direct: true,
+                    cast: self.kotlin_callback_return_cast(callback_id, *nullable),
+                }
+            }
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                KotlinReturnMeta {
+                    is_unit: false,
+                    is_direct: false,
+                    cast: String::new(),
+                }
+            }
         }
     }
 
@@ -2683,14 +2962,59 @@ impl<'a> KotlinLowerer<'a> {
         call.params
             .iter()
             .filter_map(|param| {
-                self.input_write_ops(param)
-                    .map(|encode_ops| KotlinWireWriter {
-                        binding_name: format!("wire_writer_{}", param.name.as_str()),
-                        size_expr: emit::emit_size_expr_for_write_seq(&encode_ops),
-                        encode_expr: emit::emit_write_expr(&encode_ops),
+                self.pointer_sized_scalar_span_writer(param)
+                    .or_else(|| self.composite_span_buffer_binding(param))
+                    .or_else(|| {
+                        self.input_write_ops(param)
+                            .map(|encode_ops| KotlinWireWriter::WireBuffer {
+                                binding_name: format!("wire_writer_{}", param.name.as_str()),
+                                size_expr: emit::emit_size_expr_for_write_seq(&encode_ops),
+                                encode_expr: emit::emit_write_expr(&encode_ops),
+                            })
                     })
             })
             .collect()
+    }
+
+    fn pointer_sized_scalar_span_writer(&self, param: &AbiParam) -> Option<KotlinWireWriter> {
+        match &param.role {
+            ParamRole::Input {
+                transport:
+                    Transport::Span(SpanContent::Scalar(ScalarOrigin::Primitive(
+                        primitive @ (PrimitiveType::ISize | PrimitiveType::USize),
+                    ))),
+                ..
+            } => {
+                let name = NamingConvention::param_name(param.name.as_str());
+                Some(KotlinWireWriter::WireBuffer {
+                    binding_name: format!("wire_writer_{}", param.name.as_str()),
+                    size_expr: format!("4 + {}.size * {}", name, primitive.wire_size_bytes()),
+                    encode_expr: format!("wire.writePrimitiveList({})", name),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn composite_span_buffer_binding(&self, param: &AbiParam) -> Option<KotlinWireWriter> {
+        let ParamRole::Input {
+            transport: Transport::Span(SpanContent::Composite(layout)),
+            ..
+        } = &param.role
+        else {
+            return None;
+        };
+
+        let binding_name = format!("wire_writer_{}", param.name.as_str());
+        let param_name = NamingConvention::param_name(param.name.as_str());
+        let writer_name = format!(
+            "{}Writer",
+            NamingConvention::class_name(layout.record_id.as_str())
+        );
+        Some(KotlinWireWriter::PackedBuffer {
+            binding_name,
+            pack_expr: format!("{writer_name}.pack({param_name})"),
+        })
     }
 
     fn native_arg_for_mapping(
@@ -2730,8 +3054,10 @@ impl<'a> KotlinLowerer<'a> {
             },
             JniParamRole::Encoded => writers
                 .iter()
-                .find(|w| w.binding_name == format!("wire_writer_{}", param.name.as_str()))
-                .map(|w| format!("{}.buffer", w.binding_name))
+                .find(|writer| {
+                    writer.binding_name() == format!("wire_writer_{}", param.name.as_str())
+                })
+                .map(KotlinWireWriter::native_buffer_expr)
                 .unwrap_or_else(|| "wire.buffer".to_string()),
             JniParamRole::Handle { nullable } => {
                 if *nullable {

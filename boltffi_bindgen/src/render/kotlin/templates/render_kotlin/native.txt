@@ -23,10 +23,12 @@ private object Native {
             System.err.println("BoltFFI: boltffiFutureContinuationCallback: handle $handle not found (already completed or cancelled)")
             return
         }
-        try {
-            continuation.resume(pollResult)
-        } catch (e: Exception) {
-            System.err.println("BoltFFI: boltffiFutureContinuationCallback: resume failed for handle $handle: $e")
+        BoltFFIScope.launch {
+            try {
+                continuation.resume(pollResult)
+            } catch (e: Exception) {
+                System.err.println("BoltFFI: boltffiFutureContinuationCallback: resume failed for handle $handle: $e")
+            }
         }
     }
 {%- for function in functions %}

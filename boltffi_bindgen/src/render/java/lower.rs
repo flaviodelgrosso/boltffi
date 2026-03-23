@@ -1,4 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+use boltffi_ffi_rules::transport::{
+    EncodedReturnStrategy, ReturnInvocationContext, ReturnPlatform, ScalarReturnStrategy,
+    ValueReturnMethod, ValueReturnStrategy,
+};
 
 use super::JavaOptions;
 use super::mappings;
@@ -7,12 +12,13 @@ use super::plan::{
     JavaAsyncCall, JavaAsyncMode, JavaBlittableField, JavaBlittableLayout, JavaClass,
     JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaEnum, JavaEnumField, JavaEnumKind,
     JavaEnumVariant, JavaFunction, JavaModule, JavaParam, JavaRecord, JavaRecordField,
-    JavaRecordShape, JavaReturnStrategy, JavaWireWriter,
+    JavaRecordShape, JavaReturnPlan, JavaReturnRender, JavaWireWriter,
 };
 use crate::ir::abi::{
     AbiCall, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload, AbiEnumVariant, AbiParam,
     AbiRecord, CallId, CallMode, ParamRole,
 };
+use crate::ir::codec::EnumTagStrategy;
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
     ClassDef, ConstructorDef, EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef, Receiver,
@@ -479,9 +485,9 @@ impl<'a> JavaLowerer<'a> {
             .collect();
 
         let async_call = self.async_call_from_mode(call, &func.returns);
-        let strategy = match &async_call {
-            Some(ac) => ac.complete_strategy.clone(),
-            None => self.return_strategy(&func.returns, call),
+        let return_plan = match &async_call {
+            Some(async_call) => async_call.complete_return_plan.clone(),
+            None => self.return_plan(&func.returns, call),
         };
 
         JavaFunction {
@@ -489,7 +495,7 @@ impl<'a> JavaLowerer<'a> {
             ffi_name: call.symbol.as_str().to_string(),
             params,
             return_type: self.return_java_type(&func.returns),
-            strategy,
+            return_plan,
             wire_writers,
             async_call,
         }
@@ -647,7 +653,7 @@ impl<'a> JavaLowerer<'a> {
         }
     }
 
-    fn result_decode_strategy(&self, returns: &ReturnDef, call: &AbiCall) -> JavaReturnStrategy {
+    fn result_return_plan(&self, returns: &ReturnDef, call: &AbiCall) -> JavaReturnPlan {
         let decode_ops = call
             .returns
             .decode_ops
@@ -673,79 +679,179 @@ impl<'a> JavaLowerer<'a> {
                 .map(|_| format!("{}.Exception", NamingConvention::class_name(id.as_str()))),
             _ => None,
         };
-        JavaReturnStrategy::ResultDecode {
-            ok_decode_expr,
-            err_decode_expr,
-            err_is_string,
-            err_exception_class,
+        JavaReturnPlan {
+            native_return_type: "byte[]".to_string(),
+            render: JavaReturnRender::Result {
+                ok_decode_expr,
+                err_decode_expr,
+                err_is_string,
+                err_exception_class,
+            },
         }
     }
 
-    fn return_strategy(&self, returns: &ReturnDef, call: &AbiCall) -> JavaReturnStrategy {
+    fn return_plan(&self, returns: &ReturnDef, call: &AbiCall) -> JavaReturnPlan {
         match returns {
-            ReturnDef::Void => JavaReturnStrategy::Void,
-            ReturnDef::Result { .. } => self.result_decode_strategy(returns, call),
-            ReturnDef::Value(ty) => match ty {
-                TypeExpr::Void => JavaReturnStrategy::Void,
-                TypeExpr::Primitive(_) => JavaReturnStrategy::Direct,
-                TypeExpr::String => JavaReturnStrategy::WireDecode {
-                    decode_expr: "reader.readString()".to_string(),
+            ReturnDef::Void => JavaReturnPlan {
+                native_return_type: "void".to_string(),
+                render: JavaReturnRender::Void,
+            },
+            ReturnDef::Result { .. } => self.result_return_plan(returns, call),
+            ReturnDef::Value(ty) => self.java_return_plan_for_value(ty, call),
+        }
+    }
+
+    fn java_return_plan_for_value(&self, ty: &TypeExpr, call: &AbiCall) -> JavaReturnPlan {
+        let value_return_strategy = call.returns.value_return_strategy();
+        let value_return_method = call.returns.value_return_method(
+            &call.error,
+            ReturnInvocationContext::HostCall,
+            ReturnPlatform::Native,
+        );
+        match ty {
+            TypeExpr::Void => JavaReturnPlan {
+                native_return_type: "void".to_string(),
+                render: JavaReturnRender::Void,
+            },
+            _ => match (value_return_strategy, value_return_method) {
+                (ValueReturnStrategy::Void, _) => JavaReturnPlan {
+                    native_return_type: "void".to_string(),
+                    render: JavaReturnRender::Void,
                 },
-                TypeExpr::Option(_) => match &call.returns.decode_ops {
-                    Some(decode_seq) => JavaReturnStrategy::WireDecode {
-                        decode_expr: super::emit::emit_reader_read(decode_seq),
-                    },
-                    None => panic!(
-                        "unsupported direct Option return transport for Java backend: {:?}",
-                        ty
-                    ),
+                (
+                    ValueReturnStrategy::Scalar(ScalarReturnStrategy::PrimitiveValue),
+                    ValueReturnMethod::DirectReturn,
+                ) => JavaReturnPlan {
+                    native_return_type: self.java_type(ty),
+                    render: JavaReturnRender::Direct,
                 },
-                TypeExpr::Record(id) => JavaReturnStrategy::WireDecode {
-                    decode_expr: format!(
-                        "{}.decode(reader)",
-                        NamingConvention::class_name(id.as_str())
-                    ),
-                },
-                TypeExpr::Enum(id) => {
-                    if let Some(Transport::Scalar(ScalarOrigin::CStyleEnum { tag_type, .. })) =
-                        call.returns.transport.as_ref()
-                    {
-                        JavaReturnStrategy::CStyleEnumDecode {
-                            class_name: NamingConvention::class_name(id.as_str()),
-                            native_type: mappings::java_type(*tag_type).to_string(),
-                        }
-                    } else {
-                        JavaReturnStrategy::WireDecode {
-                            decode_expr: format!(
-                                "{}.decode(reader)",
-                                NamingConvention::class_name(id.as_str())
-                            ),
-                        }
+                (
+                    ValueReturnStrategy::Scalar(ScalarReturnStrategy::CStyleEnumTag),
+                    ValueReturnMethod::DirectReturn,
+                ) => self.java_c_style_enum_return_plan(ty, call),
+                (
+                    ValueReturnStrategy::CompositeValue
+                    | ValueReturnStrategy::Buffer(EncodedReturnStrategy::Utf8String)
+                    | ValueReturnStrategy::Buffer(EncodedReturnStrategy::OptionScalar)
+                    | ValueReturnStrategy::Buffer(EncodedReturnStrategy::ResultScalar)
+                    | ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded),
+                    ValueReturnMethod::DirectReturn | ValueReturnMethod::WriteToOutBufferParts,
+                ) => self.java_decode_return_plan(ty, call),
+                (
+                    ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec),
+                    ValueReturnMethod::DirectReturn | ValueReturnMethod::WriteToOutBufferParts,
+                ) => self.java_direct_vec_return_plan(ty, call),
+                (ValueReturnStrategy::ObjectHandle, ValueReturnMethod::DirectReturn) => {
+                    self.java_handle_return_plan(call)
+                }
+                (ValueReturnStrategy::CallbackHandle, ValueReturnMethod::DirectReturn) => {
+                    JavaReturnPlan {
+                        native_return_type: self.java_type(ty),
+                        render: JavaReturnRender::Direct,
                     }
                 }
-                TypeExpr::Handle(class_id) => {
-                    let nullable = matches!(
-                        call.returns.transport.as_ref(),
-                        Some(Transport::Handle { nullable: true, .. })
-                    );
-                    JavaReturnStrategy::HandleReturn {
-                        class_name: NamingConvention::class_name(class_id.as_str()),
-                        nullable,
-                    }
+                _ => JavaReturnPlan {
+                    native_return_type: "void".to_string(),
+                    render: JavaReturnRender::Void,
+                },
+            },
+        }
+    }
+
+    fn java_c_style_enum_return_plan(&self, ty: &TypeExpr, call: &AbiCall) -> JavaReturnPlan {
+        match (ty, call.returns.transport.as_ref()) {
+            (
+                TypeExpr::Enum(enum_id),
+                Some(Transport::Scalar(ScalarOrigin::CStyleEnum { tag_type, .. })),
+            ) => JavaReturnPlan {
+                native_return_type: mappings::java_type(*tag_type).to_string(),
+                render: JavaReturnRender::CStyleEnum {
+                    class_name: NamingConvention::class_name(enum_id.as_str()),
+                },
+            },
+            _ => JavaReturnPlan {
+                native_return_type: self.java_type(ty),
+                render: JavaReturnRender::Direct,
+            },
+        }
+    }
+
+    fn java_decode_return_plan(&self, ty: &TypeExpr, call: &AbiCall) -> JavaReturnPlan {
+        let decode_expr = match ty {
+            TypeExpr::String => "reader.readString()".to_string(),
+            TypeExpr::Option(_) => match &call.returns.decode_ops {
+                Some(decode_seq) => super::emit::emit_reader_read(decode_seq),
+                None => panic!(
+                    "unsupported direct Option return transport for Java backend: {:?}",
+                    ty
+                ),
+            },
+            TypeExpr::Record(id) => {
+                format!(
+                    "{}.decode(reader)",
+                    NamingConvention::class_name(id.as_str())
+                )
+            }
+            TypeExpr::Enum(id) => {
+                format!(
+                    "{}.decode(reader)",
+                    NamingConvention::class_name(id.as_str())
+                )
+            }
+            TypeExpr::Vec(_) => match &call.returns.decode_ops {
+                Some(decode_seq) => super::emit::emit_reader_read(decode_seq),
+                None => {
+                    return JavaReturnPlan {
+                        native_return_type: "void".to_string(),
+                        render: JavaReturnRender::Void,
+                    };
                 }
-                TypeExpr::Bytes => JavaReturnStrategy::BufferDecode {
+            },
+            TypeExpr::Bytes => "_buf != null ? _buf : new byte[0]".to_string(),
+            _ => {
+                return JavaReturnPlan {
+                    native_return_type: "void".to_string(),
+                    render: JavaReturnRender::Void,
+                };
+            }
+        };
+        JavaReturnPlan {
+            native_return_type: "byte[]".to_string(),
+            render: JavaReturnRender::Decode { decode_expr },
+        }
+    }
+
+    fn java_direct_vec_return_plan(&self, ty: &TypeExpr, call: &AbiCall) -> JavaReturnPlan {
+        match ty {
+            TypeExpr::Bytes => JavaReturnPlan {
+                native_return_type: "byte[]".to_string(),
+                render: JavaReturnRender::Decode {
                     decode_expr: "_buf != null ? _buf : new byte[0]".to_string(),
                 },
-                TypeExpr::Vec(inner) => match &call.returns.decode_ops {
-                    Some(decode_seq) => JavaReturnStrategy::WireDecode {
-                        decode_expr: super::emit::emit_reader_read(decode_seq),
-                    },
-                    None => JavaReturnStrategy::BufferDecode {
-                        decode_expr: self
-                            .vec_buffer_decode_expr(inner, call.returns.transport.as_ref()),
-                    },
+            },
+            TypeExpr::Vec(inner) => JavaReturnPlan {
+                native_return_type: "byte[]".to_string(),
+                render: JavaReturnRender::Decode {
+                    decode_expr: self
+                        .vec_buffer_decode_expr(inner, call.returns.transport.as_ref()),
                 },
-                _ => JavaReturnStrategy::Void,
+            },
+            _ => self.java_decode_return_plan(ty, call),
+        }
+    }
+
+    fn java_handle_return_plan(&self, call: &AbiCall) -> JavaReturnPlan {
+        match call.returns.transport.as_ref() {
+            Some(Transport::Handle { class_id, nullable }) => JavaReturnPlan {
+                native_return_type: "long".to_string(),
+                render: JavaReturnRender::Handle {
+                    class_name: NamingConvention::class_name(class_id.as_str()),
+                    nullable: *nullable,
+                },
+            },
+            _ => JavaReturnPlan {
+                native_return_type: "void".to_string(),
+                render: JavaReturnRender::Void,
             },
         }
     }
@@ -759,13 +865,13 @@ impl<'a> JavaLowerer<'a> {
             returns: async_abi.result.clone(),
             ..call.clone()
         };
-        let complete_strategy = self.return_strategy(returns, &result_call);
+        let complete_return_plan = self.return_plan(returns, &result_call);
         Some(JavaAsyncCall {
             poll: async_abi.poll.as_str().to_string(),
             complete: async_abi.complete.as_str().to_string(),
             cancel: async_abi.cancel.as_str().to_string(),
             free: async_abi.free.as_str().to_string(),
-            complete_strategy,
+            complete_return_plan,
         })
     }
 
@@ -830,12 +936,14 @@ impl<'a> JavaLowerer<'a> {
         let class_name = NamingConvention::class_name(class.id.as_str());
         let ffi_free = boltffi_ffi_rules::naming::class_ffi_free(class.id.as_str()).to_string();
 
-        let constructors = class
-            .constructors
-            .iter()
-            .enumerate()
-            .map(|(index, ctor)| self.lower_constructor(class, ctor, index))
-            .collect();
+        let constructors = self.resolve_constructor_collisions(
+            class
+                .constructors
+                .iter()
+                .enumerate()
+                .map(|(index, ctor)| self.lower_constructor(class, ctor, index))
+                .collect(),
+        );
 
         let methods = class
             .methods
@@ -849,6 +957,74 @@ impl<'a> JavaLowerer<'a> {
             ffi_free,
             constructors,
             methods,
+        }
+    }
+
+    fn resolve_constructor_collisions(
+        &self,
+        constructors: Vec<JavaConstructor>,
+    ) -> Vec<JavaConstructor> {
+        let preferred_indices = constructors
+            .iter()
+            .enumerate()
+            .filter(|(_, constructor)| !constructor.is_factory())
+            .fold(
+                HashMap::<Vec<String>, usize>::new(),
+                |mut indices, (index, constructor)| {
+                    let signature = Self::constructor_signature(constructor);
+                    match indices.get(&signature).copied() {
+                        Some(existing_index)
+                            if Self::prefers_constructor_surface(
+                                constructor,
+                                &constructors[existing_index],
+                            ) =>
+                        {
+                            indices.insert(signature, index);
+                        }
+                        None => {
+                            indices.insert(signature, index);
+                        }
+                        Some(_) => {}
+                    }
+                    indices
+                },
+            );
+
+        constructors
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut constructor)| {
+                if constructor.is_factory() {
+                    return constructor;
+                }
+
+                let signature = Self::constructor_signature(&constructor);
+                if preferred_indices.get(&signature).copied() != Some(index) {
+                    constructor.kind = JavaConstructorKind::Factory;
+                }
+                constructor
+            })
+            .collect()
+    }
+
+    fn constructor_signature(constructor: &JavaConstructor) -> Vec<String> {
+        constructor
+            .params
+            .iter()
+            .map(|param| param.java_type.clone())
+            .collect()
+    }
+
+    fn prefers_constructor_surface(candidate: &JavaConstructor, current: &JavaConstructor) -> bool {
+        Self::constructor_priority(candidate) < Self::constructor_priority(current)
+    }
+
+    fn constructor_priority(constructor: &JavaConstructor) -> usize {
+        match (constructor.kind, constructor.is_fallible) {
+            (JavaConstructorKind::Primary, _) => 0,
+            (JavaConstructorKind::Secondary, false) => 1,
+            (JavaConstructorKind::Secondary, true) => 2,
+            (JavaConstructorKind::Factory, _) => 3,
         }
     }
 
@@ -942,9 +1118,9 @@ impl<'a> JavaLowerer<'a> {
             .collect();
 
         let async_call = self.async_call_from_mode(&call, &method.returns);
-        let strategy = match &async_call {
-            Some(ac) => ac.complete_strategy.clone(),
-            None => self.return_strategy(&method.returns, &call),
+        let return_plan = match &async_call {
+            Some(async_call) => async_call.complete_return_plan.clone(),
+            None => self.return_plan(&method.returns, &call),
         };
 
         JavaClassMethod {
@@ -953,7 +1129,7 @@ impl<'a> JavaLowerer<'a> {
             is_static,
             params,
             return_type: self.return_java_type(&method.returns),
-            strategy,
+            return_plan,
             wire_writers,
             async_call,
         }
@@ -1059,7 +1235,10 @@ impl<'a> JavaLowerer<'a> {
         let variants = abi_enum
             .variants
             .iter()
-            .map(|variant| self.lower_enum_variant(variant, kind, &variant_names))
+            .enumerate()
+            .map(|(ordinal, variant)| {
+                self.lower_enum_variant(abi_enum, variant, ordinal, kind, &variant_names)
+            })
             .collect();
         JavaEnum {
             class_name,
@@ -1083,7 +1262,9 @@ impl<'a> JavaLowerer<'a> {
 
     fn lower_enum_variant(
         &self,
+        abi_enum: &AbiEnum,
         variant: &AbiEnumVariant,
+        ordinal: usize,
         kind: JavaEnumKind,
         sibling_names: &HashSet<String>,
     ) -> JavaEnumVariant {
@@ -1102,8 +1283,28 @@ impl<'a> JavaLowerer<'a> {
         };
         JavaEnumVariant {
             name,
-            tag: variant.discriminant,
+            tag: self.java_enum_variant_tag(abi_enum, kind, ordinal, variant.discriminant),
             fields,
+        }
+    }
+
+    fn java_enum_variant_tag(
+        &self,
+        abi_enum: &AbiEnum,
+        kind: JavaEnumKind,
+        ordinal: usize,
+        discriminant: i128,
+    ) -> i128 {
+        match kind {
+            JavaEnumKind::CStyle => discriminant,
+            JavaEnumKind::Error | JavaEnumKind::SealedInterface | JavaEnumKind::AbstractClass => {
+                match abi_enum.codec_tag_strategy {
+                    EnumTagStrategy::Discriminant => discriminant,
+                    EnumTagStrategy::OrdinalIndex => {
+                        abi_enum.resolve_codec_tag(ordinal, discriminant)
+                    }
+                }
+            }
         }
     }
 
@@ -1250,9 +1451,9 @@ impl<'a> JavaLowerer<'a> {
                 id: id.clone(),
                 value: Self::prefix_value(value, binding),
             },
-            SizeExpr::WireSize { value, record_id } => SizeExpr::WireSize {
+            SizeExpr::WireSize { value, owner } => SizeExpr::WireSize {
                 value: Self::prefix_value(value, binding),
-                record_id: record_id.clone(),
+                owner: owner.clone(),
             },
             SizeExpr::OptionSize { value, inner } => SizeExpr::OptionSize {
                 value: Self::prefix_value(value, binding),
@@ -2099,7 +2300,7 @@ mod tests {
         let module = lower(&contract);
         let func = &module.functions[0];
         assert_eq!(func.return_type, "int");
-        assert!(func.strategy.is_direct());
+        assert!(func.return_plan.is_direct());
     }
 
     #[test]
@@ -2112,7 +2313,7 @@ mod tests {
         let module = lower(&contract);
         let func = &module.functions[0];
         assert_eq!(func.return_type, "void");
-        assert!(func.strategy.is_void());
+        assert!(func.return_plan.is_void());
     }
 
     #[test]
@@ -2127,8 +2328,8 @@ mod tests {
         let module = lower(&contract);
         let func = &module.functions[0];
         assert_eq!(func.return_type, "String");
-        assert!(func.strategy.is_wire());
-        assert!(func.strategy.decode_expr().contains("readString"));
+        assert!(func.return_plan.is_decode());
+        assert!(func.return_plan.decode_expr().contains("readString"));
     }
 
     #[test]
@@ -2143,11 +2344,11 @@ mod tests {
         let module = lower(&contract);
         let func = &module.functions[0];
         assert_eq!(func.return_type, "byte[]");
-        assert!(func.strategy.is_buffer());
+        assert!(func.return_plan.is_decode());
         assert!(
-            func.strategy.decode_expr().contains("new byte[0]"),
+            func.return_plan.decode_expr().contains("new byte[0]"),
             "expected null-safe buffer decode, got: {}",
-            func.strategy.decode_expr()
+            func.return_plan.decode_expr()
         );
     }
 
@@ -2242,8 +2443,8 @@ mod tests {
         let module = lower(&contract);
         let func = &module.functions[0];
         assert_eq!(func.return_type, "java.util.Optional<Integer>");
-        assert!(func.strategy.is_wire());
-        assert!(func.strategy.decode_expr().contains("Optional"));
+        assert!(func.return_plan.is_decode());
+        assert!(func.return_plan.decode_expr().contains("Optional"));
     }
 
     #[test]
@@ -2284,8 +2485,8 @@ mod tests {
 
         let module = lower(&contract);
         let func = &module.functions[0];
-        assert!(func.strategy.is_c_style_enum());
-        assert_eq!(func.strategy.c_style_enum_class(), "Status");
+        assert!(func.return_plan.is_c_style_enum());
+        assert_eq!(func.return_plan.c_style_enum_class(), "Status");
     }
 
     #[test]
@@ -2406,7 +2607,7 @@ mod tests {
         let module = lower(&contract);
         let func = &module.functions[0];
         assert_eq!(func.return_type, "int[]");
-        assert!(func.strategy.is_buffer());
+        assert!(func.return_plan.is_decode());
     }
 
     #[test]
@@ -2519,6 +2720,22 @@ mod tests {
             first_param,
             rest_params: params_iter.collect(),
             is_fallible: false,
+            is_optional: false,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn fallible_named_init(name: &str, params: Vec<ParamDef>) -> ConstructorDef {
+        let mut params_iter = params.into_iter();
+        let first_param = params_iter
+            .next()
+            .expect("named init needs at least one param");
+        ConstructorDef::NamedInit {
+            name: name.into(),
+            first_param,
+            rest_params: params_iter.collect(),
+            is_fallible: true,
             is_optional: false,
             doc: None,
             deprecated: None,
@@ -2696,10 +2913,7 @@ mod tests {
         let module = lower(&contract);
         let class = &module.classes[0];
         assert_eq!(class.methods[0].return_type, "void");
-        assert!(matches!(
-            class.methods[0].strategy,
-            JavaReturnStrategy::Void
-        ));
+        assert!(class.methods[0].return_plan.is_void());
     }
 
     #[test]
@@ -2778,8 +2992,8 @@ mod tests {
         let class = &module.classes[0];
         assert_eq!(class.methods.len(), 1);
         assert_eq!(class.methods[0].return_type, "int");
-        assert!(class.methods[0].strategy.is_result());
-        assert!(class.methods[0].strategy.result_err_is_string());
+        assert!(class.methods[0].return_plan.is_result());
+        assert!(class.methods[0].return_plan.result_err_is_string());
     }
 
     #[test]
@@ -2823,6 +3037,41 @@ mod tests {
     }
 
     #[test]
+    fn class_constructor_signature_collision_demotes_fallible_named_init_to_factory() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "inventory",
+            vec![
+                named_init(
+                    "with_capacity",
+                    vec![param_def(
+                        "capacity",
+                        TypeExpr::Primitive(PrimitiveType::I32),
+                    )],
+                ),
+                fallible_named_init(
+                    "try_new",
+                    vec![param_def(
+                        "capacity",
+                        TypeExpr::Primitive(PrimitiveType::I32),
+                    )],
+                ),
+            ],
+            vec![],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+
+        assert_eq!(class.constructors.len(), 2);
+        assert_eq!(class.constructors[0].kind, JavaConstructorKind::Secondary);
+        assert_eq!(class.constructors[0].name, "withCapacity");
+        assert_eq!(class.constructors[1].kind, JavaConstructorKind::Factory);
+        assert_eq!(class.constructors[1].name, "tryNew");
+        assert!(class.has_factory_constructors());
+    }
+
+    #[test]
     fn class_has_wire_params_propagates() {
         let mut contract = empty_contract();
         contract.catalog.insert_record(record_def(
@@ -2844,23 +3093,29 @@ mod tests {
 
     #[test]
     fn handle_return_strategy_fields() {
-        let strategy = JavaReturnStrategy::HandleReturn {
-            class_name: "Counter".to_string(),
-            nullable: false,
+        let return_plan = JavaReturnPlan {
+            native_return_type: "long".to_string(),
+            render: JavaReturnRender::Handle {
+                class_name: "Counter".to_string(),
+                nullable: false,
+            },
         };
-        assert!(strategy.is_handle());
-        assert_eq!(strategy.handle_class(), "Counter");
-        assert!(!strategy.handle_nullable());
-        assert_eq!(strategy.native_return_type("Counter"), "long");
+        assert!(return_plan.is_handle());
+        assert_eq!(return_plan.handle_class(), "Counter");
+        assert!(!return_plan.handle_nullable());
+        assert_eq!(return_plan.native_return_type, "long");
     }
 
     #[test]
     fn handle_return_strategy_nullable() {
-        let strategy = JavaReturnStrategy::HandleReturn {
-            class_name: "Counter".to_string(),
-            nullable: true,
+        let return_plan = JavaReturnPlan {
+            native_return_type: "long".to_string(),
+            render: JavaReturnRender::Handle {
+                class_name: "Counter".to_string(),
+                nullable: true,
+            },
         };
-        assert!(strategy.handle_nullable());
+        assert!(return_plan.handle_nullable());
     }
 
     #[test]
@@ -2888,8 +3143,11 @@ mod tests {
             .unwrap();
         assert_eq!(factory_class.methods.len(), 1);
         assert_eq!(factory_class.methods[0].return_type, "Target");
-        assert!(factory_class.methods[0].strategy.is_handle());
-        assert_eq!(factory_class.methods[0].strategy.handle_class(), "Target");
+        assert!(factory_class.methods[0].return_plan.is_handle());
+        assert_eq!(
+            factory_class.methods[0].return_plan.handle_class(),
+            "Target"
+        );
     }
 
     #[test]
@@ -2948,7 +3206,7 @@ mod tests {
         let module = lower(&contract);
         let func = &module.functions[0];
         let ac = func.async_call.as_ref().unwrap();
-        assert!(ac.complete_strategy.is_wire());
+        assert!(ac.complete_return_plan.is_decode());
     }
 
     #[test]
@@ -2984,6 +3242,6 @@ mod tests {
         let module = lower(&contract);
         let func = &module.functions[0];
         let ac = func.async_call.as_ref().unwrap();
-        assert!(ac.complete_strategy.is_void());
+        assert!(ac.complete_return_plan.is_void());
     }
 }

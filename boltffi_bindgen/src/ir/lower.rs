@@ -10,8 +10,8 @@ use crate::ir::abi::{
     ErrorTransport, ParamRole, ReturnShape, StreamItemTransport,
 };
 use crate::ir::codec::{
-    BlittableField, CodecPlan, EncodedField, EnumLayout, RecordLayout, VariantLayout,
-    VariantPayloadLayout, VecLayout,
+    BlittableField, CodecPlan, EncodedField, EnumLayout, EnumTagStrategy, RecordLayout,
+    VariantLayout, VariantPayloadLayout, VecLayout,
 };
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
@@ -23,7 +23,7 @@ use crate::ir::ids::{
 };
 use crate::ir::ops::{
     FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WireShape,
-    WriteOp, WriteSeq,
+    WireSizeOwner, WriteOp, WriteSeq,
 };
 use crate::ir::plan::{
     AbiType, AsyncPlan, CallPlan, CallPlanKind, CallTarget, CallbackStyle, CompletionCallback,
@@ -442,12 +442,29 @@ impl<'c> Lowerer<'c> {
         let stream_name = stream.id.as_str();
         let item_codec = self.build_codec(&stream.item_type);
         let decode_ops = self.expand_decode(&item_codec);
+        let item_transport = self.classify_type(&stream.item_type);
+        let item_size = match &item_transport {
+            Transport::Scalar(origin) => Some(match origin.primitive() {
+                PrimitiveType::Bool | PrimitiveType::I8 | PrimitiveType::U8 => 1,
+                PrimitiveType::I16 | PrimitiveType::U16 => 2,
+                PrimitiveType::I32 | PrimitiveType::U32 | PrimitiveType::F32 => 4,
+                PrimitiveType::I64
+                | PrimitiveType::U64
+                | PrimitiveType::ISize
+                | PrimitiveType::USize
+                | PrimitiveType::F64 => 8,
+            }),
+            Transport::Composite(layout) => Some(layout.total_size),
+            _ => None,
+        };
 
         AbiStream {
             class_id: class_id.clone(),
             stream_id: stream.id.clone(),
             mode: stream.mode,
             item: StreamItemTransport::WireEncoded { decode_ops },
+            item_transport,
+            item_size,
             subscribe: naming::stream_ffi_subscribe(class_name, stream_name),
             poll: naming::stream_ffi_poll(class_name, stream_name),
             pop_batch: naming::stream_ffi_pop_batch(class_name, stream_name),
@@ -482,12 +499,13 @@ impl<'c> Lowerer<'c> {
         let codec = self.build_codec(&TypeExpr::Enum(enumeration.id.clone()));
         let decode_ops = self.expand_decode(&codec);
         let encode_ops = self.expand_encode(&codec, ValueExpr::Instance);
-        let (is_c_style, variants) = match codec {
+        let (is_c_style, codec_tag_strategy, variants) = match codec {
             CodecPlan::Enum {
-                layout: EnumLayout::CStyle { .. },
+                layout: EnumLayout::CStyle { tag_strategy, .. },
                 ..
             } => (
                 true,
+                tag_strategy,
                 match &enumeration.repr {
                     EnumRepr::CStyle { variants, .. } => variants
                         .iter()
@@ -501,10 +519,16 @@ impl<'c> Lowerer<'c> {
                 },
             ),
             CodecPlan::Enum {
-                layout: EnumLayout::Data { variants, .. },
+                layout:
+                    EnumLayout::Data {
+                        tag_strategy,
+                        variants,
+                        ..
+                    },
                 ..
             } => (
                 false,
+                tag_strategy,
                 match &enumeration.repr {
                     EnumRepr::Data {
                         variants: data_variants,
@@ -547,7 +571,7 @@ impl<'c> Lowerer<'c> {
                     _ => Vec::new(),
                 },
             ),
-            _ => (false, vec![]),
+            _ => (false, EnumTagStrategy::OrdinalIndex, vec![]),
         };
 
         AbiEnum {
@@ -555,6 +579,7 @@ impl<'c> Lowerer<'c> {
             decode_ops,
             encode_ops,
             is_c_style,
+            codec_tag_strategy,
             variants,
         }
     }
@@ -806,6 +831,7 @@ impl<'c> Lowerer<'c> {
             AbiType::F64 => PrimitiveType::F64,
             AbiType::Void
             | AbiType::Pointer(_)
+            | AbiType::OwnedBuffer
             | AbiType::InlineCallbackFn { .. }
             | AbiType::Handle(_)
             | AbiType::CallbackHandle
@@ -1008,7 +1034,7 @@ impl<'c> Lowerer<'c> {
                         } else {
                             SizeExpr::WireSize {
                                 value: value.clone(),
-                                record_id: None,
+                                owner: None,
                             }
                         }
                     }),
@@ -1105,7 +1131,7 @@ impl<'c> Lowerer<'c> {
                     RecordLayout::Blittable { size, .. } => SizeExpr::Fixed(*size),
                     _ => SizeExpr::WireSize {
                         value: value.clone(),
-                        record_id: Some(id.clone()),
+                        owner: Some(WireSizeOwner::Record(id.clone())),
                     },
                 };
                 WriteSeq {
@@ -1123,7 +1149,7 @@ impl<'c> Lowerer<'c> {
                     EnumLayout::CStyle { .. } => SizeExpr::Fixed(4),
                     _ => SizeExpr::WireSize {
                         value: value.clone(),
-                        record_id: None,
+                        owner: Some(WireSizeOwner::Enum(id.clone())),
                     },
                 };
                 WriteSeq {
@@ -1356,10 +1382,10 @@ impl<'c> Lowerer<'c> {
                         Transport::Composite(layout) => {
                             Some(AbiType::Struct(layout.record_id.clone()))
                         }
-                        _ => Some(AbiType::Pointer(PrimitiveType::U8)),
+                        _ => Some(AbiType::OwnedBuffer),
                     }
                 }
-                ReturnDef::Result { .. } => Some(AbiType::Pointer(PrimitiveType::U8)),
+                ReturnDef::Result { .. } => Some(AbiType::OwnedBuffer),
             })
             .unwrap_or(AbiType::Void);
 
@@ -1794,8 +1820,11 @@ impl<'c> Lowerer<'c> {
                 TypeExpr::Primitive(p) => {
                     Transport::Span(SpanContent::Scalar(ScalarOrigin::Primitive(*p)))
                 }
-                TypeExpr::Enum(id) => match self.classify_enum(id) {
-                    Transport::Scalar(origin) => Transport::Span(SpanContent::Scalar(origin)),
+                TypeExpr::Enum(_) => {
+                    Transport::Span(SpanContent::Encoded(self.build_codec(type_expr)))
+                }
+                TypeExpr::Record(record_id) => match self.classify_record(record_id) {
+                    Transport::Composite(layout) => Transport::Span(SpanContent::Composite(layout)),
                     _ => Transport::Span(SpanContent::Encoded(self.build_codec(type_expr))),
                 },
                 _ => Transport::Span(SpanContent::Encoded(self.build_codec(type_expr))),
@@ -2051,11 +2080,13 @@ impl<'c> Lowerer<'c> {
         let layout = match &def.repr {
             EnumRepr::CStyle { tag_type, .. } => EnumLayout::CStyle {
                 tag_type: *tag_type,
+                tag_strategy: EnumTagStrategy::OrdinalIndex,
                 is_error: def.is_error,
             },
 
             EnumRepr::Data { tag_type, variants } => EnumLayout::Data {
                 tag_type: *tag_type,
+                tag_strategy: EnumTagStrategy::OrdinalIndex,
                 variants: variants
                     .iter()
                     .map(|v| VariantLayout {
@@ -3085,6 +3116,50 @@ mod tests {
     }
 
     #[test]
+    fn vec_blittable_record_uses_composite_span_transport() {
+        let mut contract = test_contract();
+        let record_id = RecordId::new("Vec2");
+        contract.catalog.insert_record(RecordDef {
+            is_repr_c: true,
+            id: record_id.clone(),
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("x"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("y"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: None,
+                    default: None,
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+
+        let lowerer = lowerer_for_contract(&contract);
+        let transport = lowerer.classify_type(&TypeExpr::Vec(Box::new(TypeExpr::Record(
+            record_id.clone(),
+        ))));
+
+        match transport {
+            Transport::Span(SpanContent::Composite(layout)) => {
+                assert_eq!(layout.record_id, record_id);
+                assert_eq!(layout.total_size, 16);
+            }
+            other => panic!(
+                "expected composite span transport for Vec<blittable record>, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
     fn build_codec_result() {
         let contract = test_contract();
         let lowerer = lowerer_for_contract(&contract);
@@ -3556,7 +3631,7 @@ mod tests {
     }
 
     #[test]
-    fn closure_string_return_yields_pointer_abi_type() {
+    fn closure_string_return_yields_owned_buffer_abi_type() {
         let contract = contract_with_closure(
             "__Closure_StringToString",
             vec![ParamDef {
@@ -3570,7 +3645,7 @@ mod tests {
         let lowerer = lowerer_for_contract(&contract);
         let (_params, ret) =
             lowerer.inline_callback_fn_abi_signature(&CallbackId::new("__Closure_StringToString"));
-        assert_eq!(ret, AbiType::Pointer(PrimitiveType::U8));
+        assert_eq!(ret, AbiType::OwnedBuffer);
     }
 
     fn blittable_point_record() -> RecordDef {
@@ -4006,5 +4081,21 @@ mod tests {
             "c-style enum self should be Scalar, got: {:?}",
             self_param.transport
         );
+    }
+
+    #[test]
+    fn vec_c_style_enum_uses_wire_encoded_transport() {
+        let mut contract = test_contract();
+        contract.catalog.insert_enum(c_style_enum_with_method());
+
+        let lowerer = lowerer_for_contract(&contract);
+        let strategy = lowerer.classify_type(&TypeExpr::Vec(Box::new(TypeExpr::Enum(
+            EnumId::new("Direction"),
+        ))));
+
+        assert!(matches!(
+            strategy,
+            Transport::Span(SpanContent::Encoded(CodecPlan::Vec { .. }))
+        ));
     }
 }

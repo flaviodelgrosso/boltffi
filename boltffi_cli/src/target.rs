@@ -120,9 +120,10 @@ impl RustTarget {
     ) -> PathBuf {
         let artifact_name = match self.platform {
             Platform::Wasm => format!("{}.wasm", lib_name),
-            Platform::Ios | Platform::IosSimulator | Platform::MacOs | Platform::Android => {
+            Platform::Ios | Platform::IosSimulator | Platform::MacOs => {
                 format!("lib{}.a", lib_name)
             }
+            Platform::Android => format!("lib{}.so", lib_name),
         };
 
         target_dir
@@ -181,5 +182,32 @@ impl BuiltLibrary {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Platform, RustTarget};
+    use std::path::Path;
+
+    #[test]
+    fn apple_targets_use_static_libraries() {
+        let library_path =
+            RustTarget::IOS_ARM64.library_path_for_profile(Path::new("target"), "demo", "debug");
+
+        assert_eq!(RustTarget::IOS_ARM64.platform(), Platform::Ios);
+        assert!(library_path.ends_with("target/aarch64-apple-ios/debug/libdemo.a"));
+    }
+
+    #[test]
+    fn android_targets_use_shared_libraries() {
+        let library_path = RustTarget::ANDROID_ARM64.library_path_for_profile(
+            Path::new("target"),
+            "demo",
+            "debug",
+        );
+
+        assert_eq!(RustTarget::ANDROID_ARM64.platform(), Platform::Android);
+        assert!(library_path.ends_with("target/aarch64-linux-android/debug/libdemo.so"));
     }
 }

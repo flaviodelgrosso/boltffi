@@ -68,6 +68,21 @@ pub enum VecLayout {
     Encoded,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnumTagStrategy {
+    Discriminant,
+    OrdinalIndex,
+}
+
+impl EnumTagStrategy {
+    pub fn resolve_tag(self, ordinal: usize, discriminant: i128) -> i128 {
+        match self {
+            Self::Discriminant => discriminant,
+            Self::OrdinalIndex => ordinal as i128,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RecordLayout {
     Blittable {
@@ -103,10 +118,12 @@ pub struct EncodedField {
 pub enum EnumLayout {
     CStyle {
         tag_type: PrimitiveType,
+        tag_strategy: EnumTagStrategy,
         is_error: bool,
     },
     Data {
         tag_type: PrimitiveType,
+        tag_strategy: EnumTagStrategy,
         variants: Vec<VariantLayout>,
     },
     Recursive,
