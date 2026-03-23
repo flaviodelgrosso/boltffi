@@ -13,3 +13,4 @@ examples/platforms/kotlin/.kotlin/
 examples/platforms/kotlin/build/
 examples/platforms/kotlin/generated/
 examples/platforms/apple/ffi
+examples/platforms/apple/.build
