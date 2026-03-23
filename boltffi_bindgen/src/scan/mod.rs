@@ -2837,7 +2837,10 @@ mod tests {
             type_aliases: HashMap::new(),
         };
 
-        assert_eq!(resolver.resolve_segments(vec!["Foo".to_string()]), vec!["Bar".to_string()]);
+        assert_eq!(
+            resolver.resolve_segments(vec!["Foo".to_string()]),
+            vec!["Bar".to_string()]
+        );
     }
 
     fn pending(kind: PendingKind) -> TypeMeta {

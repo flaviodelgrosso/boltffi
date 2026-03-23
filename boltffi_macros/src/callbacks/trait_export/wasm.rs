@@ -64,7 +64,7 @@ impl<'a> WasmCallbackMethodExpander<'a> {
 
         let wire_return = lowered_return
             .as_ref()
-            .is_some_and(|return_shape| return_shape.uses_wire_payload(self.return_lowering));
+            .is_some_and(LoweredCallbackReturn::uses_wire_payload);
 
         let (extern_import, impl_body) = if let Some(ref return_type) = return_type {
             if wire_return {

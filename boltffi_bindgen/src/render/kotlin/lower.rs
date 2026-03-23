@@ -1864,9 +1864,9 @@ impl<'a> KotlinLowerer<'a> {
             ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => {
                 "Handle".to_string()
             }
-            ValueReturnStrategy::CompositeValue
-            | ValueReturnStrategy::DirectBuffer
-            | ValueReturnStrategy::EncodedBuffer => "Wire".to_string(),
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                "Wire".to_string()
+            }
         }
     }
 
@@ -1906,9 +1906,7 @@ impl<'a> KotlinLowerer<'a> {
                     self.callback_return_cast(return_type, &abi_type),
                 )
             }
-            ValueReturnStrategy::CompositeValue
-            | ValueReturnStrategy::DirectBuffer
-            | ValueReturnStrategy::EncodedBuffer => {
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
                 let to_jni = ret_shape
                     .encode_ops
                     .as_ref()
@@ -2441,9 +2439,9 @@ impl<'a> KotlinLowerer<'a> {
             ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => {
                 "Long".to_string()
             }
-            ValueReturnStrategy::CompositeValue
-            | ValueReturnStrategy::DirectBuffer
-            | ValueReturnStrategy::EncodedBuffer => "ByteArray?".to_string(),
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                "ByteArray?".to_string()
+            }
         }
     }
 
@@ -2872,13 +2870,13 @@ impl<'a> KotlinLowerer<'a> {
                     cast: self.kotlin_callback_return_cast(callback_id, *nullable),
                 }
             }
-            ValueReturnStrategy::CompositeValue
-            | ValueReturnStrategy::DirectBuffer
-            | ValueReturnStrategy::EncodedBuffer => KotlinReturnMeta {
-                is_unit: false,
-                is_direct: false,
-                cast: String::new(),
-            },
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                KotlinReturnMeta {
+                    is_unit: false,
+                    is_direct: false,
+                    cast: String::new(),
+                }
+            }
         }
     }
 

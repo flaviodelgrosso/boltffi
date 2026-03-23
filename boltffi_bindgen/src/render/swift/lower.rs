@@ -2,7 +2,7 @@ use boltffi_ffi_rules::naming::{
     self, snake_to_camel as camel_case, to_upper_camel_case as pascal_case,
 };
 use boltffi_ffi_rules::transport::{
-    ErrorReturnStrategy, ScalarReturnStrategy, ValueReturnStrategy,
+    EncodedReturnStrategy, ErrorReturnStrategy, ScalarReturnStrategy, ValueReturnStrategy,
 };
 use heck::ToLowerCamelCase;
 
@@ -19,16 +19,15 @@ use super::plan::{
     ValueSelfParam,
 };
 use crate::ir::abi::{
-    AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload,
-    AbiEnumVariant, AbiParam, AbiRecord, AbiStream, CallId, CallMode, ErrorTransport, ParamRole,
-    ReturnShape, StreamItemTransport,
+    AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
+    AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, AbiStream, CallId, CallMode,
+    ErrorTransport, ParamRole, ReturnShape, StreamItemTransport,
 };
 use crate::ir::codec::CodecPlan;
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
     CallbackKind, CallbackMethodDef, ConstructorDef, DefaultValue, EnumRepr, MethodDef, ParamDef,
-    Receiver, ReturnDef,
-    StreamDef, StreamMode,
+    Receiver, ReturnDef, StreamDef, StreamMode,
 };
 use crate::ir::ids::{CallbackId, ClassId, EnumId, FieldName, ParamName, RecordId};
 use crate::ir::ops::{
@@ -1297,7 +1296,9 @@ impl<'a> SwiftLowerer<'a> {
                     fields,
                 }
             }
-            ValueReturnStrategy::DirectBuffer => match &return_shape.transport {
+            ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec) => match &return_shape
+                .transport
+            {
                 Some(Transport::Span(SpanContent::Scalar(origin))) => {
                     let primitive = origin.primitive();
                     let element_swift_type = self.abi_to_swift(&AbiType::from(primitive));
@@ -1330,19 +1331,24 @@ impl<'a> SwiftLowerer<'a> {
                 }
                 _ => unreachable!("direct buffer return strategy requires direct span transport"),
             },
-            ValueReturnStrategy::EncodedBuffer => SwiftReturn::FromWireBuffer {
-                swift_type: self.swift_return_value_type(returns),
-                decode: return_shape.decode_ops.clone().unwrap_or_else(|| ReadSeq {
-                    size: SizeExpr::Fixed(0),
-                    ops: vec![],
-                    shape: WireShape::Value,
-                }),
-                encode: return_shape.encode_ops.clone().unwrap_or_else(|| WriteSeq {
-                    size: SizeExpr::Fixed(0),
-                    ops: vec![],
-                    shape: WireShape::Value,
-                }),
-            },
+            ValueReturnStrategy::Buffer(EncodedReturnStrategy::Utf8String)
+            | ValueReturnStrategy::Buffer(EncodedReturnStrategy::OptionScalar)
+            | ValueReturnStrategy::Buffer(EncodedReturnStrategy::ResultScalar)
+            | ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded) => {
+                SwiftReturn::FromWireBuffer {
+                    swift_type: self.swift_return_value_type(returns),
+                    decode: return_shape.decode_ops.clone().unwrap_or_else(|| ReadSeq {
+                        size: SizeExpr::Fixed(0),
+                        ops: vec![],
+                        shape: WireShape::Value,
+                    }),
+                    encode: return_shape.encode_ops.clone().unwrap_or_else(|| WriteSeq {
+                        size: SizeExpr::Fixed(0),
+                        ops: vec![],
+                        shape: WireShape::Value,
+                    }),
+                }
+            }
             ValueReturnStrategy::ObjectHandle => {
                 let Some(Transport::Handle { class_id, nullable }) = &return_shape.transport else {
                     unreachable!("object handle return strategy requires handle transport");
@@ -1436,9 +1442,7 @@ impl<'a> SwiftLowerer<'a> {
         match ty {
             TypeExpr::Handle(id) => self.swift_name_for_class(id),
             TypeExpr::Callback(id) => format!("any {}", pascal_case(id.as_str())),
-            TypeExpr::Custom(id) => {
-                self.swift_named_custom_type(id.as_str())
-            }
+            TypeExpr::Custom(id) => self.swift_named_custom_type(id.as_str()),
             TypeExpr::Option(inner) => match inner.as_ref() {
                 TypeExpr::Handle(id) => format!("{}?", self.swift_name_for_class(id)),
                 TypeExpr::Callback(id) => format!("(any {})?", pascal_case(id.as_str())),
@@ -1769,9 +1773,10 @@ impl<'a> SwiftLowerer<'a> {
     ) -> (String, ValueReturnStrategy) {
         match returns {
             ReturnDef::Void => ("Void".to_string(), ValueReturnStrategy::Void),
-            ReturnDef::Result { .. } => {
-                ("FfiBuf_u8".to_string(), ValueReturnStrategy::EncodedBuffer)
-            }
+            ReturnDef::Result { .. } => (
+                "FfiBuf_u8".to_string(),
+                ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded),
+            ),
             ReturnDef::Value(type_expr) => self.inline_closure_value_return_signature(type_expr),
         }
     }
@@ -1854,7 +1859,10 @@ impl<'a> SwiftLowerer<'a> {
                     EnumRepr::Data { .. } => None,
                 })
                 .unwrap_or_else(|| {
-                    ("FfiBuf_u8".to_string(), ValueReturnStrategy::EncodedBuffer)
+                    (
+                        "FfiBuf_u8".to_string(),
+                        ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded),
+                    )
                 }),
             TypeExpr::Record(record_id) => self
                 .abi
@@ -1868,9 +1876,15 @@ impl<'a> SwiftLowerer<'a> {
                     )
                 })
                 .unwrap_or_else(|| {
-                    ("FfiBuf_u8".to_string(), ValueReturnStrategy::EncodedBuffer)
+                    (
+                        "FfiBuf_u8".to_string(),
+                        ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded),
+                    )
                 }),
-            _ => ("FfiBuf_u8".to_string(), ValueReturnStrategy::EncodedBuffer),
+            _ => (
+                "FfiBuf_u8".to_string(),
+                ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded),
+            ),
         }
     }
 
@@ -2741,7 +2755,9 @@ mod tests {
             closure_wrapper
         );
         assert!(
-            closure_wrapper.contains("return Unmanaged<CallbackCallbackBox>.fromOpaque(ud!).takeUnretainedValue().fn_()"),
+            closure_wrapper.contains(
+                "return Unmanaged<CallbackCallbackBox>.fromOpaque(ud!).takeUnretainedValue().fn_()"
+            ),
             "nullary closure should return the closure result directly: {}",
             closure_wrapper
         );

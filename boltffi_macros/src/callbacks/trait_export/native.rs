@@ -55,7 +55,7 @@ impl<'a> NativeCallbackMethodExpander<'a> {
             return_type.map(|ty| LoweredCallbackReturn::new(ty, self.return_lowering));
         let async_wire_return = lowered_return
             .as_ref()
-            .is_some_and(|return_shape| return_shape.uses_wire_payload(self.return_lowering));
+            .is_some_and(LoweredCallbackReturn::uses_wire_payload);
 
         let callback_type = if let Some(return_type) = return_type {
             if async_wire_return {
@@ -123,7 +123,6 @@ impl<'a> NativeCallbackMethodExpander<'a> {
         let wire_return = lowered_return.as_ref().is_some_and(|return_shape| {
             matches!(
                 return_shape.value_return_method(
-                    self.return_lowering,
                     ReturnInvocationContext::CallbackVtable,
                     ReturnPlatform::Native,
                 ),

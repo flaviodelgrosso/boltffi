@@ -18,15 +18,13 @@ impl LoweredCallbackReturn {
 
     pub(super) fn value_return_method(
         &self,
-        return_lowering: &ReturnLoweringContext<'_>,
         context: ReturnInvocationContext,
         platform: ReturnPlatform,
     ) -> ValueReturnMethod {
-        let _ = return_lowering;
         self.resolved_return.value_return_method(context, platform)
     }
 
-    pub(super) fn uses_wire_payload(&self, return_lowering: &ReturnLoweringContext<'_>) -> bool {
+    pub(super) fn uses_wire_payload(&self) -> bool {
         !matches!(
             self.resolved_return.value_return_strategy(),
             ValueReturnStrategy::Scalar(_)

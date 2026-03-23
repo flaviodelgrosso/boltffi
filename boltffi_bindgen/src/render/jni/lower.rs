@@ -23,8 +23,8 @@ use super::plan::{
     JniArrayReleaseMode, JniAsyncCallbackInvoker, JniAsyncCallbackMethod, JniAsyncCompleteKind,
     JniAsyncFunction, JniCallbackCParam, JniCallbackMethod, JniCallbackReturn, JniCallbackTrait,
     JniClass, JniClosureRecordParam, JniClosureTrampoline, JniClosureTrampolineReturn, JniFunction,
-    JniInvokerResult, JniModule, JniOptionInnerKind, JniOptionView, JniParam, JniParamKind,
-    JniPrimitiveArrayElementsKind, JniResultVariant, JniResultView, JniReturnKind, JniStream,
+    JniFunctionReturn, JniInvokerResult, JniModule, JniOptionInnerKind, JniOptionView, JniParam,
+    JniParamKind, JniPrimitiveArrayElementsKind, JniResultVariant, JniResultView, JniStream,
     JniWireCtor, JniWireFunction, JniWireMethod, TrampolineReturnStrategy,
 };
 
@@ -288,17 +288,14 @@ impl<'a> JniLowerer<'a> {
             .map(|(param, abi_param)| self.lower_param(param, abi_param))
             .collect();
 
-        let return_kind = self.return_kind(&func.returns, func.id.as_str());
-
-        let jni_return = self.return_kind_jni_return(&return_kind);
+        let return_info = self.lower_function_return(&func.returns);
         let jni_params = self.format_jni_params(&params);
 
         JniFunction {
             ffi_name,
             jni_name,
-            jni_return,
+            return_info,
             jni_params,
-            return_kind,
             params,
         }
     }
@@ -1137,41 +1134,44 @@ impl<'a> JniLowerer<'a> {
         }
     }
 
-    fn return_kind(&self, returns: &ReturnDef, func_name: &str) -> JniReturnKind {
+    fn lower_function_return(&self, returns: &ReturnDef) -> JniFunctionReturn {
         match returns {
-            ReturnDef::Void => JniReturnKind::Void,
-            ReturnDef::Result { ok, err } => {
-                JniReturnKind::Result(self.result_view(ok, err, func_name))
-            }
-            ReturnDef::Value(ty) => self.return_kind_from_type(ty, func_name),
+            ReturnDef::Void => JniFunctionReturn {
+                jni_return: "void".to_string(),
+                is_void: true,
+            },
+            ReturnDef::Result { .. } => JniFunctionReturn {
+                jni_return: "jobject".to_string(),
+                is_void: false,
+            },
+            ReturnDef::Value(ty) => self.lower_function_value_return(ty),
         }
     }
 
-    fn return_kind_from_type(&self, ty: &TypeExpr, func_name: &str) -> JniReturnKind {
+    fn lower_function_value_return(&self, ty: &TypeExpr) -> JniFunctionReturn {
         match ty {
-            TypeExpr::Void => JniReturnKind::Void,
-            TypeExpr::Primitive(p) => JniReturnKind::Primitive {
-                jni_type: self.primitive_return_jni_type(*p),
+            TypeExpr::Void => JniFunctionReturn {
+                jni_return: "void".to_string(),
+                is_void: true,
             },
-            TypeExpr::String => JniReturnKind::String {
-                ffi_name: naming::function_ffi_name(func_name).into_string(),
+            TypeExpr::Primitive(p) => JniFunctionReturn {
+                jni_return: self.primitive_return_jni_type(*p),
+                is_void: false,
             },
-            TypeExpr::Vec(_) => JniReturnKind::Vec {
-                len_fn: naming::function_ffi_vec_len(func_name).into_string(),
-                copy_fn: naming::function_ffi_vec_copy_into(func_name).into_string(),
-            },
+            TypeExpr::String | TypeExpr::Vec(_) | TypeExpr::Option(_) | TypeExpr::Result { .. } => {
+                JniFunctionReturn {
+                    jni_return: "jobject".to_string(),
+                    is_void: false,
+                }
+            }
             TypeExpr::Enum(id) => self
                 .contract
                 .catalog
                 .resolve_enum(id)
                 .filter(|enum_def| matches!(enum_def.repr, EnumRepr::Data { .. }))
-                .map(|_| {
-                    let struct_size = self.data_enum_struct_size(id);
-                    let enum_name = NamingConvention::class_name(id.as_str());
-                    JniReturnKind::DataEnum {
-                        enum_name,
-                        struct_size,
-                    }
+                .map(|_| JniFunctionReturn {
+                    jni_return: "jobject".to_string(),
+                    is_void: false,
                 })
                 .unwrap_or_else(|| {
                     let tag_type = self
@@ -1183,28 +1183,15 @@ impl<'a> JniLowerer<'a> {
                             _ => None,
                         })
                         .unwrap_or(PrimitiveType::I32);
-                    JniReturnKind::CStyleEnum {
-                        jni_type: self.primitive_return_jni_type(tag_type),
+                    JniFunctionReturn {
+                        jni_return: self.primitive_return_jni_type(tag_type),
+                        is_void: false,
                     }
                 }),
-            TypeExpr::Option(inner) => {
-                let opt = self.option_view(inner);
-                JniReturnKind::Option(opt)
-            }
-            _ => JniReturnKind::Void,
-        }
-    }
-
-    fn return_kind_jni_return(&self, kind: &JniReturnKind) -> String {
-        match kind {
-            JniReturnKind::Void => "void".to_string(),
-            JniReturnKind::Primitive { jni_type } => jni_type.clone(),
-            JniReturnKind::String { .. } => "jstring".to_string(),
-            JniReturnKind::Vec { .. } => "jobject".to_string(),
-            JniReturnKind::CStyleEnum { jni_type } => jni_type.clone(),
-            JniReturnKind::DataEnum { .. } => "jobject".to_string(),
-            JniReturnKind::Option(_) => "jobject".to_string(),
-            JniReturnKind::Result(_) => "jobject".to_string(),
+            _ => JniFunctionReturn {
+                jni_return: "void".to_string(),
+                is_void: true,
+            },
         }
     }
 
@@ -1750,9 +1737,9 @@ impl<'a> JniLowerer<'a> {
             ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => {
                 "J".to_string()
             }
-            ValueReturnStrategy::CompositeValue
-            | ValueReturnStrategy::DirectBuffer
-            | ValueReturnStrategy::EncodedBuffer => "[B".to_string(),
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                "[B".to_string()
+            }
         };
 
         format!("({}){}", params_sig, return_sig)
@@ -1812,16 +1799,16 @@ impl<'a> JniLowerer<'a> {
                     out_len_name: None,
                 })
             }
-            ValueReturnStrategy::CompositeValue
-            | ValueReturnStrategy::DirectBuffer
-            | ValueReturnStrategy::EncodedBuffer => Some(JniCallbackReturn {
-                jni_type: "jbyteArray".to_string(),
-                jni_call_type: "Object".to_string(),
-                c_type: "uint8_t*".to_string(),
-                is_wire_encoded: true,
-                out_ptr_name: Some(out_ptr_name),
-                out_len_name: Some(out_len_name),
-            }),
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                Some(JniCallbackReturn {
+                    jni_type: "jbyteArray".to_string(),
+                    jni_call_type: "Object".to_string(),
+                    c_type: "uint8_t*".to_string(),
+                    is_wire_encoded: true,
+                    out_ptr_name: Some(out_ptr_name),
+                    out_len_name: Some(out_len_name),
+                })
+            }
         }
     }
 
@@ -1837,9 +1824,9 @@ impl<'a> JniLowerer<'a> {
             ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => {
                 Some("void*".to_string())
             }
-            ValueReturnStrategy::CompositeValue
-            | ValueReturnStrategy::DirectBuffer
-            | ValueReturnStrategy::EncodedBuffer => Some("wire".to_string()),
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                Some("wire".to_string())
+            }
         }
     }
 
@@ -1851,14 +1838,16 @@ impl<'a> JniLowerer<'a> {
                 let Some(Transport::Scalar(origin)) = &ret_shape.transport else {
                     unreachable!("scalar return strategy requires scalar transport");
                 };
-                primitives::info(origin.primitive()).invoker_suffix.to_string()
+                primitives::info(origin.primitive())
+                    .invoker_suffix
+                    .to_string()
             }
             ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => {
                 "Handle".to_string()
             }
-            ValueReturnStrategy::CompositeValue
-            | ValueReturnStrategy::DirectBuffer
-            | ValueReturnStrategy::EncodedBuffer => "Wire".to_string(),
+            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
+                "Wire".to_string()
+            }
         }
     }
 

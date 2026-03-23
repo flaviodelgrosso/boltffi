@@ -10,7 +10,7 @@ use syn::{FnArg, ReturnType, Type};
 use crate::callbacks::registry as callback_registry;
 use crate::lowering::params::{FfiParams, transform_method_params};
 use crate::lowering::returns::lower::encoded_return_body;
-use crate::lowering::returns::model::{ReturnAbi, ReturnLoweringContext};
+use crate::lowering::returns::model::{ResolvedReturn, ReturnLoweringContext};
 use crate::registries::custom_types;
 use crate::registries::data_types;
 
@@ -205,33 +205,32 @@ fn generate_mut_instance_export(
     ffi_params: &[proc_macro2::TokenStream],
     conversions: &[proc_macro2::TokenStream],
     call_expr: proc_macro2::TokenStream,
-    return_abi: &ReturnAbi,
+    return_abi: &ResolvedReturn,
     method_name: &syn::Ident,
 ) -> Option<proc_macro2::TokenStream> {
-    match return_abi {
-        ReturnAbi::Unit => {
-            let body = quote! {
-                #(#conversions)*
-                #call_expr;
-                ::boltffi::__private::Passable::pack(self_value)
-            };
-            let return_type = quote! { -> <#type_name as ::boltffi::__private::Passable>::Out };
+    if return_abi.is_unit() {
+        let body = quote! {
+            #(#conversions)*
+            #call_expr;
+            ::boltffi::__private::Passable::pack(self_value)
+        };
+        let return_type = quote! { -> <#type_name as ::boltffi::__private::Passable>::Out };
 
-            Some(emit_ffi_function(
-                export_name,
-                ffi_params,
-                body,
-                return_type,
-                false,
-            ))
-        }
-        _ => Some(
+        Some(emit_ffi_function(
+            export_name,
+            ffi_params,
+            body,
+            return_type,
+            false,
+        ))
+    } else {
+        Some(
             syn::Error::new_spanned(
                 method_name,
                 "&mut self methods on records that return values are not yet supported",
             )
             .to_compile_error(),
-        ),
+        )
     }
 }
 
@@ -283,7 +282,7 @@ fn generate_value_return_export(
     conversions: &[proc_macro2::TokenStream],
     call_expr: proc_macro2::TokenStream,
     is_fallible: bool,
-    return_abi: &ReturnAbi,
+    return_abi: &ResolvedReturn,
     custom_types: &custom_types::CustomTypeRegistry,
 ) -> Option<proc_macro2::TokenStream> {
     let on_error = return_abi.invalid_arg_early_return_statement();
@@ -311,62 +310,59 @@ fn generate_value_return_export(
         }
     };
 
-    match return_abi {
-        ReturnAbi::Passable { rust_type } => {
-            let body = quote! {
-                ::boltffi::__private::Passable::pack({ #passable_call })
-            };
-            let return_type = quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out };
+    if return_abi.is_passable_value() {
+        let rust_type = return_abi.rust_type();
+        let body = quote! {
+            ::boltffi::__private::Passable::pack({ #passable_call })
+        };
+        let return_type = quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out };
 
-            Some(emit_ffi_function(
-                export_name,
-                ffi_params,
-                body,
-                return_type,
-                false,
-            ))
-        }
-        ReturnAbi::Encoded {
-            rust_type: inner_ty,
+        Some(emit_ffi_function(
+            export_name,
+            ffi_params,
+            body,
+            return_type,
+            false,
+        ))
+    } else if let Some(strategy) = return_abi.encoded_return_strategy() {
+        let inner_ty = return_abi.rust_type();
+        let encoded_call = if conversions.is_empty() {
+            call_expr
+        } else {
+            quote! {
+                #(#conversions)*
+                #call_expr
+            }
+        };
+        let result_ident = syn::Ident::new("result", export_name.span());
+        let body = encoded_return_body(
+            inner_ty,
             strategy,
-        } => {
-            let encoded_call = if conversions.is_empty() {
-                call_expr
-            } else {
-                quote! {
-                    #(#conversions)*
-                    #call_expr
-                }
-            };
-            let result_ident = syn::Ident::new("result", export_name.span());
-            let body = encoded_return_body(
-                inner_ty,
-                *strategy,
-                &result_ident,
-                encoded_call,
-                &[],
-                custom_types,
-            );
-            Some(emit_ffi_function(
-                export_name,
-                ffi_params,
-                body,
-                quote! { -> ::boltffi::__private::FfiBuf },
-                true,
-            ))
-        }
-        _ => Some(
+            &result_ident,
+            encoded_call,
+            &[],
+            custom_types,
+        );
+        Some(emit_ffi_function(
+            export_name,
+            ffi_params,
+            body,
+            quote! { -> ::boltffi::__private::FfiBuf },
+            true,
+        ))
+    } else {
+        Some(
             syn::Error::new_spanned(
                 export_name,
                 "record constructors must return Self or Result<Self, E>",
             )
             .to_compile_error(),
-        ),
+        )
     }
 }
 
 fn build_return_arms(
-    return_abi: &ReturnAbi,
+    return_abi: &ResolvedReturn,
     call_expr: proc_macro2::TokenStream,
     conversions: &[proc_macro2::TokenStream],
     custom_types: &custom_types::CustomTypeRegistry,
@@ -374,63 +370,60 @@ fn build_return_arms(
 ) -> Option<(proc_macro2::TokenStream, proc_macro2::TokenStream, bool)> {
     let has_conversions = !conversions.is_empty();
 
-    match return_abi {
-        ReturnAbi::Unit => {
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    #call_expr;
-                    ::boltffi::__private::FfiStatus::OK
-                }
-            } else {
-                quote! {
-                    #call_expr;
-                    ::boltffi::__private::FfiStatus::OK
-                }
-            };
-            Some((body, quote! { -> ::boltffi::__private::FfiStatus }, false))
-        }
-        ReturnAbi::Scalar { rust_type } => {
-            let fn_output = quote! { -> #rust_type };
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    #call_expr
-                }
-            } else {
-                call_expr
-            };
-            Some((body, fn_output, false))
-        }
-        ReturnAbi::Encoded {
-            rust_type: inner_ty,
+    if return_abi.is_unit() {
+        let body = if has_conversions {
+            quote! {
+                #(#conversions)*
+                #call_expr;
+                ::boltffi::__private::FfiStatus::OK
+            }
+        } else {
+            quote! {
+                #call_expr;
+                ::boltffi::__private::FfiStatus::OK
+            }
+        };
+        Some((body, quote! { -> ::boltffi::__private::FfiStatus }, false))
+    } else if return_abi.is_primitive_scalar() {
+        let rust_type = return_abi.rust_type();
+        let fn_output = quote! { -> #rust_type };
+        let body = if has_conversions {
+            quote! {
+                #(#conversions)*
+                #call_expr
+            }
+        } else {
+            call_expr
+        };
+        Some((body, fn_output, false))
+    } else if let Some(strategy) = return_abi.encoded_return_strategy() {
+        let inner_ty = return_abi.rust_type();
+        let result_ident = syn::Ident::new("result", method_name.span());
+        let body = encoded_return_body(
+            inner_ty,
             strategy,
-        } => {
-            let result_ident = syn::Ident::new("result", method_name.span());
-            let body = encoded_return_body(
-                inner_ty,
-                *strategy,
-                &result_ident,
-                call_expr,
-                conversions,
-                custom_types,
-            );
-            Some((body, quote! { -> ::boltffi::__private::FfiBuf }, true))
-        }
-        ReturnAbi::Passable { rust_type } => {
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    ::boltffi::__private::Passable::pack(#call_expr)
-                }
-            } else {
-                quote! {
-                    ::boltffi::__private::Passable::pack(#call_expr)
-                }
-            };
-            let return_type = quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out };
-            Some((body, return_type, false))
-        }
+            &result_ident,
+            call_expr,
+            conversions,
+            custom_types,
+        );
+        Some((body, quote! { -> ::boltffi::__private::FfiBuf }, true))
+    } else if return_abi.is_passable_value() {
+        let rust_type = return_abi.rust_type();
+        let body = if has_conversions {
+            quote! {
+                #(#conversions)*
+                ::boltffi::__private::Passable::pack(#call_expr)
+            }
+        } else {
+            quote! {
+                ::boltffi::__private::Passable::pack(#call_expr)
+            }
+        };
+        let return_type = quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out };
+        Some((body, return_type, false))
+    } else {
+        None
     }
 }
 

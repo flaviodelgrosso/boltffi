@@ -634,10 +634,8 @@ fn emit_write_data_op(op: &WriteOp) -> String {
             let v = render_value(value);
             let ok_data = emit_write_data(ok);
             let err_data = emit_write_data(err);
-            let err_value = swift_result_failure_binding(
-                err.ops.first().expect("result err op"),
-                "errVal",
-            );
+            let err_value =
+                swift_result_failure_binding(err.ops.first().expect("result err op"), "errVal");
             format!(
                 "switch {} {{ case .success(let okVal): data.appendU8(0); {}; case .failure(let errVal): data.appendU8(1); {} }}",
                 v,
@@ -732,10 +730,8 @@ fn emit_write_bytes_op(op: &WriteOp) -> String {
             let v = render_value(value);
             let ok_bytes = emit_write_bytes(ok);
             let err_bytes = emit_write_bytes(err);
-            let err_value = swift_result_failure_binding(
-                err.ops.first().expect("result err op"),
-                "errVal",
-            );
+            let err_value =
+                swift_result_failure_binding(err.ops.first().expect("result err op"), "errVal");
             format!(
                 "switch {} {{ case .success(let okVal): bytes.appendU8(0); {}; case .failure(let errVal): bytes.appendU8(1); {} }}",
                 v,
@@ -961,10 +957,8 @@ fn emit_writer_write_op(op: &WriteOp) -> String {
             let v = render_value(value);
             let ok_write = emit_writer_write(ok);
             let err_write = emit_writer_write(err);
-            let err_value = swift_result_failure_binding(
-                err.ops.first().expect("result err op"),
-                "errVal",
-            );
+            let err_value =
+                swift_result_failure_binding(err.ops.first().expect("result err op"), "errVal");
             format!(
                 "switch {} {{ case .success(let okVal): writer.writeU8(0); {}; case .failure(let errVal): writer.writeU8(1); {} }}",
                 v,

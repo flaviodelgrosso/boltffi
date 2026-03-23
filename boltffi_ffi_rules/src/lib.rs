@@ -954,8 +954,8 @@ pub mod transport {
     /// - `fn ping()` uses [`Self::Void`]
     /// - `fn count() -> u32` uses [`Self::Scalar`]
     /// - `fn point() -> Point` uses [`Self::CompositeValue`]
-    /// - `fn counts() -> Vec<u32>` can use [`Self::DirectBuffer`]
-    /// - `fn shape() -> Shape` can use [`Self::EncodedBuffer`]
+    /// - `fn counts() -> Vec<u32>` can use [`Self::Buffer`]
+    /// - `fn shape() -> Shape` can use [`Self::Buffer`]
     /// - `fn inventory() -> Inventory` uses [`Self::ObjectHandle`]
     /// - `fn callback() -> Box<dyn Mapper>` uses [`Self::CallbackHandle`]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -989,15 +989,7 @@ pub mod transport {
         /// return slot.
         ///
         /// Example: `fn counts() -> Vec<u32>`
-        DirectBuffer,
-        /// Returns bytes that need the general wire decoder to reconstruct the
-        /// host value.
-        ///
-        /// This is the path for values that cannot stay in a simpler direct
-        /// scalar, direct buffer, or fixed composite layout.
-        ///
-        /// Example: `fn shape() -> Shape`
-        EncodedBuffer,
+        Buffer(EncodedReturnStrategy),
         /// Returns a foreign object handle.
         ///
         /// The caller receives an identity for an object that continues to live
@@ -1120,7 +1112,7 @@ pub mod transport {
                     | Self::CompositeValue
                     | Self::ObjectHandle
                     | Self::CallbackHandle => ValueReturnMethod::DirectReturn,
-                    Self::DirectBuffer | Self::EncodedBuffer => {
+                    Self::Buffer(_) => {
                         if matches!(error_strategy, ErrorReturnStrategy::Encoded) {
                             ValueReturnMethod::WriteToOutBufferParts
                         } else {
@@ -1129,7 +1121,9 @@ pub mod transport {
                     }
                 },
                 ReturnInvocationContext::SyncExport => match self {
-                    Self::DirectBuffer if matches!(platform, ReturnPlatform::Wasm) => {
+                    Self::Buffer(EncodedReturnStrategy::DirectVec)
+                        if matches!(platform, ReturnPlatform::Wasm) =>
+                    {
                         ValueReturnMethod::WriteToReturnSlot
                     }
                     _ => ValueReturnMethod::DirectReturn,
@@ -1138,8 +1132,7 @@ pub mod transport {
                     (Self::Void, _)
                     | (Self::Scalar(_), _)
                     | (Self::CompositeValue, ReturnPlatform::Native)
-                    | (Self::DirectBuffer, ReturnPlatform::Native)
-                    | (Self::EncodedBuffer, ReturnPlatform::Native)
+                    | (Self::Buffer(_), ReturnPlatform::Native)
                     | (Self::ObjectHandle, ReturnPlatform::Native)
                     | (Self::CallbackHandle, ReturnPlatform::Native) => {
                         ValueReturnMethod::DirectReturn
@@ -1150,8 +1143,7 @@ pub mod transport {
                     Self::Void => ValueReturnMethod::DirectReturn,
                     Self::Scalar(_) => ValueReturnMethod::WriteToOutParameter,
                     Self::CompositeValue
-                    | Self::DirectBuffer
-                    | Self::EncodedBuffer
+                    | Self::Buffer(_)
                     | Self::ObjectHandle
                     | Self::CallbackHandle => ValueReturnMethod::WriteToOutBufferParts,
                 },
@@ -1214,7 +1206,7 @@ pub mod transport {
         #[test]
         fn sync_export_direct_buffer_uses_wasm_return_slot() {
             assert_eq!(
-                ValueReturnStrategy::DirectBuffer.return_method(
+                ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec).return_method(
                     ErrorReturnStrategy::None,
                     ReturnInvocationContext::SyncExport,
                     ReturnPlatform::Wasm,

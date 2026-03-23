@@ -485,7 +485,9 @@ pub struct SwiftStream {
 
 #[derive(Debug, Clone)]
 pub enum SwiftStreamItemDelivery {
-    WireEncoded { item_decode: ReadSeq },
+    WireEncoded {
+        item_decode: ReadSeq,
+    },
     Direct {
         c_element_type: String,
         item_expr_template: String,
@@ -1253,10 +1255,12 @@ impl SwiftClosureTrampoline {
                     .returns
                     .composite_pack_expr("result")
                     .expect("composite closure returns should pack to a C struct");
-                format!("let result = {}\n            return {}", closure_call, composite_expr)
+                format!(
+                    "let result = {}\n            return {}",
+                    closure_call, composite_expr
+                )
             }
-            ValueReturnStrategy::DirectBuffer
-            | ValueReturnStrategy::EncodedBuffer
+            ValueReturnStrategy::Buffer(_)
             | ValueReturnStrategy::ObjectHandle
             | ValueReturnStrategy::CallbackHandle => {
                 let encoded_expr = self

@@ -2,8 +2,8 @@ use boltffi_ffi_rules::naming::{
     CreateFn, GlobalSymbol, Name, RegisterFn, VtableField, VtableType,
 };
 use boltffi_ffi_rules::transport::{
-    ErrorReturnStrategy, ReturnInvocationContext, ReturnPlatform, ScalarReturnStrategy,
-    ValueReturnMethod, ValueReturnStrategy,
+    EncodedReturnStrategy, ErrorReturnStrategy, ReturnInvocationContext, ReturnPlatform,
+    ScalarReturnStrategy, ValueReturnMethod, ValueReturnStrategy,
 };
 
 use crate::ir::contract::PackageInfo;
@@ -221,8 +221,8 @@ impl ReturnShape {
     ///
     /// - a primitive scalar return becomes [`ValueReturnStrategy::Scalar`]
     /// - a `repr(C)` record by value becomes [`ValueReturnStrategy::CompositeValue`]
-    /// - a direct `Vec<u32>` return becomes [`ValueReturnStrategy::DirectBuffer`]
-    /// - a wire-encoded enum return becomes [`ValueReturnStrategy::EncodedBuffer`]
+    /// - a direct `Vec<u32>` return becomes [`ValueReturnStrategy::Buffer`]
+    /// - a wire-encoded enum return becomes [`ValueReturnStrategy::Buffer`]
     pub fn value_return_strategy(&self) -> ValueReturnStrategy {
         match &self.transport {
             None => ValueReturnStrategy::Void,
@@ -235,13 +235,13 @@ impl ReturnShape {
             Some(Transport::Composite(_)) => ValueReturnStrategy::CompositeValue,
             Some(Transport::Span(SpanContent::Scalar(_)))
             | Some(Transport::Span(SpanContent::Composite(_))) => {
-                ValueReturnStrategy::DirectBuffer
+                ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec)
             }
-            Some(Transport::Span(_)) => ValueReturnStrategy::EncodedBuffer,
+            Some(Transport::Span(_)) => {
+                ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded)
+            }
             Some(Transport::Handle { .. }) => ValueReturnStrategy::ObjectHandle,
-            Some(Transport::Callback { .. }) => {
-                ValueReturnStrategy::CallbackHandle
-            }
+            Some(Transport::Callback { .. }) => ValueReturnStrategy::CallbackHandle,
         }
     }
 

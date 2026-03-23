@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use boltffi_ffi_rules::callback as cb_naming;
 use boltffi_ffi_rules::naming::{self, snake_to_camel as camel_case};
-use boltffi_ffi_rules::transport::{ErrorReturnStrategy, ValueReturnStrategy};
+use boltffi_ffi_rules::transport::{
+    EncodedReturnStrategy, ErrorReturnStrategy, ValueReturnStrategy,
+};
 
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiContract, AbiEnum, AbiEnumPayload, AbiParam, AbiRecord,
@@ -570,17 +572,19 @@ impl<'a> TypeScriptLowerer<'a> {
                     })
                     .collect();
 
-                let return_kind = match &abi_method.returns {
+                let (return_type, direct_import_return_type, encoded_return) = match &abi_method
+                    .returns
+                {
                     ReturnShape {
                         transport: None, ..
-                    } => TsCallbackReturnKind::Void,
+                    } => (None, None, None),
                     ReturnShape {
                         transport: Some(Transport::Scalar(origin)),
                         decode_ops: None,
                         ..
                     } => {
                         let ts_type = ts_abi_type(&AbiType::from(origin.primitive()));
-                        TsCallbackReturnKind::Primitive { ts_type }
+                        (Some(ts_type.clone()), Some(ts_type), None)
                     }
                     ReturnShape {
                         encode_ops: Some(encode_ops),
@@ -593,33 +597,36 @@ impl<'a> TypeScriptLowerer<'a> {
                         };
                         let encode_expr = emit::emit_writer_write(encode_ops, "writer", "result");
                         let size_expr = emit::emit_size_expr(&encode_ops.size, "result");
-                        TsCallbackReturnKind::WireEncoded {
-                            ts_type,
-                            encode_expr,
-                            size_expr,
-                        }
+                        (
+                            Some(ts_type),
+                            None,
+                            Some(TsEncodedCallbackReturn {
+                                encode_expr,
+                                size_expr,
+                            }),
+                        )
                     }
                     ReturnShape {
                         transport: Some(Transport::Handle { .. } | Transport::Callback { .. }),
                         ..
-                    } => TsCallbackReturnKind::Primitive {
-                        ts_type: "number".to_string(),
-                    },
+                    } => (Some("number".to_string()), Some("number".to_string()), None),
                     ReturnShape {
                         transport: Some(Transport::Scalar(origin)),
                         ..
                     } => {
                         let ts_type = ts_abi_type(&AbiType::from(origin.primitive()));
-                        TsCallbackReturnKind::Primitive { ts_type }
+                        (Some(ts_type.clone()), Some(ts_type), None)
                     }
-                    _ => TsCallbackReturnKind::Void,
+                    _ => (None, None, None),
                 };
 
                 Some(TsCallbackMethod {
                     ts_name,
                     import_name,
                     params,
-                    return_kind,
+                    return_type,
+                    direct_import_return_type,
+                    encoded_return,
                     doc: method_def.doc.clone(),
                 })
             })
@@ -1040,27 +1047,33 @@ impl<'a> TypeScriptLowerer<'a> {
                 TsExecutionModel::Sync => (Some("unknown".to_string()), TsOutputRoute::void()),
                 TsExecutionModel::Async => (None, TsOutputRoute::void()),
             },
-            ValueReturnStrategy::DirectBuffer => match &returns.transport {
-                Some(Transport::Span(SpanContent::Scalar(origin))) => {
-                    self.direct_vec_output_route(origin, execution_model)
-                }
-                Some(Transport::Span(SpanContent::Composite(layout))) => {
-                    let pascal = naming::to_upper_camel_case(layout.record_id.as_str());
-                    let ts_type = format!("{pascal}[]");
-                    match execution_model {
-                        TsExecutionModel::Sync => {
-                            let decode = emit::composite_slot_decode_expr(layout);
-                            (Some(ts_type), TsOutputRoute::void_slot(decode))
-                        }
-                        TsExecutionModel::Async => {
-                            let decode = emit::composite_buf_decode_expr(layout);
-                            (Some(ts_type), TsOutputRoute::packed(decode))
+            ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec) => {
+                match &returns.transport {
+                    Some(Transport::Span(SpanContent::Scalar(origin))) => {
+                        self.direct_vec_output_route(origin, execution_model)
+                    }
+                    Some(Transport::Span(SpanContent::Composite(layout))) => {
+                        let pascal = naming::to_upper_camel_case(layout.record_id.as_str());
+                        let ts_type = format!("{pascal}[]");
+                        match execution_model {
+                            TsExecutionModel::Sync => {
+                                let decode = emit::composite_slot_decode_expr(layout);
+                                (Some(ts_type), TsOutputRoute::void_slot(decode))
+                            }
+                            TsExecutionModel::Async => {
+                                let decode = emit::composite_buf_decode_expr(layout);
+                                (Some(ts_type), TsOutputRoute::packed(decode))
+                            }
                         }
                     }
+                    _ => (None, TsOutputRoute::void()),
                 }
-                _ => (None, TsOutputRoute::void()),
-            },
-            ValueReturnStrategy::CompositeValue | ValueReturnStrategy::EncodedBuffer => {
+            }
+            ValueReturnStrategy::CompositeValue
+            | ValueReturnStrategy::Buffer(EncodedReturnStrategy::Utf8String)
+            | ValueReturnStrategy::Buffer(EncodedReturnStrategy::OptionScalar)
+            | ValueReturnStrategy::Buffer(EncodedReturnStrategy::ResultScalar)
+            | ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded) => {
                 match &returns.decode_ops {
                     Some(decode_ops) => self.encoded_output_route(decode_ops, execution_model),
                     None => (None, TsOutputRoute::void()),

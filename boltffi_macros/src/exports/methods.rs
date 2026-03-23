@@ -8,7 +8,7 @@ use syn::{FnArg, ReturnType, Type};
 use crate::callbacks::registry as callback_registry;
 use crate::lowering::params::{FfiParams, transform_method_params, transform_method_params_async};
 use crate::lowering::returns::lower::{encoded_return_body, encoded_return_buffer_expression};
-use crate::lowering::returns::model::{ReturnAbi, ReturnLoweringContext, WasmOptionScalarEncoding};
+use crate::lowering::returns::model::{ReturnLoweringContext, WasmOptionScalarEncoding};
 use crate::registries::custom_types;
 use crate::registries::data_types;
 use boltffi_ffi_rules::transport::EncodedReturnStrategy;
@@ -571,136 +571,134 @@ fn generate_method_export(
 
     let call_expr = quote! { (*handle).#method_name(#(#call_args),*) };
 
-    let (body, return_type, is_wire_encoded) = match return_abi {
-        ReturnAbi::Unit => {
-            let body = if has_conversions {
+    let (body, return_type, is_wire_encoded) = if return_abi.is_unit() {
+        let body = if has_conversions {
+            quote! {
+                #(#conversions)*
+                #call_expr;
+                ::boltffi::__private::FfiStatus::OK
+            }
+        } else {
+            quote! {
+                #call_expr;
+                ::boltffi::__private::FfiStatus::OK
+            }
+        };
+        (body, quote! { -> ::boltffi::__private::FfiStatus }, false)
+    } else if return_abi.is_primitive_scalar() {
+        let fn_output = &method.sig.output;
+        let body = if has_conversions {
+            quote! {
+                #(#conversions)*
+                #call_expr
+            }
+        } else {
+            call_expr
+        };
+        (body, quote! { #fn_output }, false)
+    } else if let Some(strategy) = return_abi.encoded_return_strategy() {
+        let inner_ty = return_abi.rust_type();
+        let result_ident = syn::Ident::new("result", method_name.span());
+
+        if matches!(strategy, EncodedReturnStrategy::OptionScalar) {
+            let option_value_ident = syn::Ident::new("value", method_name.span());
+            let option_scalar_encoding = WasmOptionScalarEncoding::from_option_rust_type(inner_ty)
+                .expect("OptionScalar return must have a primitive Option inner type");
+            let some_expression = option_scalar_encoding.some_expression(&option_value_ident);
+            let call_and_bind = if has_conversions {
                 quote! {
                     #(#conversions)*
-                    #call_expr;
-                    ::boltffi::__private::FfiStatus::OK
+                    let #result_ident: #inner_ty = #call_expr;
                 }
             } else {
                 quote! {
-                    #call_expr;
-                    ::boltffi::__private::FfiStatus::OK
+                    let #result_ident: #inner_ty = #call_expr;
                 }
             };
-            (body, quote! { -> ::boltffi::__private::FfiStatus }, false)
+
+            let wasm_body = quote! {
+                #call_and_bind
+                match #result_ident {
+                    Some(#option_value_ident) => #some_expression,
+                    None => f64::NAN,
+                }
+            };
+
+            let native_body = quote! {
+                #call_and_bind
+                ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+            };
+
+            return Some(build_instance_f64_wasm_exports(
+                &export_name,
+                type_name,
+                &ffi_params,
+                wasm_body,
+                native_body,
+            ));
         }
-        ReturnAbi::Scalar { .. } => {
-            let fn_output = &method.sig.output;
-            let body = if has_conversions {
+
+        if matches!(strategy, EncodedReturnStrategy::DirectVec) {
+            let call_and_bind = if has_conversions {
                 quote! {
                     #(#conversions)*
-                    #call_expr
+                    let #result_ident: #inner_ty = #call_expr;
                 }
             } else {
-                call_expr
+                quote! {
+                    let #result_ident: #inner_ty = #call_expr;
+                }
             };
-            (body, quote! { #fn_output }, false)
+
+            let native_body = quote! {
+                #call_and_bind
+                <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident)
+            };
+
+            let wasm_body = quote! {
+                #call_and_bind
+                let __buf = ::boltffi::__private::FfiBuf::from_vec(#result_ident);
+                ::boltffi::__private::write_return_slot(__buf.as_ptr() as u32, __buf.len() as u32, __buf.cap() as u32, __buf.align() as u32);
+                core::mem::forget(__buf);
+            };
+
+            return Some(build_instance_void_slot_exports(
+                &export_name,
+                type_name,
+                &ffi_params,
+                wasm_body,
+                native_body,
+            ));
         }
-        ReturnAbi::Encoded {
-            rust_type: inner_ty,
+
+        let body = encoded_return_body(
+            inner_ty,
             strategy,
-        } => {
-            let result_ident = syn::Ident::new("result", method_name.span());
-
-            if matches!(strategy, EncodedReturnStrategy::OptionScalar) {
-                let option_value_ident = syn::Ident::new("value", method_name.span());
-                let option_scalar_encoding =
-                    WasmOptionScalarEncoding::from_option_rust_type(&inner_ty)
-                        .expect("OptionScalar return must have a primitive Option inner type");
-                let some_expression = option_scalar_encoding.some_expression(&option_value_ident);
-                let call_and_bind = if has_conversions {
-                    quote! {
-                        #(#conversions)*
-                        let #result_ident: #inner_ty = #call_expr;
-                    }
-                } else {
-                    quote! {
-                        let #result_ident: #inner_ty = #call_expr;
-                    }
-                };
-
-                let wasm_body = quote! {
-                    #call_and_bind
-                    match #result_ident {
-                        Some(#option_value_ident) => #some_expression,
-                        None => f64::NAN,
-                    }
-                };
-
-                let native_body = quote! {
-                    #call_and_bind
-                    ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                };
-
-                return Some(build_instance_f64_wasm_exports(
-                    &export_name,
-                    type_name,
-                    &ffi_params,
-                    wasm_body,
-                    native_body,
-                ));
+            &result_ident,
+            quote! { #call_expr },
+            &conversions,
+            custom_types,
+        );
+        (body, quote! { -> ::boltffi::__private::FfiBuf }, true)
+    } else if return_abi.is_passable_value() {
+        let rust_type = return_abi.rust_type();
+        let body = if has_conversions {
+            quote! {
+                #(#conversions)*
+                ::boltffi::__private::Passable::pack(#call_expr)
             }
-
-            if matches!(strategy, EncodedReturnStrategy::DirectVec) {
-                let call_and_bind = if has_conversions {
-                    quote! {
-                        #(#conversions)*
-                        let #result_ident: #inner_ty = #call_expr;
-                    }
-                } else {
-                    quote! {
-                        let #result_ident: #inner_ty = #call_expr;
-                    }
-                };
-
-                let native_body = quote! {
-                    #call_and_bind
-                    <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident)
-                };
-
-                let wasm_body = quote! {
-                    #call_and_bind
-                    let __buf = ::boltffi::__private::FfiBuf::from_vec(#result_ident);
-                    ::boltffi::__private::write_return_slot(__buf.as_ptr() as u32, __buf.len() as u32, __buf.cap() as u32, __buf.align() as u32);
-                    core::mem::forget(__buf);
-                };
-
-                return Some(build_instance_void_slot_exports(
-                    &export_name,
-                    type_name,
-                    &ffi_params,
-                    wasm_body,
-                    native_body,
-                ));
+        } else {
+            quote! {
+                ::boltffi::__private::Passable::pack(#call_expr)
             }
-
-            let body = encoded_return_body(
-                &inner_ty,
-                strategy,
-                &result_ident,
-                quote! { #call_expr },
-                &conversions,
-                custom_types,
-            );
-            (body, quote! { -> ::boltffi::__private::FfiBuf }, true)
-        }
-        ReturnAbi::Passable { rust_type } => {
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    ::boltffi::__private::Passable::pack(#call_expr)
-                }
-            } else {
-                quote! {
-                    ::boltffi::__private::Passable::pack(#call_expr)
-                }
-            };
-            let return_type = quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out };
-            (body, return_type, false)
-        }
+        };
+        let return_type = quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out };
+        (body, return_type, false)
+    } else {
+        unreachable!(
+            "unsupported instance method return strategy: {:?}",
+            return_abi.value_return_strategy()
+        )
     };
 
     if is_wire_encoded {
@@ -765,134 +763,132 @@ fn generate_static_method_export(
     let has_conversions = !conversions.is_empty();
     let call_expr = quote! { #type_name::#method_name(#(#call_args),*) };
 
-    let (body, return_type, is_wire_encoded) = match return_abi {
-        ReturnAbi::Unit => {
-            let body = if has_conversions {
+    let (body, return_type, is_wire_encoded) = if return_abi.is_unit() {
+        let body = if has_conversions {
+            quote! {
+                #(#conversions)*
+                #call_expr;
+                ::boltffi::__private::FfiStatus::OK
+            }
+        } else {
+            quote! {
+                #call_expr;
+                ::boltffi::__private::FfiStatus::OK
+            }
+        };
+        (body, quote! { -> ::boltffi::__private::FfiStatus }, false)
+    } else if return_abi.is_primitive_scalar() {
+        let fn_output = &method.sig.output;
+        let body = if has_conversions {
+            quote! {
+                #(#conversions)*
+                #call_expr
+            }
+        } else {
+            call_expr
+        };
+        (body, quote! { #fn_output }, false)
+    } else if let Some(strategy) = return_abi.encoded_return_strategy() {
+        let inner_ty = return_abi.rust_type();
+        let result_ident = syn::Ident::new("result", method_name.span());
+
+        if matches!(strategy, EncodedReturnStrategy::OptionScalar) {
+            let option_value_ident = syn::Ident::new("value", method_name.span());
+            let option_scalar_encoding = WasmOptionScalarEncoding::from_option_rust_type(inner_ty)
+                .expect("OptionScalar return must have a primitive Option inner type");
+            let some_expression = option_scalar_encoding.some_expression(&option_value_ident);
+            let call_and_bind = if has_conversions {
                 quote! {
                     #(#conversions)*
-                    #call_expr;
-                    ::boltffi::__private::FfiStatus::OK
+                    let #result_ident: #inner_ty = #call_expr;
                 }
             } else {
                 quote! {
-                    #call_expr;
-                    ::boltffi::__private::FfiStatus::OK
+                    let #result_ident: #inner_ty = #call_expr;
                 }
             };
-            (body, quote! { -> ::boltffi::__private::FfiStatus }, false)
+
+            let wasm_body = quote! {
+                #call_and_bind
+                match #result_ident {
+                    Some(#option_value_ident) => #some_expression,
+                    None => f64::NAN,
+                }
+            };
+
+            let native_body = quote! {
+                #call_and_bind
+                ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
+            };
+
+            return Some(build_static_f64_wasm_exports(
+                &export_name,
+                &ffi_params,
+                wasm_body,
+                native_body,
+            ));
         }
-        ReturnAbi::Scalar { .. } => {
-            let fn_output = &method.sig.output;
-            let body = if has_conversions {
+
+        if matches!(strategy, EncodedReturnStrategy::DirectVec) {
+            let call_and_bind = if has_conversions {
                 quote! {
                     #(#conversions)*
-                    #call_expr
+                    let #result_ident: #inner_ty = #call_expr;
                 }
             } else {
-                call_expr
+                quote! {
+                    let #result_ident: #inner_ty = #call_expr;
+                }
             };
-            (body, quote! { #fn_output }, false)
+
+            let native_body = quote! {
+                #call_and_bind
+                <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident)
+            };
+
+            let wasm_body = quote! {
+                #call_and_bind
+                let __buf = ::boltffi::__private::FfiBuf::from_vec(#result_ident);
+                ::boltffi::__private::write_return_slot(__buf.as_ptr() as u32, __buf.len() as u32, __buf.cap() as u32, __buf.align() as u32);
+                core::mem::forget(__buf);
+            };
+
+            return Some(build_static_void_slot_exports(
+                &export_name,
+                &ffi_params,
+                wasm_body,
+                native_body,
+            ));
         }
-        ReturnAbi::Encoded {
-            rust_type: inner_ty,
+
+        let body = encoded_return_body(
+            inner_ty,
             strategy,
-        } => {
-            let result_ident = syn::Ident::new("result", method_name.span());
-
-            if matches!(strategy, EncodedReturnStrategy::OptionScalar) {
-                let option_value_ident = syn::Ident::new("value", method_name.span());
-                let option_scalar_encoding =
-                    WasmOptionScalarEncoding::from_option_rust_type(&inner_ty)
-                        .expect("OptionScalar return must have a primitive Option inner type");
-                let some_expression = option_scalar_encoding.some_expression(&option_value_ident);
-                let call_and_bind = if has_conversions {
-                    quote! {
-                        #(#conversions)*
-                        let #result_ident: #inner_ty = #call_expr;
-                    }
-                } else {
-                    quote! {
-                        let #result_ident: #inner_ty = #call_expr;
-                    }
-                };
-
-                let wasm_body = quote! {
-                    #call_and_bind
-                    match #result_ident {
-                        Some(#option_value_ident) => #some_expression,
-                        None => f64::NAN,
-                    }
-                };
-
-                let native_body = quote! {
-                    #call_and_bind
-                    ::boltffi::__private::FfiBuf::wire_encode(&#result_ident)
-                };
-
-                return Some(build_static_f64_wasm_exports(
-                    &export_name,
-                    &ffi_params,
-                    wasm_body,
-                    native_body,
-                ));
+            &result_ident,
+            quote! { #call_expr },
+            &conversions,
+            custom_types,
+        );
+        (body, quote! { -> ::boltffi::__private::FfiBuf }, true)
+    } else if return_abi.is_passable_value() {
+        let rust_type = return_abi.rust_type();
+        let body = if has_conversions {
+            quote! {
+                #(#conversions)*
+                ::boltffi::__private::Passable::pack(#call_expr)
             }
-
-            if matches!(strategy, EncodedReturnStrategy::DirectVec) {
-                let call_and_bind = if has_conversions {
-                    quote! {
-                        #(#conversions)*
-                        let #result_ident: #inner_ty = #call_expr;
-                    }
-                } else {
-                    quote! {
-                        let #result_ident: #inner_ty = #call_expr;
-                    }
-                };
-
-                let native_body = quote! {
-                    #call_and_bind
-                    <::boltffi::__private::Seal as ::boltffi::__private::VecTransport<_>>::pack(#result_ident)
-                };
-
-                let wasm_body = quote! {
-                    #call_and_bind
-                    let __buf = ::boltffi::__private::FfiBuf::from_vec(#result_ident);
-                    ::boltffi::__private::write_return_slot(__buf.as_ptr() as u32, __buf.len() as u32, __buf.cap() as u32, __buf.align() as u32);
-                    core::mem::forget(__buf);
-                };
-
-                return Some(build_static_void_slot_exports(
-                    &export_name,
-                    &ffi_params,
-                    wasm_body,
-                    native_body,
-                ));
+        } else {
+            quote! {
+                ::boltffi::__private::Passable::pack(#call_expr)
             }
-
-            let body = encoded_return_body(
-                &inner_ty,
-                strategy,
-                &result_ident,
-                quote! { #call_expr },
-                &conversions,
-                custom_types,
-            );
-            (body, quote! { -> ::boltffi::__private::FfiBuf }, true)
-        }
-        ReturnAbi::Passable { rust_type } => {
-            let body = if has_conversions {
-                quote! {
-                    #(#conversions)*
-                    ::boltffi::__private::Passable::pack(#call_expr)
-                }
-            } else {
-                quote! {
-                    ::boltffi::__private::Passable::pack(#call_expr)
-                }
-            };
-            let return_type = quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out };
-            (body, return_type, false)
-        }
+        };
+        let return_type = quote! { -> <#rust_type as ::boltffi::__private::Passable>::Out };
+        (body, return_type, false)
+    } else {
+        unreachable!(
+            "unsupported static method return strategy: {:?}",
+            return_abi.value_return_strategy()
+        )
     };
 
     if is_wire_encoded {
@@ -1030,74 +1026,64 @@ fn generate_async_method_export(
         }
     };
 
-    let wasm_complete_fn = match &return_abi {
-        ReturnAbi::Passable { rust_type } => {
-            quote! {
-                #[cfg(target_arch = "wasm32")]
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #complete_ident(
-                    handle: ::boltffi::__private::RustFutureHandle,
-                ) -> <#rust_type as ::boltffi::__private::Passable>::Out {
-                    match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
-                        Some(result) => ::boltffi::__private::Passable::pack(result),
-                        None => Default::default(),
-                    }
+    let wasm_complete_fn = if return_abi.is_passable_value() {
+        let rust_type = return_abi.rust_type();
+        quote! {
+            #[cfg(target_arch = "wasm32")]
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn #complete_ident(
+                handle: ::boltffi::__private::RustFutureHandle,
+            ) -> <#rust_type as ::boltffi::__private::Passable>::Out {
+                match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
+                    Some(result) => ::boltffi::__private::Passable::pack(result),
+                    None => Default::default(),
                 }
             }
         }
-        ReturnAbi::Encoded {
-            rust_type,
-            strategy,
-        } => {
-            let registry = custom_types::registry_for_current_crate().ok();
-            let result_ident = syn::Ident::new("result", proc_macro2::Span::call_site());
-            let encode_expression = if matches!(*strategy, EncodedReturnStrategy::Utf8String) {
-                quote! { ::boltffi::__private::FfiBuf::wire_encode(&#result_ident) }
-            } else {
-                encoded_return_buffer_expression(
-                    rust_type,
-                    *strategy,
-                    &result_ident,
-                    registry.as_ref(),
-                )
-            };
-            quote! {
-                #[cfg(target_arch = "wasm32")]
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #complete_ident(
-                    out: *mut ::boltffi::__private::FfiBuf,
-                    handle: ::boltffi::__private::RustFutureHandle,
-                    _out_status: *mut ::boltffi::__private::FfiStatus,
-                ) {
-                    if out.is_null() {
-                        return;
-                    }
-                    let buf = match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
-                        Some(#result_ident) => { #encode_expression },
-                        None => ::boltffi::__private::FfiBuf::empty(),
-                    };
-                    out.write(buf);
+    } else if let Some(strategy) = return_abi.encoded_return_strategy() {
+        let rust_type = return_abi.rust_type();
+        let registry = custom_types::registry_for_current_crate().ok();
+        let result_ident = syn::Ident::new("result", proc_macro2::Span::call_site());
+        let encode_expression = if matches!(strategy, EncodedReturnStrategy::Utf8String) {
+            quote! { ::boltffi::__private::FfiBuf::wire_encode(&#result_ident) }
+        } else {
+            encoded_return_buffer_expression(rust_type, strategy, &result_ident, registry.as_ref())
+        };
+        quote! {
+            #[cfg(target_arch = "wasm32")]
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn #complete_ident(
+                out: *mut ::boltffi::__private::FfiBuf,
+                handle: ::boltffi::__private::RustFutureHandle,
+                _out_status: *mut ::boltffi::__private::FfiStatus,
+            ) {
+                if out.is_null() {
+                    return;
                 }
+                let buf = match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
+                    Some(#result_ident) => { #encode_expression },
+                    None => ::boltffi::__private::FfiBuf::empty(),
+                };
+                out.write(buf);
             }
         }
-        _ => {
-            quote! {
-                #[cfg(target_arch = "wasm32")]
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #complete_ident(
-                    out: *mut ::boltffi::__private::FfiBuf,
-                    handle: ::boltffi::__private::RustFutureHandle,
-                    _out_status: *mut ::boltffi::__private::FfiStatus,
-                ) {
-                    if out.is_null() {
-                        return;
-                    }
-                    let buf = match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
-                        Some(result) => ::boltffi::__private::FfiBuf::wire_encode(&result),
-                        None => ::boltffi::__private::FfiBuf::empty(),
-                    };
-                    out.write(buf);
+    } else {
+        quote! {
+            #[cfg(target_arch = "wasm32")]
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn #complete_ident(
+                out: *mut ::boltffi::__private::FfiBuf,
+                handle: ::boltffi::__private::RustFutureHandle,
+                _out_status: *mut ::boltffi::__private::FfiStatus,
+            ) {
+                if out.is_null() {
+                    return;
                 }
+                let buf = match ::boltffi::__private::rustfuture::rust_future_complete::<#rust_return_type>(handle) {
+                    Some(result) => ::boltffi::__private::FfiBuf::wire_encode(&result),
+                    None => ::boltffi::__private::FfiBuf::empty(),
+                };
+                out.write(buf);
             }
         }
     };
