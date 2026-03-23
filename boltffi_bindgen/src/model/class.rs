@@ -76,6 +76,8 @@ pub struct Constructor {
     pub name: String,
     #[serde(default)]
     pub is_fallible: bool,
+    #[serde(default)]
+    pub is_optional: bool,
     pub inputs: Vec<ConstructorParam>,
     pub doc: Option<String>,
 }
@@ -85,6 +87,7 @@ impl Constructor {
         Self {
             name: "new".to_string(),
             is_fallible: false,
+            is_optional: false,
             inputs: Vec::new(),
             doc: None,
         }
@@ -97,6 +100,11 @@ impl Constructor {
 
     pub fn with_fallible(mut self, is_fallible: bool) -> Self {
         self.is_fallible = is_fallible;
+        self
+    }
+
+    pub fn with_optional(mut self, is_optional: bool) -> Self {
+        self.is_optional = is_optional;
         self
     }
 

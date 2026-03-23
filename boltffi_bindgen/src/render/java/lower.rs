@@ -4,16 +4,20 @@ use super::JavaOptions;
 use super::mappings;
 use super::names::NamingConvention;
 use super::plan::{
-    JavaBlittableField, JavaBlittableLayout, JavaEnum, JavaEnumField, JavaEnumKind,
+    JavaAsyncCall, JavaAsyncMode, JavaBlittableField, JavaBlittableLayout, JavaClass,
+    JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaEnum, JavaEnumField, JavaEnumKind,
     JavaEnumVariant, JavaFunction, JavaModule, JavaParam, JavaRecord, JavaRecordField,
     JavaRecordShape, JavaReturnStrategy, JavaWireWriter,
 };
 use crate::ir::abi::{
     AbiCall, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload, AbiEnumVariant, AbiParam,
-    AbiRecord, CallId, ParamRole,
+    AbiRecord, CallId, CallMode, ParamRole,
 };
 use crate::ir::contract::FfiContract;
-use crate::ir::definitions::{EnumDef, EnumRepr, FieldDef, FunctionDef, RecordDef, ReturnDef};
+use crate::ir::definitions::{
+    ClassDef, ConstructorDef, EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef, Receiver,
+    RecordDef, ReturnDef,
+};
 use crate::ir::ids::{FieldName, RecordId};
 use crate::ir::ops::{
     FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq,
@@ -149,8 +153,15 @@ impl<'a> JavaLowerer<'a> {
             .ffi
             .functions
             .iter()
-            .filter(|f| !f.is_async && self.is_supported_function(f))
+            .filter(|f| self.is_supported_function(f))
             .map(|f| self.lower_function(f))
+            .collect();
+
+        let classes: Vec<JavaClass> = self
+            .ffi
+            .catalog
+            .all_classes()
+            .map(|c| self.lower_class(c))
             .collect();
 
         JavaModule {
@@ -158,10 +169,12 @@ impl<'a> JavaLowerer<'a> {
             class_name: NamingConvention::class_name(&self.module_name),
             lib_name,
             java_version: self.options.min_java_version,
+            async_mode: JavaAsyncMode::from_version(self.options.min_java_version),
             prefix,
             records,
             enums,
             functions,
+            classes,
         }
     }
 
@@ -173,9 +186,19 @@ impl<'a> JavaLowerer<'a> {
         let return_ok = match &func.returns {
             ReturnDef::Void => true,
             ReturnDef::Value(ty) => self.is_supported_type(ty),
-            ReturnDef::Result { .. } => false,
+            ReturnDef::Result { ok, err } => {
+                self.is_supported_result_type(ok) && self.is_supported_result_type(err)
+            }
         };
         params_ok && return_ok
+    }
+
+    fn is_supported_result_type(&self, ty: &TypeExpr) -> bool {
+        match ty {
+            TypeExpr::Void => true,
+            TypeExpr::Handle(_) => false,
+            _ => self.is_supported_type(ty),
+        }
     }
 
     fn is_supported_type(&self, ty: &TypeExpr) -> bool {
@@ -455,7 +478,11 @@ impl<'a> JavaLowerer<'a> {
             })
             .collect();
 
-        let strategy = self.return_strategy(&func.returns, call);
+        let async_call = self.async_call_from_mode(call, &func.returns);
+        let strategy = match &async_call {
+            Some(ac) => ac.complete_strategy.clone(),
+            None => self.return_strategy(&func.returns, call),
+        };
 
         JavaFunction {
             name: NamingConvention::method_name(func.id.as_str()),
@@ -464,6 +491,7 @@ impl<'a> JavaLowerer<'a> {
             return_type: self.return_java_type(&func.returns),
             strategy,
             wire_writers,
+            async_call,
         }
     }
 
@@ -612,13 +640,51 @@ impl<'a> JavaLowerer<'a> {
             ReturnDef::Void => "void".to_string(),
             ReturnDef::Value(TypeExpr::Void) => "void".to_string(),
             ReturnDef::Value(ty) => self.java_type(ty),
-            ReturnDef::Result { .. } => "void".to_string(),
+            ReturnDef::Result {
+                ok: TypeExpr::Void, ..
+            } => "void".to_string(),
+            ReturnDef::Result { ok, .. } => self.java_type(ok),
+        }
+    }
+
+    fn result_decode_strategy(&self, returns: &ReturnDef, call: &AbiCall) -> JavaReturnStrategy {
+        let decode_ops = call
+            .returns
+            .decode_ops
+            .as_ref()
+            .expect("Result return should have decode ops");
+        let (ok_seq, err_seq) = match decode_ops.ops.first() {
+            Some(ReadOp::Result { ok, err, .. }) => (ok.as_ref(), err.as_ref()),
+            _ => panic!("expected ReadOp::Result in decode ops"),
+        };
+        let ok_decode_expr = super::emit::emit_reader_read(ok_seq);
+        let err_decode_expr = super::emit::emit_reader_read(err_seq);
+        let err_is_string =
+            matches!(returns, ReturnDef::Result { err, .. } if matches!(err, TypeExpr::String));
+        let err_exception_class = match returns {
+            ReturnDef::Result {
+                err: TypeExpr::Enum(id),
+                ..
+            } => self
+                .ffi
+                .catalog
+                .resolve_enum(id)
+                .filter(|e| e.is_error)
+                .map(|_| format!("{}.Exception", NamingConvention::class_name(id.as_str()))),
+            _ => None,
+        };
+        JavaReturnStrategy::ResultDecode {
+            ok_decode_expr,
+            err_decode_expr,
+            err_is_string,
+            err_exception_class,
         }
     }
 
     fn return_strategy(&self, returns: &ReturnDef, call: &AbiCall) -> JavaReturnStrategy {
         match returns {
-            ReturnDef::Void | ReturnDef::Result { .. } => JavaReturnStrategy::Void,
+            ReturnDef::Void => JavaReturnStrategy::Void,
+            ReturnDef::Result { .. } => self.result_decode_strategy(returns, call),
             ReturnDef::Value(ty) => match ty {
                 TypeExpr::Void => JavaReturnStrategy::Void,
                 TypeExpr::Primitive(_) => JavaReturnStrategy::Direct,
@@ -657,6 +723,16 @@ impl<'a> JavaLowerer<'a> {
                         }
                     }
                 }
+                TypeExpr::Handle(class_id) => {
+                    let nullable = matches!(
+                        call.returns.transport.as_ref(),
+                        Some(Transport::Handle { nullable: true, .. })
+                    );
+                    JavaReturnStrategy::HandleReturn {
+                        class_name: NamingConvention::class_name(class_id.as_str()),
+                        nullable,
+                    }
+                }
                 TypeExpr::Bytes => JavaReturnStrategy::BufferDecode {
                     decode_expr: "_buf != null ? _buf : new byte[0]".to_string(),
                 },
@@ -674,12 +750,213 @@ impl<'a> JavaLowerer<'a> {
         }
     }
 
+    fn async_call_from_mode(&self, call: &AbiCall, returns: &ReturnDef) -> Option<JavaAsyncCall> {
+        let async_abi = match &call.mode {
+            CallMode::Async(async_call) => async_call,
+            CallMode::Sync => return None,
+        };
+        let result_call = AbiCall {
+            returns: async_abi.result.clone(),
+            ..call.clone()
+        };
+        let complete_strategy = self.return_strategy(returns, &result_call);
+        Some(JavaAsyncCall {
+            poll: async_abi.poll.as_str().to_string(),
+            complete: async_abi.complete.as_str().to_string(),
+            cancel: async_abi.cancel.as_str().to_string(),
+            free: async_abi.free.as_str().to_string(),
+            complete_strategy,
+        })
+    }
+
     fn abi_call_for_function(&self, func: &FunctionDef) -> &AbiCall {
         self.abi
             .calls
             .iter()
             .find(|c| matches!(&c.id, CallId::Function(id) if id == &func.id))
             .expect("abi call not found for function")
+    }
+
+    fn abi_call_for_constructor(&self, class: &ClassDef, index: usize) -> &AbiCall {
+        self.abi
+            .calls
+            .iter()
+            .find(|c| {
+                c.id == CallId::Constructor {
+                    class_id: class.id.clone(),
+                    index,
+                }
+            })
+            .expect("abi call not found for constructor")
+    }
+
+    fn abi_call_for_method(&self, class: &ClassDef, method: &MethodDef) -> &AbiCall {
+        self.abi
+            .calls
+            .iter()
+            .find(|c| {
+                c.id == CallId::Method {
+                    class_id: class.id.clone(),
+                    method_id: method.id.clone(),
+                }
+            })
+            .expect("abi call not found for method")
+    }
+
+    fn strip_receiver(call: &AbiCall) -> AbiCall {
+        AbiCall {
+            params: call
+                .params
+                .iter()
+                .filter(|p| !Self::is_instance_receiver(p))
+                .cloned()
+                .collect(),
+            ..call.clone()
+        }
+    }
+
+    fn is_instance_receiver(param: &AbiParam) -> bool {
+        param.name.as_str() == "self"
+            && matches!(
+                param.role,
+                ParamRole::Input {
+                    transport: Transport::Handle { .. },
+                    ..
+                }
+            )
+    }
+
+    fn lower_class(&self, class: &ClassDef) -> JavaClass {
+        let class_name = NamingConvention::class_name(class.id.as_str());
+        let ffi_free = boltffi_ffi_rules::naming::class_ffi_free(class.id.as_str()).to_string();
+
+        let constructors = class
+            .constructors
+            .iter()
+            .enumerate()
+            .map(|(index, ctor)| self.lower_constructor(class, ctor, index))
+            .collect();
+
+        let methods = class
+            .methods
+            .iter()
+            .filter(|m| self.is_supported_method(m))
+            .map(|m| self.lower_class_method(class, m))
+            .collect();
+
+        JavaClass {
+            class_name,
+            ffi_free,
+            constructors,
+            methods,
+        }
+    }
+
+    fn is_supported_method(&self, method: &MethodDef) -> bool {
+        let params_ok = method
+            .params
+            .iter()
+            .all(|p| self.is_supported_type(&p.type_expr));
+        let return_ok = match &method.returns {
+            ReturnDef::Void => true,
+            ReturnDef::Value(ty) => self.is_supported_method_return_type(ty),
+            ReturnDef::Result { ok, err } => {
+                self.is_supported_result_type(ok) && self.is_supported_result_type(err)
+            }
+        };
+        params_ok && return_ok
+    }
+
+    fn is_supported_method_return_type(&self, ty: &TypeExpr) -> bool {
+        match ty {
+            TypeExpr::Handle(_) => true,
+            _ => self.is_supported_type(ty),
+        }
+    }
+
+    fn lower_constructor(
+        &self,
+        class: &ClassDef,
+        ctor: &ConstructorDef,
+        index: usize,
+    ) -> JavaConstructor {
+        let call = self.abi_call_for_constructor(class, index);
+        let wire_writers = self.wire_writers_for_params(call);
+
+        let (kind, name) = match ctor {
+            ConstructorDef::Default { .. } => (JavaConstructorKind::Primary, String::new()),
+            ConstructorDef::NamedFactory { name, .. } => (
+                JavaConstructorKind::Factory,
+                NamingConvention::method_name(name.as_str()),
+            ),
+            ConstructorDef::NamedInit { name, .. } => (
+                JavaConstructorKind::Secondary,
+                NamingConvention::method_name(name.as_str()),
+            ),
+        };
+
+        let params: Vec<JavaParam> = ctor
+            .params()
+            .iter()
+            .enumerate()
+            .map(|(param_index, param_def)| {
+                self.lower_param(
+                    param_def.name.as_str(),
+                    &param_def.type_expr,
+                    param_index,
+                    call,
+                    &wire_writers,
+                )
+            })
+            .collect();
+
+        JavaConstructor {
+            kind,
+            name,
+            is_fallible: ctor.is_fallible(),
+            params,
+            ffi_name: call.symbol.as_str().to_string(),
+            wire_writers,
+        }
+    }
+
+    fn lower_class_method(&self, class: &ClassDef, method: &MethodDef) -> JavaClassMethod {
+        let raw_call = self.abi_call_for_method(class, method);
+        let call = Self::strip_receiver(raw_call);
+        let wire_writers = self.wire_writers_for_params(&call);
+        let is_static = method.receiver == Receiver::Static;
+
+        let params: Vec<JavaParam> = method
+            .params
+            .iter()
+            .enumerate()
+            .map(|(param_index, param_def)| {
+                self.lower_param(
+                    param_def.name.as_str(),
+                    &param_def.type_expr,
+                    param_index,
+                    &call,
+                    &wire_writers,
+                )
+            })
+            .collect();
+
+        let async_call = self.async_call_from_mode(&call, &method.returns);
+        let strategy = match &async_call {
+            Some(ac) => ac.complete_strategy.clone(),
+            None => self.return_strategy(&method.returns, &call),
+        };
+
+        JavaClassMethod {
+            name: NamingConvention::method_name(method.id.as_str()),
+            ffi_name: call.symbol.as_str().to_string(),
+            is_static,
+            params,
+            return_type: self.return_java_type(&method.returns),
+            strategy,
+            wire_writers,
+            async_call,
+        }
     }
 
     fn vec_buffer_decode_expr(&self, inner: &TypeExpr, transport: Option<&Transport>) -> String {
@@ -723,6 +1000,7 @@ impl<'a> JavaLowerer<'a> {
             TypeExpr::Bytes => "byte[]".to_string(),
             TypeExpr::Record(id) => NamingConvention::class_name(id.as_str()),
             TypeExpr::Enum(id) => NamingConvention::class_name(id.as_str()),
+            TypeExpr::Handle(id) => NamingConvention::class_name(id.as_str()),
             TypeExpr::Option(inner) => {
                 format!("java.util.Optional<{}>", self.java_boxed_type(inner))
             }
@@ -745,6 +1023,7 @@ impl<'a> JavaLowerer<'a> {
             TypeExpr::Bytes => "byte[]".to_string(),
             TypeExpr::Record(id) => NamingConvention::class_name(id.as_str()),
             TypeExpr::Enum(id) => NamingConvention::class_name(id.as_str()),
+            TypeExpr::Handle(id) => NamingConvention::class_name(id.as_str()),
             TypeExpr::Option(inner) => {
                 format!("java.util.Optional<{}>", self.java_boxed_type(inner))
             }
@@ -756,7 +1035,9 @@ impl<'a> JavaLowerer<'a> {
     fn lower_enum(&self, enumeration: &EnumDef) -> JavaEnum {
         let abi_enum = self.abi_enum_for(enumeration);
         let class_name = NamingConvention::class_name(enumeration.id.as_str());
-        let kind = if abi_enum.is_c_style {
+        let kind = if enumeration.is_error {
+            JavaEnumKind::Error
+        } else if abi_enum.is_c_style {
             JavaEnumKind::CStyle
         } else if self.options.min_java_version.supports_sealed()
             && !Self::requires_manual_enum_value_semantics(abi_enum)
@@ -807,7 +1088,9 @@ impl<'a> JavaLowerer<'a> {
         sibling_names: &HashSet<String>,
     ) -> JavaEnumVariant {
         let name = match kind {
-            JavaEnumKind::CStyle => NamingConvention::enum_constant_name(variant.name.as_str()),
+            JavaEnumKind::CStyle | JavaEnumKind::Error => {
+                NamingConvention::enum_constant_name(variant.name.as_str())
+            }
             _ => NamingConvention::class_name(variant.name.as_str()),
         };
         let fields = match &variant.payload {
@@ -1153,10 +1436,13 @@ mod tests {
     use crate::ir::Lowerer as IrLowerer;
     use crate::ir::contract::{FfiContract, PackageInfo};
     use crate::ir::definitions::{
-        CStyleVariant, DataVariant, EnumDef, EnumRepr, FieldDef, FunctionDef, ParamDef,
-        ParamPassing, RecordDef, ReturnDef, VariantPayload,
+        CStyleVariant, ClassDef, ConstructorDef, DataVariant, EnumDef, EnumRepr, FieldDef,
+        FunctionDef, MethodDef, ParamDef, ParamPassing, Receiver, RecordDef, ReturnDef,
+        VariantPayload,
     };
-    use crate::ir::ids::{EnumId, FieldName, FunctionId, ParamName, RecordId, VariantName};
+    use crate::ir::ids::{
+        ClassId, EnumId, FieldName, FunctionId, MethodId, ParamName, RecordId, VariantName,
+    };
     use crate::ir::types::{PrimitiveType, TypeExpr};
     use crate::render::java::JavaVersion;
 
@@ -1196,6 +1482,8 @@ mod tests {
             is_repr_c: true,
             id: RecordId::new(id),
             fields,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         }
@@ -1666,6 +1954,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1707,6 +1997,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1730,6 +2022,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1755,6 +2049,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1781,6 +2077,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -1973,6 +2271,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2034,7 +2334,7 @@ mod tests {
     }
 
     #[test]
-    fn async_functions_are_filtered_out() {
+    fn async_functions_are_included_with_async_call() {
         let mut contract = empty_contract();
         contract.functions.push(FunctionDef {
             id: FunctionId::new("slow_op"),
@@ -2049,8 +2349,19 @@ mod tests {
             .push(function("fast_op", vec![], ReturnDef::Void));
 
         let module = lower(&contract);
-        assert_eq!(module.functions.len(), 1);
-        assert_eq!(module.functions[0].name, "fastOp");
+        assert_eq!(module.functions.len(), 2);
+        let slow = module
+            .functions
+            .iter()
+            .find(|f| f.name == "slowOp")
+            .unwrap();
+        let fast = module
+            .functions
+            .iter()
+            .find(|f| f.name == "fastOp")
+            .unwrap();
+        assert!(slow.is_async());
+        assert!(!fast.is_async());
     }
 
     #[test]
@@ -2113,6 +2424,8 @@ mod tests {
                 }],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2153,5 +2466,524 @@ mod tests {
             module.records[0].fields[0].java_type,
             "java.util.Optional<byte[]>"
         );
+    }
+
+    fn class_def(id: &str, constructors: Vec<ConstructorDef>, methods: Vec<MethodDef>) -> ClassDef {
+        ClassDef {
+            id: ClassId::from(id),
+            constructors,
+            methods,
+            streams: vec![],
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn default_ctor(params: Vec<ParamDef>) -> ConstructorDef {
+        ConstructorDef::Default {
+            params,
+            is_fallible: false,
+            is_optional: false,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn fallible_default_ctor(params: Vec<ParamDef>) -> ConstructorDef {
+        ConstructorDef::Default {
+            params,
+            is_fallible: true,
+            is_optional: false,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn named_factory(name: &str) -> ConstructorDef {
+        ConstructorDef::NamedFactory {
+            name: name.into(),
+            is_fallible: false,
+            is_optional: false,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn named_init(name: &str, params: Vec<ParamDef>) -> ConstructorDef {
+        let mut params_iter = params.into_iter();
+        let first_param = params_iter
+            .next()
+            .expect("named init needs at least one param");
+        ConstructorDef::NamedInit {
+            name: name.into(),
+            first_param,
+            rest_params: params_iter.collect(),
+            is_fallible: false,
+            is_optional: false,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn instance_method(name: &str, params: Vec<ParamDef>, returns: ReturnDef) -> MethodDef {
+        MethodDef {
+            id: MethodId::from(name),
+            receiver: Receiver::RefSelf,
+            params,
+            returns,
+            is_async: false,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn static_method(name: &str, params: Vec<ParamDef>, returns: ReturnDef) -> MethodDef {
+        MethodDef {
+            id: MethodId::from(name),
+            receiver: Receiver::Static,
+            params,
+            returns,
+            is_async: false,
+            doc: None,
+            deprecated: None,
+        }
+    }
+
+    fn param_def(name: &str, ty: TypeExpr) -> ParamDef {
+        ParamDef {
+            name: ParamName::from(name),
+            type_expr: ty,
+            passing: ParamPassing::Value,
+            doc: None,
+        }
+    }
+
+    #[test]
+    fn class_basic_default_constructor() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "counter",
+            vec![default_ctor(vec![param_def(
+                "initial",
+                TypeExpr::Primitive(PrimitiveType::I32),
+            )])],
+            vec![],
+        ));
+
+        let module = lower(&contract);
+        assert_eq!(module.classes.len(), 1);
+
+        let class = &module.classes[0];
+        assert_eq!(class.class_name, "Counter");
+        assert_eq!(class.constructors.len(), 1);
+        assert_eq!(class.constructors[0].kind, JavaConstructorKind::Primary);
+        assert!(!class.constructors[0].is_fallible);
+        assert_eq!(class.constructors[0].params.len(), 1);
+        assert_eq!(class.constructors[0].params[0].name, "initial");
+        assert_eq!(class.constructors[0].params[0].java_type, "int");
+    }
+
+    #[test]
+    fn class_factory_constructor() {
+        let mut contract = empty_contract();
+        contract
+            .catalog
+            .insert_class(class_def("inventory", vec![named_factory("empty")], vec![]));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert_eq!(class.constructors.len(), 1);
+        assert_eq!(class.constructors[0].kind, JavaConstructorKind::Factory);
+        assert_eq!(class.constructors[0].name, "empty");
+        assert!(class.has_factory_constructors());
+    }
+
+    #[test]
+    fn class_named_init_constructor() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "inventory",
+            vec![named_init(
+                "with_capacity",
+                vec![param_def(
+                    "capacity",
+                    TypeExpr::Primitive(PrimitiveType::I32),
+                )],
+            )],
+            vec![],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert_eq!(class.constructors[0].kind, JavaConstructorKind::Secondary);
+        assert_eq!(class.constructors[0].name, "withCapacity");
+        assert_eq!(class.constructors[0].params.len(), 1);
+        assert_eq!(class.constructors[0].params[0].name, "capacity");
+    }
+
+    #[test]
+    fn class_fallible_constructor() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "connection",
+            vec![fallible_default_ctor(vec![param_def(
+                "url",
+                TypeExpr::String,
+            )])],
+            vec![],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert!(class.constructors[0].is_fallible);
+    }
+
+    #[test]
+    fn class_instance_method_returning_primitive() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "counter",
+            vec![default_ctor(vec![])],
+            vec![instance_method(
+                "get_value",
+                vec![],
+                ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+            )],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert_eq!(class.methods.len(), 1);
+        assert_eq!(class.methods[0].name, "getValue");
+        assert!(!class.methods[0].is_static);
+        assert_eq!(class.methods[0].return_type, "int");
+    }
+
+    #[test]
+    fn class_static_method() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "math_utils",
+            vec![default_ctor(vec![])],
+            vec![static_method(
+                "add",
+                vec![
+                    param_def("a", TypeExpr::Primitive(PrimitiveType::I32)),
+                    param_def("b", TypeExpr::Primitive(PrimitiveType::I32)),
+                ],
+                ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+            )],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert_eq!(class.methods.len(), 1);
+        assert!(class.methods[0].is_static);
+        assert_eq!(class.methods[0].name, "add");
+        assert_eq!(class.methods[0].params.len(), 2);
+        assert!(class.has_static_methods());
+    }
+
+    #[test]
+    fn class_void_method() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "counter",
+            vec![default_ctor(vec![])],
+            vec![instance_method("increment", vec![], ReturnDef::Void)],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert_eq!(class.methods[0].return_type, "void");
+        assert!(matches!(
+            class.methods[0].strategy,
+            JavaReturnStrategy::Void
+        ));
+    }
+
+    #[test]
+    fn class_method_returning_string() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "person",
+            vec![default_ctor(vec![param_def("name", TypeExpr::String)])],
+            vec![instance_method(
+                "get_name",
+                vec![],
+                ReturnDef::Value(TypeExpr::String),
+            )],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert_eq!(class.methods[0].return_type, "String");
+    }
+
+    #[test]
+    fn class_includes_async_methods_with_async_call() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "worker",
+            vec![default_ctor(vec![])],
+            vec![
+                instance_method(
+                    "sync_op",
+                    vec![],
+                    ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+                ),
+                MethodDef {
+                    id: MethodId::from("async_op"),
+                    receiver: Receiver::RefSelf,
+                    params: vec![],
+                    returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+                    is_async: true,
+                    doc: None,
+                    deprecated: None,
+                },
+            ],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert_eq!(class.methods.len(), 2);
+        let sync_method = class.methods.iter().find(|m| m.name == "syncOp").unwrap();
+        let async_method = class.methods.iter().find(|m| m.name == "asyncOp").unwrap();
+        assert!(!sync_method.is_async());
+        assert!(async_method.is_async());
+        let ac = async_method.async_call.as_ref().unwrap();
+        assert!(!ac.poll.is_empty());
+        assert!(!ac.complete.is_empty());
+        assert!(!ac.cancel.is_empty());
+        assert!(!ac.free.is_empty());
+    }
+
+    #[test]
+    fn class_includes_result_methods() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "processor",
+            vec![default_ctor(vec![])],
+            vec![instance_method(
+                "process",
+                vec![],
+                ReturnDef::Result {
+                    ok: TypeExpr::Primitive(PrimitiveType::I32),
+                    err: TypeExpr::String,
+                },
+            )],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert_eq!(class.methods.len(), 1);
+        assert_eq!(class.methods[0].return_type, "int");
+        assert!(class.methods[0].strategy.is_result());
+        assert!(class.methods[0].strategy.result_err_is_string());
+    }
+
+    #[test]
+    fn class_ffi_free_name() {
+        let mut contract = empty_contract();
+        contract
+            .catalog
+            .insert_class(class_def("counter", vec![default_ctor(vec![])], vec![]));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert!(!class.ffi_free.is_empty());
+        assert!(class.ffi_free.contains("counter"));
+    }
+
+    #[test]
+    fn class_multiple_constructors() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_class(class_def(
+            "inventory",
+            vec![
+                default_ctor(vec![]),
+                named_factory("empty"),
+                named_init(
+                    "with_capacity",
+                    vec![param_def(
+                        "capacity",
+                        TypeExpr::Primitive(PrimitiveType::I32),
+                    )],
+                ),
+            ],
+            vec![],
+        ));
+
+        let module = lower(&contract);
+        let class = &module.classes[0];
+        assert_eq!(class.constructors.len(), 3);
+        assert_eq!(class.constructors[0].kind, JavaConstructorKind::Primary);
+        assert_eq!(class.constructors[1].kind, JavaConstructorKind::Factory);
+        assert_eq!(class.constructors[2].kind, JavaConstructorKind::Secondary);
+    }
+
+    #[test]
+    fn class_has_wire_params_propagates() {
+        let mut contract = empty_contract();
+        contract.catalog.insert_record(record_def(
+            "config",
+            vec![field("value", TypeExpr::Primitive(PrimitiveType::I32))],
+        ));
+        contract.catalog.insert_class(class_def(
+            "counter",
+            vec![default_ctor(vec![param_def(
+                "config",
+                TypeExpr::Record(RecordId::new("config")),
+            )])],
+            vec![],
+        ));
+
+        let module = lower(&contract);
+        assert!(module.has_wire_params());
+    }
+
+    #[test]
+    fn handle_return_strategy_fields() {
+        let strategy = JavaReturnStrategy::HandleReturn {
+            class_name: "Counter".to_string(),
+            nullable: false,
+        };
+        assert!(strategy.is_handle());
+        assert_eq!(strategy.handle_class(), "Counter");
+        assert!(!strategy.handle_nullable());
+        assert_eq!(strategy.native_return_type("Counter"), "long");
+    }
+
+    #[test]
+    fn handle_return_strategy_nullable() {
+        let strategy = JavaReturnStrategy::HandleReturn {
+            class_name: "Counter".to_string(),
+            nullable: true,
+        };
+        assert!(strategy.handle_nullable());
+    }
+
+    #[test]
+    fn handle_type_in_method_return() {
+        let mut contract = empty_contract();
+        let target_class_id = ClassId::from("target");
+        contract
+            .catalog
+            .insert_class(class_def("target", vec![default_ctor(vec![])], vec![]));
+        contract.catalog.insert_class(class_def(
+            "factory",
+            vec![default_ctor(vec![])],
+            vec![instance_method(
+                "create_target",
+                vec![],
+                ReturnDef::Value(TypeExpr::Handle(target_class_id)),
+            )],
+        ));
+
+        let module = lower(&contract);
+        let factory_class = module
+            .classes
+            .iter()
+            .find(|c| c.class_name == "Factory")
+            .unwrap();
+        assert_eq!(factory_class.methods.len(), 1);
+        assert_eq!(factory_class.methods[0].return_type, "Target");
+        assert!(factory_class.methods[0].strategy.is_handle());
+        assert_eq!(factory_class.methods[0].strategy.handle_class(), "Target");
+    }
+
+    #[test]
+    fn async_function_has_poll_complete_cancel_free() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("fetch_data"),
+            params: vec![],
+            returns: ReturnDef::Value(TypeExpr::String),
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower(&contract);
+        let func = &module.functions[0];
+        assert!(func.is_async());
+        let ac = func.async_call.as_ref().unwrap();
+        assert!(ac.poll.contains("fetch_data"));
+        assert!(ac.complete.contains("fetch_data"));
+        assert!(ac.cancel.contains("fetch_data"));
+        assert!(ac.free.contains("fetch_data"));
+    }
+
+    #[test]
+    fn async_mode_is_virtual_thread_for_java21() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("op"),
+            params: vec![],
+            returns: ReturnDef::Void,
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower_with_version(&contract, JavaVersion::JAVA_21);
+        assert!(module.async_mode.is_virtual_thread());
+
+        let module8 = lower_with_version(&contract, JavaVersion::JAVA_8);
+        assert!(module8.async_mode.is_completable_future());
+    }
+
+    #[test]
+    fn async_function_strategy_matches_return_type() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("fetch_data"),
+            params: vec![],
+            returns: ReturnDef::Value(TypeExpr::String),
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower(&contract);
+        let func = &module.functions[0];
+        let ac = func.async_call.as_ref().unwrap();
+        assert!(ac.complete_strategy.is_wire());
+    }
+
+    #[test]
+    fn async_function_boxed_return_type_for_primitives() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("get_count"),
+            params: vec![],
+            returns: ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::I32)),
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower(&contract);
+        let func = &module.functions[0];
+        assert_eq!(func.return_type, "int");
+        assert_eq!(func.boxed_return_type(), "Integer");
+    }
+
+    #[test]
+    fn async_void_function_strategy() {
+        let mut contract = empty_contract();
+        contract.functions.push(FunctionDef {
+            id: FunctionId::new("fire_and_forget"),
+            params: vec![],
+            returns: ReturnDef::Void,
+            is_async: true,
+            doc: None,
+            deprecated: None,
+        });
+
+        let module = lower(&contract);
+        let func = &module.functions[0];
+        let ac = func.async_call.as_ref().unwrap();
+        assert!(ac.complete_strategy.is_void());
     }
 }

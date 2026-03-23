@@ -260,6 +260,8 @@ pub struct SwiftRecord {
     pub fields: Vec<SwiftField>,
     pub is_blittable: bool,
     pub blittable_size: Option<usize>,
+    pub constructors: Vec<SwiftConstructor>,
+    pub methods: Vec<SwiftMethod>,
     pub doc: Option<String>,
 }
 
@@ -340,6 +342,8 @@ pub struct SwiftEnum {
     pub style: SwiftEnumStyle,
     pub c_style_tag_type: Option<crate::ir::types::PrimitiveType>,
     pub is_error: bool,
+    pub constructors: Vec<SwiftConstructor>,
+    pub methods: Vec<SwiftMethod>,
     pub doc: Option<String>,
 }
 
@@ -544,12 +548,14 @@ pub enum SwiftConstructor {
         ffi_symbol: String,
         params: Vec<SwiftParam>,
         is_fallible: bool,
+        is_optional: bool,
         doc: Option<String>,
     },
     Factory {
         name: String,
         ffi_symbol: String,
         is_fallible: bool,
+        is_optional: bool,
         doc: Option<String>,
     },
     Convenience {
@@ -557,6 +563,7 @@ pub enum SwiftConstructor {
         ffi_symbol: String,
         params: Vec<SwiftParam>,
         is_fallible: bool,
+        is_optional: bool,
         doc: Option<String>,
     },
 }
@@ -594,6 +601,14 @@ impl SwiftConstructor {
             Self::Designated { is_fallible, .. }
             | Self::Factory { is_fallible, .. }
             | Self::Convenience { is_fallible, .. } => *is_fallible,
+        }
+    }
+
+    pub fn is_optional(&self) -> bool {
+        match self {
+            Self::Designated { is_optional, .. }
+            | Self::Factory { is_optional, .. }
+            | Self::Convenience { is_optional, .. } => *is_optional,
         }
     }
 
@@ -640,18 +655,31 @@ impl SwiftConstructor {
 }
 
 #[derive(Debug, Clone)]
+pub struct ValueSelfParam {
+    pub ffi_args: Vec<String>,
+    pub wrapper_code: Option<String>,
+    pub is_mutating: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct SwiftMethod {
     pub name: String,
     pub mode: SwiftCallMode,
     pub params: Vec<SwiftParam>,
     pub returns: SwiftReturn,
     pub is_static: bool,
+    pub value_self: Option<ValueSelfParam>,
+    pub mutating_void: bool,
     pub doc: Option<String>,
 }
 
 impl SwiftMethod {
     pub fn needs_handle(&self) -> bool {
-        !self.is_static
+        !self.is_static && self.value_self.is_none()
+    }
+
+    pub fn is_mutating(&self) -> bool {
+        self.value_self.as_ref().is_some_and(|rs| rs.is_mutating)
     }
 
     pub fn is_async(&self) -> bool {
@@ -669,6 +697,8 @@ impl SwiftMethod {
     fn prefix_args(&self) -> Vec<&str> {
         if self.needs_handle() {
             vec!["handle"]
+        } else if let Some(rs) = &self.value_self {
+            rs.ffi_args.iter().map(String::as_str).collect()
         } else {
             vec![]
         }
@@ -1347,6 +1377,12 @@ impl SwiftReturn {
             SwiftReturn::FromComposite { .. } => true,
             SwiftReturn::Throws { ok, .. } => ok.is_composite(),
             _ => false,
+        }
+    }
+
+    pub fn set_composite_swift_type(&mut self, name: String) {
+        if let SwiftReturn::FromComposite { swift_type, .. } = self {
+            *swift_type = name;
         }
     }
 

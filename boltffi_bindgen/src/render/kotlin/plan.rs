@@ -49,6 +49,8 @@ pub struct KotlinEnum {
     pub variants: Vec<KotlinEnumVariant>,
     pub kind: KotlinEnumKind,
     pub c_style_value_type: Option<String>,
+    pub constructors: Vec<KotlinConstructor>,
+    pub methods: Vec<KotlinMethod>,
     pub doc: Option<String>,
 }
 
@@ -119,6 +121,8 @@ pub struct KotlinRecord {
     pub fields: Vec<KotlinRecordField>,
     pub is_blittable: bool,
     pub struct_size: usize,
+    pub constructors: Vec<KotlinConstructor>,
+    pub methods: Vec<KotlinMethod>,
     pub doc: Option<String>,
 }
 

@@ -1,7 +1,10 @@
 use askama::Template;
 
-use super::plan::KotlinMethodImpl::{AsyncMethod, SyncMethod};
-use super::plan::{KotlinModule, KotlinStreamMode};
+use super::plan::{
+    KotlinConstructor, KotlinMethod,
+    KotlinMethodImpl::{AsyncMethod, SyncMethod},
+    KotlinModule, KotlinStreamMode,
+};
 
 pub fn kdoc_block(doc: &Option<String>, indent: &str) -> String {
     match doc {
@@ -71,6 +74,8 @@ pub struct RecordTemplate<'a> {
     pub fields: &'a [super::plan::KotlinRecordField],
     pub is_blittable: bool,
     pub struct_size: usize,
+    pub constructors: &'a [KotlinConstructor],
+    pub methods: &'a [KotlinMethod],
     pub doc: &'a Option<String>,
 }
 
@@ -98,6 +103,8 @@ pub struct CStyleEnumTemplate<'a> {
     pub class_name: &'a str,
     pub variants: &'a [super::plan::KotlinEnumVariant],
     pub value_type: &'a str,
+    pub constructors: &'a [KotlinConstructor],
+    pub methods: &'a [KotlinMethod],
     pub doc: &'a Option<String>,
 }
 
@@ -107,6 +114,8 @@ pub struct SealedEnumTemplate<'a> {
     pub class_name: &'a str,
     pub variants: &'a [super::plan::KotlinEnumVariant],
     pub is_error: bool,
+    pub constructors: &'a [KotlinConstructor],
+    pub methods: &'a [KotlinMethod],
     pub doc: &'a Option<String>,
 }
 
@@ -170,8 +179,8 @@ pub struct AsyncFunctionTemplate<'a> {
 pub struct ClassTemplate<'a> {
     pub class_name: &'a str,
     pub doc: &'a Option<String>,
-    pub constructors: &'a [super::plan::KotlinConstructor],
-    pub methods: &'a [super::plan::KotlinMethod],
+    pub constructors: &'a [KotlinConstructor],
+    pub methods: &'a [KotlinMethod],
     pub streams: &'a [super::plan::KotlinStream],
     pub use_companion_methods: bool,
     pub has_factory_ctors: bool,
@@ -270,6 +279,8 @@ impl KotlinEmitter {
                     class_name: &enumeration.class_name,
                     variants: &enumeration.variants,
                     value_type: enumeration.c_style_value_type.as_deref().unwrap_or("Int"),
+                    constructors: &enumeration.constructors,
+                    methods: &enumeration.methods,
                     doc: &enumeration.doc,
                 }
                 .render()
@@ -279,6 +290,8 @@ impl KotlinEmitter {
                     class_name: &enumeration.class_name,
                     variants: &enumeration.variants,
                     is_error: enumeration.is_error(),
+                    constructors: &enumeration.constructors,
+                    methods: &enumeration.methods,
                     doc: &enumeration.doc,
                 }
                 .render()
@@ -306,6 +319,8 @@ impl KotlinEmitter {
                 fields: &record.fields,
                 is_blittable: record.is_blittable,
                 struct_size: record.struct_size,
+                constructors: &record.constructors,
+                methods: &record.methods,
                 doc: &record.doc,
             }
             .render()
@@ -496,6 +511,8 @@ mod tests {
     #[test]
     fn snapshot_record_with_field_docs() {
         let template = RecordTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "Location",
             fields: &[
                 KotlinRecordField {
@@ -529,6 +546,8 @@ mod tests {
     #[test]
     fn snapshot_record_with_optional_field() {
         let template = RecordTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "UserProfile",
             fields: &[
                 KotlinRecordField {
@@ -562,6 +581,8 @@ mod tests {
     #[test]
     fn snapshot_record_with_default_value() {
         let template = RecordTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "Config",
             fields: &[
                 KotlinRecordField {
@@ -595,6 +616,8 @@ mod tests {
     #[test]
     fn snapshot_enum_with_variant_docs() {
         let template = CStyleEnumTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "Direction",
             variants: &[
                 KotlinEnumVariant {
@@ -619,6 +642,8 @@ mod tests {
     #[test]
     fn snapshot_enum_with_byte_tag_type() {
         let template = CStyleEnumTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "PacketKind",
             variants: &[
                 KotlinEnumVariant {
@@ -643,6 +668,8 @@ mod tests {
     #[test]
     fn snapshot_sealed_enum_with_payloads() {
         let template = SealedEnumTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "Result",
             variants: &[
                 KotlinEnumVariant {
@@ -688,6 +715,8 @@ mod tests {
     #[test]
     fn snapshot_error_enum() {
         let template = SealedEnumTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "ApiError",
             variants: &[
                 KotlinEnumVariant {
@@ -1135,6 +1164,8 @@ mod tests {
     #[test]
     fn snapshot_blittable_record() {
         let template = RecordTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "Point",
             fields: &[
                 KotlinRecordField {
@@ -1168,6 +1199,8 @@ mod tests {
     #[test]
     fn snapshot_encoded_record_with_string() {
         let template = RecordTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "Person",
             fields: &[
                 KotlinRecordField {
@@ -1201,6 +1234,8 @@ mod tests {
     #[test]
     fn snapshot_record_with_array_field() {
         let template = RecordTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "Team",
             fields: &[
                 KotlinRecordField {
@@ -1477,6 +1512,8 @@ mod tests {
     #[test]
     fn snapshot_data_enum_with_struct_payload() {
         let template = SealedEnumTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "Event",
             variants: &[
                 KotlinEnumVariant {
@@ -1529,6 +1566,8 @@ mod tests {
     #[test]
     fn snapshot_enum_with_associated_optional() {
         let template = SealedEnumTemplate {
+            constructors: &[],
+            methods: &[],
             class_name: "SearchResult",
             variants: &[
                 KotlinEnumVariant {

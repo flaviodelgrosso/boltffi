@@ -1,3 +1,4 @@
+use boltffi_ffi_rules::naming;
 use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -29,11 +30,15 @@ pub enum TypeShape {
     Record {
         fields: Vec<RecordField>,
         is_repr_c: bool,
+        constructors: Vec<Constructor>,
+        methods: Vec<Method>,
     },
     Enum {
         variants: Vec<Variant>,
         is_error: bool,
         repr_type: Option<Primitive>,
+        constructors: Vec<Constructor>,
+        methods: Vec<Method>,
     },
     Class {
         constructors: Vec<Constructor>,
@@ -83,9 +88,103 @@ impl TypeRegistry {
         }
     }
 
+    pub fn fill_record_fields(&mut self, name: &str, fields: Vec<RecordField>, is_repr_c: bool) {
+        let Some(meta) = self.types.get_mut(name) else {
+            return;
+        };
+        match &mut meta.shape {
+            TypeShape::Record {
+                fields: existing_fields,
+                is_repr_c: existing_repr_c,
+                ..
+            } => {
+                *existing_fields = fields;
+                *existing_repr_c = is_repr_c;
+            }
+            _ => {
+                meta.shape = TypeShape::Record {
+                    fields,
+                    is_repr_c,
+                    constructors: Vec::new(),
+                    methods: Vec::new(),
+                };
+            }
+        }
+    }
+
     pub fn set_doc(&mut self, name: &str, doc: String) {
         if let Some(meta) = self.types.get_mut(name) {
             meta.doc = Some(doc);
+        }
+    }
+
+    pub fn is_record(&self, name: &str) -> bool {
+        self.types.get(name).is_some_and(|meta| {
+            matches!(
+                meta.shape,
+                TypeShape::Pending(PendingKind::Record) | TypeShape::Record { .. }
+            )
+        })
+    }
+
+    pub fn merge_record_impl(
+        &mut self,
+        name: &str,
+        constructors: Vec<Constructor>,
+        methods: Vec<Method>,
+    ) {
+        let Some(meta) = self.types.get_mut(name) else {
+            return;
+        };
+        match &mut meta.shape {
+            TypeShape::Record {
+                constructors: existing_ctors,
+                methods: existing_methods,
+                ..
+            } => {
+                existing_ctors.extend(constructors);
+                existing_methods.extend(methods);
+            }
+            TypeShape::Pending(PendingKind::Record) => {
+                meta.shape = TypeShape::Record {
+                    fields: Vec::new(),
+                    is_repr_c: true,
+                    constructors,
+                    methods,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    pub fn merge_enum_impl(
+        &mut self,
+        name: &str,
+        constructors: Vec<Constructor>,
+        methods: Vec<Method>,
+    ) {
+        let Some(meta) = self.types.get_mut(name) else {
+            return;
+        };
+        match &mut meta.shape {
+            TypeShape::Enum {
+                constructors: existing_ctors,
+                methods: existing_methods,
+                ..
+            } => {
+                existing_ctors.extend(constructors);
+                existing_methods.extend(methods);
+            }
+            TypeShape::Pending(PendingKind::Enum) => {
+                meta.shape = TypeShape::Enum {
+                    variants: Vec::new(),
+                    is_error: false,
+                    repr_type: None,
+                    constructors,
+                    methods,
+                };
+            }
+            _ => {}
         }
     }
 
@@ -260,6 +359,11 @@ impl AliasResolver {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ScanFeatures {
+    pub record_methods: bool,
+}
+
 pub struct SourceScanner {
     module_name: String,
     type_registry: TypeRegistry,
@@ -271,6 +375,7 @@ pub struct SourceScanner {
     integer_constants: HashMap<String, i128>,
     source_root: Option<PathBuf>,
     target_pointer_width_bits: Option<u8>,
+    features: ScanFeatures,
 }
 
 impl SourceScanner {
@@ -293,7 +398,13 @@ impl SourceScanner {
             integer_constants: HashMap::new(),
             source_root: None,
             target_pointer_width_bits,
+            features: ScanFeatures::default(),
         }
+    }
+
+    pub fn with_features(mut self, features: ScanFeatures) -> Self {
+        self.features = features;
+        self
     }
 
     pub fn scan_directory(&mut self, crate_path: &Path, dir: &Path) -> Result<(), String> {
@@ -384,7 +495,8 @@ impl SourceScanner {
             }
             Item::Impl(item_impl) => {
                 let is_exported = has_attribute(&item_impl.attrs, "ffi_class")
-                    || has_attribute(&item_impl.attrs, "export");
+                    || has_attribute(&item_impl.attrs, "export")
+                    || has_data_impl_attribute(&item_impl.attrs);
                 if is_exported {
                     item_impl
                         .items
@@ -812,6 +924,7 @@ impl SourceScanner {
                 Item::Impl(item_impl) => {
                     if (has_attribute(&item_impl.attrs, "ffi_class")
                         || has_attribute(&item_impl.attrs, "export"))
+                        && !has_data_impl_attribute(&item_impl.attrs)
                         && let Type::Path(type_path) = item_impl.self_ty.as_ref()
                         && let Some(seg) = type_path.path.segments.last()
                     {
@@ -871,7 +984,9 @@ impl SourceScanner {
                 }
             }
             Item::Impl(item_impl) => {
-                if has_attribute(&item_impl.attrs, "ffi_class")
+                if self.features.record_methods && has_data_impl_attribute(&item_impl.attrs) {
+                    self.process_value_type_impl(item_impl);
+                } else if has_attribute(&item_impl.attrs, "ffi_class")
                     || has_attribute(&item_impl.attrs, "export")
                 {
                     self.process_class(item_impl);
@@ -1002,7 +1117,7 @@ impl SourceScanner {
             has_repr_c(&item_struct.attrs)
         };
         self.type_registry
-            .fill(&name, TypeShape::Record { fields, is_repr_c });
+            .fill_record_fields(&name, fields, is_repr_c);
     }
 
     fn process_enum(
@@ -1095,6 +1210,8 @@ impl SourceScanner {
                 variants,
                 is_error,
                 repr_type,
+                constructors: Vec::new(),
+                methods: Vec::new(),
             },
         );
         Ok(())
@@ -1204,6 +1321,52 @@ impl SourceScanner {
         );
     }
 
+    fn process_value_type_impl(&mut self, item_impl: &ItemImpl) {
+        let Some(type_name) = impl_self_type_ident(item_impl) else {
+            return;
+        };
+
+        let is_record = self.type_registry.is_record(&type_name);
+        let is_enum = self.type_registry.is_enum(&type_name);
+
+        if !is_record && !is_enum {
+            return;
+        }
+
+        let mut constructors = Vec::new();
+        let mut methods = Vec::new();
+
+        item_impl
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Fn(method) => Some(method),
+                _ => None,
+            })
+            .filter(|method| matches!(method.vis, syn::Visibility::Public(_)))
+            .filter(|method| !has_attribute(&method.attrs, "skip"))
+            .for_each(|method| {
+                if self.is_constructor(method, &type_name) {
+                    if let Some(ctor) = self.build_constructor(method, &type_name) {
+                        constructors.push(ctor);
+                    }
+                    return;
+                }
+
+                if let Some(built_method) = self.build_method(method, &type_name) {
+                    methods.push(built_method);
+                }
+            });
+
+        if is_record {
+            self.type_registry
+                .merge_record_impl(&type_name, constructors, methods);
+        } else {
+            self.type_registry
+                .merge_enum_impl(&type_name, constructors, methods);
+        }
+    }
+
     fn build_method(&self, method: &syn::ImplItemFn, self_type_name: &str) -> Option<Method> {
         let sig = &method.sig;
         let receiver = Self::extract_receiver(sig);
@@ -1255,6 +1418,7 @@ impl SourceScanner {
             syn::ReturnType::Type(_, ty) => {
                 return_type_is_self(ty.as_ref(), class_name)
                     || return_type_is_result_self(ty.as_ref(), class_name)
+                    || return_type_is_option_self(ty.as_ref(), class_name)
             }
         }
     }
@@ -1269,6 +1433,10 @@ impl SourceScanner {
             syn::ReturnType::Default => false,
             syn::ReturnType::Type(_, ty) => return_type_is_result_self(ty.as_ref(), self_type_name),
         };
+        let is_optional = match &sig.output {
+            syn::ReturnType::Default => false,
+            syn::ReturnType::Type(_, ty) => return_type_is_option_self(ty.as_ref(), self_type_name),
+        };
         let params = self.resolve_typed_params(&sig.inputs, Some(self_type_name))?;
 
         Some(
@@ -1277,7 +1445,8 @@ impl SourceScanner {
                 .fold(
                     Constructor::new()
                         .with_name(sig.ident.to_string())
-                        .with_fallible(is_fallible),
+                        .with_fallible(is_fallible)
+                        .with_optional(is_optional),
                     |c, (name, ty)| c.with_param(ConstructorParam::new(&name, ty)),
                 )
                 .maybe_doc(extract_doc_string(&method.attrs)),
@@ -1289,18 +1458,29 @@ impl SourceScanner {
 
         for (name, entry) in self.type_registry.drain() {
             match entry.shape {
-                TypeShape::Record { fields, is_repr_c } => {
+                TypeShape::Record {
+                    fields,
+                    is_repr_c,
+                    constructors,
+                    methods,
+                } => {
                     let record = fields
                         .into_iter()
                         .fold(Record::new(&name), |r, f| r.with_field(f))
                         .with_repr_c(is_repr_c)
                         .maybe_doc(entry.doc);
+                    let record = constructors
+                        .into_iter()
+                        .fold(record, |r, ctor| r.with_constructor(ctor));
+                    let record = methods.into_iter().fold(record, |r, m| r.with_method(m));
                     module = module.with_record(record);
                 }
                 TypeShape::Enum {
                     variants,
                     is_error,
                     repr_type,
+                    constructors,
+                    methods,
                 } => {
                     let mut enumeration = variants
                         .into_iter()
@@ -1310,6 +1490,12 @@ impl SourceScanner {
                         enumeration = enumeration.as_error();
                     }
                     enumeration.repr_type = repr_type;
+                    let enumeration = constructors
+                        .into_iter()
+                        .fold(enumeration, |e, ctor| e.with_constructor(ctor));
+                    let enumeration = methods
+                        .into_iter()
+                        .fold(enumeration, |e, m| e.with_method(m));
                     module = module.with_enum(enumeration);
                 }
                 TypeShape::Class {
@@ -1401,6 +1587,21 @@ fn has_attribute(attrs: &[Attribute], name: &str) -> bool {
     })
 }
 
+fn has_data_impl_attribute(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let is_data = attr.path().is_ident("data")
+            || attr
+                .path()
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "data");
+        if !is_data {
+            return false;
+        }
+        matches!(&attr.meta, syn::Meta::List(list) if list.tokens.to_string().trim() == "impl")
+    })
+}
+
 fn extract_default_value(attrs: &[Attribute]) -> Option<String> {
     attrs.iter().find_map(|attr| {
         let path = attr.path();
@@ -1486,6 +1687,31 @@ fn return_type_is_result_self(ty: &Type, class_name: &str) -> bool {
         return false;
     };
     ok_ty
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Self" || segment.ident == class_name)
+}
+
+fn return_type_is_option_self(ty: &Type, class_name: &str) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+    let Some(option_segment) = type_path
+        .path
+        .segments
+        .last()
+        .filter(|segment| segment.ident == "Option")
+    else {
+        return false;
+    };
+    let syn::PathArguments::AngleBracketed(args) = &option_segment.arguments else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(Type::Path(inner_ty))) = args.args.first() else {
+        return false;
+    };
+    inner_ty
         .path
         .segments
         .last()
@@ -1990,7 +2216,11 @@ fn rust_type_to_ffi_type(
             let ident = last_segment.ident.to_string();
 
             if ident == "Self" {
-                return self_type_name.map(|name| MType::Object(name.to_string()));
+                return self_type_name.and_then(|name| {
+                    registry
+                        .classify_named_type(name)
+                        .or_else(|| Some(MType::Object(name.to_string())))
+                });
             }
 
             if ident == "Box"
@@ -2293,6 +2523,73 @@ fn string_to_ffi_type(
     }
 }
 
+fn validate_no_symbol_collisions(module: &Module) -> Result<(), String> {
+    let mut symbols: HashMap<String, String> = HashMap::new();
+
+    let mut check = |symbol: String, origin: String| -> Result<(), String> {
+        if let Some(existing) = symbols.get(&symbol) {
+            return Err(format!(
+                "FFI symbol collision: '{}' is produced by both {} and {}. Rename one to avoid the conflict.",
+                symbol, existing, origin
+            ));
+        }
+        symbols.insert(symbol, origin);
+        Ok(())
+    };
+
+    for func in &module.functions {
+        let symbol = naming::function_ffi_name(&func.name).to_string();
+        check(symbol, format!("fn {}()", func.name))?;
+    }
+
+    for record in &module.records {
+        for ctor in &record.constructors {
+            let symbol = if ctor.name == "new" {
+                naming::class_ffi_new(&record.name).to_string()
+            } else {
+                naming::method_ffi_name(&record.name, &ctor.name).to_string()
+            };
+            check(symbol, format!("{}::{}()", record.name, ctor.name))?;
+        }
+        for method in &record.methods {
+            let symbol = naming::method_ffi_name(&record.name, &method.name).to_string();
+            check(symbol, format!("{}::{}()", record.name, method.name))?;
+        }
+    }
+
+    for enumeration in &module.enums {
+        for ctor in &enumeration.constructors {
+            let symbol = if ctor.name == "new" {
+                naming::class_ffi_new(&enumeration.name).to_string()
+            } else {
+                naming::method_ffi_name(&enumeration.name, &ctor.name).to_string()
+            };
+            check(symbol, format!("{}::{}()", enumeration.name, ctor.name))?;
+        }
+        for method in &enumeration.methods {
+            let symbol = naming::method_ffi_name(&enumeration.name, &method.name).to_string();
+            check(symbol, format!("{}::{}()", enumeration.name, method.name))?;
+        }
+    }
+
+    for class in &module.classes {
+        for ctor in &class.constructors {
+            let symbol = if ctor.name == "new" {
+                naming::class_ffi_new(&class.name).to_string()
+            } else {
+                naming::method_ffi_name(&class.name, &ctor.name).to_string()
+            };
+            check(symbol, format!("{}::{}()", class.name, ctor.name))?;
+        }
+        for method in &class.methods {
+            let symbol = naming::method_ffi_name(&class.name, &method.name).to_string();
+            check(symbol, format!("{}::{}()", class.name, method.name))?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn scan_crate(crate_path: &Path, module_name: &str) -> Result<Module, String> {
     scan_crate_with_pointer_width(crate_path, module_name, None)
 }
@@ -2302,13 +2599,30 @@ pub fn scan_crate_with_pointer_width(
     module_name: &str,
     target_pointer_width_bits: Option<u8>,
 ) -> Result<Module, String> {
+    scan_crate_with_options(
+        crate_path,
+        module_name,
+        target_pointer_width_bits,
+        ScanFeatures::default(),
+    )
+}
+
+pub fn scan_crate_with_options(
+    crate_path: &Path,
+    module_name: &str,
+    target_pointer_width_bits: Option<u8>,
+    features: ScanFeatures,
+) -> Result<Module, String> {
     let src_path = crate_path.join("src");
     let mut scanner = SourceScanner::new_with_pointer_width(
         module_name,
         target_pointer_width_bits.or_else(parse_target_pointer_width),
-    );
+    )
+    .with_features(features);
     scanner.scan_directory(crate_path, &src_path)?;
-    Ok(scanner.into_module())
+    let module = scanner.into_module();
+    validate_no_symbol_collisions(&module)?;
+    Ok(module)
 }
 
 #[cfg(test)]
@@ -2503,6 +2817,8 @@ mod tests {
             TypeShape::Record {
                 fields: vec![RecordField::new("x", MType::Primitive(Primitive::F64))],
                 is_repr_c: true,
+                constructors: Vec::new(),
+                methods: Vec::new(),
             },
         );
 
@@ -2526,10 +2842,97 @@ mod tests {
                 variants: vec![],
                 is_error: false,
                 repr_type: None,
+                constructors: vec![],
+                methods: vec![],
             },
         );
 
         assert!(reg.is_enum("Color"));
+    }
+
+    #[test]
+    fn merge_record_impl_upgrades_pending_to_filled_shape() {
+        let mut reg = TypeRegistry::default();
+        reg.register("Point".into(), pending(PendingKind::Record));
+
+        let ctor = Constructor::new().with_name("origin");
+        let method = Method::new("magnitude", Receiver::Ref);
+        reg.merge_record_impl("Point", vec![ctor], vec![method]);
+
+        match &reg.types.get("Point").unwrap().shape {
+            TypeShape::Record {
+                fields,
+                constructors,
+                methods,
+                ..
+            } => {
+                assert!(fields.is_empty());
+                assert_eq!(constructors.len(), 1);
+                assert_eq!(constructors[0].name, "origin");
+                assert_eq!(methods.len(), 1);
+                assert_eq!(methods[0].name, "magnitude");
+            }
+            other => panic!("expected Record, got {:?}", std::mem::discriminant(other)),
+        }
+    }
+
+    #[test]
+    fn fill_record_fields_preserves_existing_methods() {
+        let mut reg = TypeRegistry::default();
+        reg.register("Point".into(), pending(PendingKind::Record));
+
+        let ctor = Constructor::new().with_name("origin");
+        let method = Method::new("magnitude", Receiver::Ref);
+        reg.merge_record_impl("Point", vec![ctor], vec![method]);
+
+        reg.fill_record_fields(
+            "Point",
+            vec![RecordField::new("x", MType::Primitive(Primitive::F64))],
+            true,
+        );
+
+        match &reg.types.get("Point").unwrap().shape {
+            TypeShape::Record {
+                fields,
+                is_repr_c,
+                constructors,
+                methods,
+            } => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name, "x");
+                assert!(*is_repr_c);
+                assert_eq!(constructors.len(), 1);
+                assert_eq!(methods.len(), 1);
+            }
+            other => panic!("expected Record, got {:?}", std::mem::discriminant(other)),
+        }
+    }
+
+    #[test]
+    fn fill_record_fields_creates_fresh_shape_from_pending() {
+        let mut reg = TypeRegistry::default();
+        reg.register("Point".into(), pending(PendingKind::Record));
+
+        reg.fill_record_fields(
+            "Point",
+            vec![RecordField::new("x", MType::Primitive(Primitive::F64))],
+            false,
+        );
+
+        match &reg.types.get("Point").unwrap().shape {
+            TypeShape::Record {
+                fields,
+                is_repr_c,
+                constructors,
+                methods,
+            } => {
+                assert_eq!(fields.len(), 1);
+                assert!(!*is_repr_c);
+                assert!(constructors.is_empty());
+                assert!(methods.is_empty());
+            }
+            other => panic!("expected Record, got {:?}", std::mem::discriminant(other)),
+        }
     }
 
     #[test]
@@ -2799,5 +3202,198 @@ mod tests {
         );
 
         fs::remove_dir_all(temp_root).expect("cleanup temp root");
+    }
+
+    fn scan_temp_crate(source: &str, features: ScanFeatures) -> Module {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "boltffi_scan_record_methods_{}_{}",
+            std::process::id(),
+            unique_suffix
+        ));
+        let src_dir = temp_root.join("src");
+        fs::create_dir_all(&src_dir).expect("create src dir");
+        fs::write(src_dir.join("lib.rs"), source).expect("write lib.rs");
+
+        let module =
+            scan_crate_with_options(&temp_root, "testlib", None, features).expect("scan failed");
+        fs::remove_dir_all(&temp_root).expect("cleanup");
+        module
+    }
+
+    fn scan_temp_crate_multi(files: &[(&str, &str)], features: ScanFeatures) -> Module {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temp_root = std::env::temp_dir().join(format!(
+            "boltffi_scan_record_methods_{}_{}",
+            std::process::id(),
+            unique_suffix
+        ));
+        let src_dir = temp_root.join("src");
+        fs::create_dir_all(&src_dir).expect("create src dir");
+
+        files.iter().for_each(|(name, content)| {
+            fs::write(src_dir.join(name), content).expect("write file");
+        });
+
+        let module =
+            scan_crate_with_options(&temp_root, "testlib", None, features).expect("scan failed");
+        fs::remove_dir_all(&temp_root).expect("cleanup");
+        module
+    }
+
+    #[test]
+    fn record_impl_scanned_with_feature_enabled() {
+        let source = r#"
+            #[boltffi::data]
+            pub struct Point {
+                pub x: f64,
+                pub y: f64,
+            }
+
+            #[boltffi::data(impl)]
+            impl Point {
+                pub fn origin() -> Self {
+                    Self { x: 0.0, y: 0.0 }
+                }
+
+                pub fn magnitude(&self) -> f64 {
+                    (self.x * self.x + self.y * self.y).sqrt()
+                }
+            }
+        "#;
+
+        let module = scan_temp_crate(
+            source,
+            ScanFeatures {
+                record_methods: true,
+            },
+        );
+
+        let record = module.find_record("Point").expect("Point not found");
+        assert_eq!(record.fields.len(), 2);
+        assert_eq!(record.constructors.len(), 1);
+        assert_eq!(record.constructors[0].name, "origin");
+        assert_eq!(record.methods.len(), 1);
+        assert_eq!(record.methods[0].name, "magnitude");
+    }
+
+    #[test]
+    fn record_impl_ignored_with_feature_disabled() {
+        let source = r#"
+            #[boltffi::data]
+            pub struct Point {
+                pub x: f64,
+                pub y: f64,
+            }
+
+            #[boltffi::data(impl)]
+            impl Point {
+                pub fn origin() -> Self {
+                    Self { x: 0.0, y: 0.0 }
+                }
+
+                pub fn magnitude(&self) -> f64 {
+                    (self.x * self.x + self.y * self.y).sqrt()
+                }
+            }
+        "#;
+
+        let module = scan_temp_crate(source, ScanFeatures::default());
+
+        let record = module.find_record("Point").expect("Point not found");
+        assert_eq!(record.fields.len(), 2);
+        assert!(record.constructors.is_empty());
+        assert!(record.methods.is_empty());
+    }
+
+    #[test]
+    fn record_impl_cross_file_impl_before_struct() {
+        let module = scan_temp_crate_multi(
+            &[
+                ("lib.rs", "pub mod record_impl;\npub mod record_struct;\n"),
+                (
+                    "record_impl.rs",
+                    r#"
+                        use super::record_struct::Point;
+
+                        #[boltffi::data(impl)]
+                        impl Point {
+                            pub fn origin() -> Self {
+                                Self { x: 0.0, y: 0.0 }
+                            }
+
+                            pub fn magnitude(&self) -> f64 {
+                                (self.x * self.x + self.y * self.y).sqrt()
+                            }
+                        }
+                    "#,
+                ),
+                (
+                    "record_struct.rs",
+                    r#"
+                        #[boltffi::data]
+                        pub struct Point {
+                            pub x: f64,
+                            pub y: f64,
+                        }
+                    "#,
+                ),
+            ],
+            ScanFeatures {
+                record_methods: true,
+            },
+        );
+
+        let record = module.find_record("Point").expect("Point not found");
+        assert_eq!(record.fields.len(), 2);
+        assert_eq!(record.constructors.len(), 1);
+        assert_eq!(record.constructors[0].name, "origin");
+        assert_eq!(record.methods.len(), 1);
+        assert_eq!(record.methods[0].name, "magnitude");
+    }
+
+    #[test]
+    fn symbol_collision_between_method_and_function_is_detected() {
+        let mut module = Module::new("test");
+        module.functions.push(Function::new("point_distance"));
+        module
+            .records
+            .push(Record::new("Point").with_method(Method::new("distance", Receiver::Ref)));
+
+        let result = validate_no_symbol_collisions(&module);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("FFI symbol collision"),
+            "error should mention collision: {}",
+            err
+        );
+        assert!(
+            err.contains("Point::distance()"),
+            "error should mention the method: {}",
+            err
+        );
+        assert!(
+            err.contains("fn point_distance()"),
+            "error should mention the function: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn no_collision_when_names_differ() {
+        let mut module = Module::new("test");
+        module.functions.push(Function::new("echo_point"));
+        module
+            .records
+            .push(Record::new("Point").with_method(Method::new("distance", Receiver::Ref)));
+
+        assert!(validate_no_symbol_collisions(&module).is_ok());
     }
 }

@@ -106,12 +106,13 @@ impl<'a> JniLowerer<'a> {
             .map(|func| self.lower_function(func, &prefix, &jni_prefix))
             .collect();
 
-        let wire_functions = self
+        let wire_functions: Vec<JniWireFunction> = self
             .contract
             .functions
             .iter()
             .filter(|func| !func.is_async && !self.is_primitive_only(func))
             .map(|func| self.lower_wire_function(func, &jni_prefix))
+            .chain(self.lower_value_type_wire_fns(&jni_prefix))
             .collect();
 
         let async_functions: Vec<JniAsyncFunction> = self
@@ -333,6 +334,107 @@ impl<'a> JniLowerer<'a> {
             jni_return_type: return_meta.jni_return_type,
             jni_c_return_type: return_meta.jni_c_return_type,
             jni_result_cast: return_meta.jni_result_cast,
+        }
+    }
+
+    fn lower_value_type_wire_fns(&self, jni_prefix: &str) -> Vec<JniWireFunction> {
+        self.abi
+            .calls
+            .iter()
+            .filter(|call| call.is_value_type_call())
+            .filter(|call| matches!(call.mode, CallMode::Sync))
+            .map(|call| {
+                let param_defs = self.contract.catalog.params_for_value_call(&call.id);
+                let abi_inputs = self.input_abi_params(call);
+                let has_self = abi_inputs
+                    .first()
+                    .is_some_and(|p| p.name.as_str() == "self");
+                let self_jni: Vec<JniParam> = if has_self {
+                    vec![self.lower_value_self_param(abi_inputs[0])]
+                } else {
+                    vec![]
+                };
+                let skip = if has_self { 1 } else { 0 };
+                let regular_jni: Vec<JniParam> = param_defs
+                    .iter()
+                    .zip(abi_inputs.iter().skip(skip))
+                    .map(|(def, abi)| self.lower_param(def, abi))
+                    .collect();
+                let params: Vec<JniParam> = self_jni.into_iter().chain(regular_jni).collect();
+                let jni_params = self.format_jni_params(&params);
+                let return_meta = self.value_type_return_meta(call);
+                let return_composite_c_type = self.composite_return_c_type(&call.returns);
+                let ffi_name = call.symbol.as_str().to_string();
+                let jni_name =
+                    format!("Java_{}_Native_{}", jni_prefix, ffi_name.replace('_', "_1"));
+                JniWireFunction {
+                    ffi_name,
+                    jni_name,
+                    jni_params,
+                    params,
+                    return_is_unit: return_meta.is_unit,
+                    return_is_direct: return_meta.is_direct,
+                    return_composite_c_type,
+                    jni_return_type: return_meta.jni_return_type,
+                    jni_c_return_type: return_meta.jni_c_return_type,
+                    jni_result_cast: return_meta.jni_result_cast,
+                }
+            })
+            .collect()
+    }
+
+    fn lower_value_self_param(&self, abi_param: &AbiParam) -> JniParam {
+        let transport = match &abi_param.role {
+            ParamRole::Input { transport, .. } => transport,
+            _ => panic!("expected input role for self param"),
+        };
+        match transport {
+            Transport::Scalar(origin) => {
+                let prim = origin.primitive();
+                let jni_type = self.primitive_return_jni_type(prim);
+                let c_type = self.primitive_c_type(prim);
+                JniParam {
+                    name: "self_val".to_string(),
+                    ffi_arg: format!("({})self_val", c_type),
+                    jni_decl: format!(", {} self_val", jni_type),
+                    kind: JniParamKind::Primitive,
+                }
+            }
+            _ => JniParam {
+                name: "self_buf".to_string(),
+                ffi_arg: "(uint8_t*)_self_buf_ptr, (uintptr_t)_self_buf_len".to_string(),
+                jni_decl: ", jobject self_buf".to_string(),
+                kind: JniParamKind::Buffer,
+            },
+        }
+    }
+
+    fn value_type_return_meta(&self, abi_call: &AbiCall) -> JniReturnMeta {
+        match &abi_call.returns.transport {
+            None => JniReturnMeta {
+                is_unit: true,
+                is_direct: false,
+                jni_return_type: "void".to_string(),
+                jni_c_return_type: String::new(),
+                jni_result_cast: String::new(),
+            },
+            Some(Transport::Scalar(origin)) => {
+                let prim = origin.primitive();
+                JniReturnMeta {
+                    is_unit: false,
+                    is_direct: true,
+                    jni_return_type: self.primitive_return_jni_type(prim),
+                    jni_c_return_type: self.primitive_c_type(prim),
+                    jni_result_cast: self.primitive_return_cast(prim),
+                }
+            }
+            _ => JniReturnMeta {
+                is_unit: false,
+                is_direct: false,
+                jni_return_type: "jbyteArray".to_string(),
+                jni_c_return_type: String::new(),
+                jni_result_cast: String::new(),
+            },
         }
     }
 
@@ -2631,6 +2733,8 @@ mod tests {
                     default: None,
                 },
             ],
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });
@@ -2664,6 +2768,8 @@ mod tests {
                 ],
             },
             is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
             deprecated: None,
         });

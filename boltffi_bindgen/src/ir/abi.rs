@@ -100,6 +100,22 @@ pub enum CallId {
         class_id: ClassId,
         index: usize,
     },
+    RecordMethod {
+        record_id: RecordId,
+        method_id: MethodId,
+    },
+    RecordConstructor {
+        record_id: RecordId,
+        index: usize,
+    },
+    EnumMethod {
+        enum_id: EnumId,
+        method_id: MethodId,
+    },
+    EnumConstructor {
+        enum_id: EnumId,
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +126,18 @@ pub struct AbiCall {
     pub params: Vec<AbiParam>,
     pub returns: ReturnShape,
     pub error: ErrorTransport,
+}
+
+impl AbiCall {
+    pub fn is_value_type_call(&self) -> bool {
+        matches!(
+            self.id,
+            CallId::RecordMethod { .. }
+                | CallId::RecordConstructor { .. }
+                | CallId::EnumMethod { .. }
+                | CallId::EnumConstructor { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

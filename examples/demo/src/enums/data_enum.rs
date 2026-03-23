@@ -13,22 +13,56 @@ pub enum Shape {
     Point,
 }
 
+#[data(impl)]
+impl Shape {
+    pub fn new(radius: f64) -> Self {
+        Shape::Circle { radius }
+    }
+
+    pub fn unit_circle() -> Self {
+        Shape::Circle { radius: 1.0 }
+    }
+
+    pub fn square(side: f64) -> Self {
+        Shape::Rectangle { width: side, height: side }
+    }
+
+    pub fn try_circle(radius: f64) -> Result<Self, String> {
+        if radius <= 0.0 {
+            Err("radius must be positive".to_string())
+        } else {
+            Ok(Shape::Circle { radius })
+        }
+    }
+
+    pub fn area(&self) -> f64 {
+        match self {
+            Shape::Circle { radius } => std::f64::consts::PI * radius * radius,
+            Shape::Rectangle { width, height } => width * height,
+            Shape::Triangle { a, b, c } => {
+                ((a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y)) / 2.0).abs()
+            }
+            Shape::Point => 0.0,
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Shape::Circle { radius } => format!("circle r={}", radius),
+            Shape::Rectangle { width, height } => format!("rect {}x{}", width, height),
+            Shape::Triangle { .. } => "triangle".to_string(),
+            Shape::Point => "point".to_string(),
+        }
+    }
+
+    pub fn variant_count() -> u32 {
+        4
+    }
+}
+
 #[export]
 pub fn echo_shape(s: Shape) -> Shape {
     s
-}
-
-/// Computes the area of the given shape. Returns 0 for points.
-#[export]
-pub fn shape_area(s: Shape) -> f64 {
-    match s {
-        Shape::Circle { radius } => std::f64::consts::PI * radius * radius,
-        Shape::Rectangle { width, height } => width * height,
-        Shape::Triangle { a, b, c } => {
-            ((a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y)) / 2.0).abs()
-        }
-        Shape::Point => 0.0,
-    }
 }
 
 #[export]

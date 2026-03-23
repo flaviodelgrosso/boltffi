@@ -86,6 +86,12 @@ impl<'m> ContractBuilder<'m> {
     }
 
     fn convert_record(&self, record: &model::Record) -> RecordDef {
+        let constructors = record
+            .constructors
+            .iter()
+            .map(|ctor| self.convert_constructor(ctor, true))
+            .collect();
+
         RecordDef {
             id: RecordId::new(&record.name),
             is_repr_c: record.is_repr_c,
@@ -109,6 +115,12 @@ impl<'m> ContractBuilder<'m> {
                         default,
                     }
                 })
+                .collect(),
+            constructors,
+            methods: record
+                .methods
+                .iter()
+                .map(|m| self.convert_method(m))
                 .collect(),
             doc: record.doc.clone(),
             deprecated: record.deprecated.as_ref().map(convert_deprecation),
@@ -148,10 +160,22 @@ impl<'m> ContractBuilder<'m> {
             }
         };
 
+        let enum_constructors = enumeration
+            .constructors
+            .iter()
+            .map(|ctor| self.convert_constructor(ctor, true))
+            .collect();
+
         EnumDef {
             id: EnumId::new(&enumeration.name),
             repr,
             is_error: enumeration.is_error,
+            constructors: enum_constructors,
+            methods: enumeration
+                .methods
+                .iter()
+                .map(|m| self.convert_method(m))
+                .collect(),
             doc: enumeration.doc.clone(),
             deprecated: enumeration.deprecated.as_ref().map(convert_deprecation),
         }
@@ -268,6 +292,7 @@ impl<'m> ContractBuilder<'m> {
             ConstructorDef::Default {
                 params,
                 is_fallible: ctor.is_fallible,
+                is_optional: ctor.is_optional,
                 doc: ctor.doc.clone(),
                 deprecated: None,
             }
@@ -275,6 +300,7 @@ impl<'m> ContractBuilder<'m> {
             ConstructorDef::NamedFactory {
                 name: MethodId::new(&ctor.name),
                 is_fallible: ctor.is_fallible,
+                is_optional: ctor.is_optional,
                 doc: ctor.doc.clone(),
                 deprecated: None,
             }
@@ -286,6 +312,7 @@ impl<'m> ContractBuilder<'m> {
                 first_param,
                 rest_params: params_iter.collect(),
                 is_fallible: ctor.is_fallible,
+                is_optional: ctor.is_optional,
                 doc: ctor.doc.clone(),
                 deprecated: None,
             }

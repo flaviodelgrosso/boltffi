@@ -27,6 +27,38 @@
                 else -> throw FfiException(-1, "Unknown {{ class_name }} tag: $tag")
             }
         }
+{%- for ctor in constructors %}
+
+{{ self::kdoc_block(ctor.doc, "        ") }}        fun {{ ctor.name }}({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}): {{ class_name }} {
+{%- if ctor.wire_writers.is_empty() %}
+            val buf = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+                ?: throw FfiException(-1, "Null buffer returned")
+{%- else %}
+{%- for binding in ctor.wire_writers %}
+            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+{%- endfor %}
+            try {
+{%- for binding in ctor.wire_writers %}
+                run {
+                    val wire = {{ binding.binding_name }}.writer
+                    {{ binding.encode_expr }}
+                }
+{%- endfor %}
+                val buf = Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %})
+                    ?: throw FfiException(-1, "Null buffer returned")
+{%- endif %}
+            val reader = WireReader(buf)
+            return {{ class_name }}.decode(reader)
+{%- if !ctor.wire_writers.is_empty() %}
+            } finally {
+{%- for binding_name in ctor.wire_writer_closes %}
+                {{ binding_name }}.close()
+{%- endfor %}
+            }
+{%- endif %}
+        }
+{%- endfor %}
+{%- include "_companion_methods.txt" %}
     }
 
     fun wireEncodedSize(): Int = 4 + when (this) {
@@ -55,4 +87,5 @@
 {%- endfor %}
         }
     }
+{%- include "_instance_methods.txt" %}
 }

@@ -38,6 +38,8 @@ impl Experimental {
         },
     ];
 
+    pub const RECORDS_METHODS: &'static str = "records.methods";
+
     pub fn is_target_experimental(target: Target) -> bool {
         Self::ALL
             .iter()
@@ -791,6 +793,11 @@ impl Config {
         }
     }
 
+    pub fn record_methods_enabled(&self) -> bool {
+        self.experimental
+            .contains(&Experimental::RECORDS_METHODS.to_string())
+    }
+
     pub fn java_package(&self) -> String {
         self.targets
             .java
@@ -1188,6 +1195,33 @@ deployment_target = "16.0"
         );
 
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn record_methods_experimental_flag() {
+        let config = parse_config(
+            r#"
+experimental = ["records.methods"]
+
+[package]
+name = "mylib"
+"#,
+        );
+
+        assert!(config.record_methods_enabled());
+        assert_eq!(Experimental::RECORDS_METHODS, "records.methods");
+    }
+
+    #[test]
+    fn record_methods_disabled_by_default() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+"#,
+        );
+
+        assert!(!config.record_methods_enabled());
     }
 
     #[test]

@@ -731,11 +731,23 @@ impl<'a> KotlinLowerer<'a> {
                 v
             })
             .collect::<Vec<_>>();
+        let constructors = enumeration
+            .constructor_calls()
+            .map(|(call_id, ctor)| self.lower_constructor(ctor, self.find_abi_call(&call_id)))
+            .collect::<Vec<_>>();
+        let methods = enumeration
+            .method_calls()
+            .map(|(call_id, method)| {
+                self.lower_value_type_method(method, &call_id, enumeration.id.as_str())
+            })
+            .collect::<Vec<_>>();
         KotlinEnum {
             class_name,
             variants,
             kind,
             c_style_value_type,
+            constructors,
+            methods,
             doc: enumeration.doc.clone(),
         }
     }
@@ -883,11 +895,23 @@ impl<'a> KotlinLowerer<'a> {
             .iter()
             .map(|field| self.lower_record_field(record, field))
             .collect::<Vec<_>>();
+        let constructors = record
+            .constructor_calls()
+            .map(|(call_id, ctor)| self.lower_constructor(ctor, self.find_abi_call(&call_id)))
+            .collect::<Vec<_>>();
+        let methods = record
+            .method_calls()
+            .map(|(call_id, method)| {
+                self.lower_value_type_method(method, &call_id, record.id.as_str())
+            })
+            .collect::<Vec<_>>();
         KotlinRecord {
             class_name,
             fields,
             is_blittable: record.is_blittable(),
             struct_size: self.record_struct_size(record.id.as_str()),
+            constructors,
+            methods,
             doc: record.doc.clone(),
         }
     }
@@ -1070,7 +1094,10 @@ impl<'a> KotlinLowerer<'a> {
             .constructors
             .iter()
             .enumerate()
-            .map(|(index, ctor)| self.lower_constructor(class, ctor, index))
+            .map(|(index, ctor)| {
+                let call = self.abi_call_for_constructor(class, index);
+                self.lower_constructor(ctor, call)
+            })
             .collect::<Vec<_>>();
         let methods = class
             .methods
@@ -1100,13 +1127,7 @@ impl<'a> KotlinLowerer<'a> {
         }
     }
 
-    fn lower_constructor(
-        &self,
-        class: &ClassDef,
-        ctor: &ConstructorDef,
-        index: usize,
-    ) -> KotlinConstructor {
-        let call = self.abi_call_for_constructor(class, index);
+    fn lower_constructor(&self, ctor: &ConstructorDef, call: &AbiCall) -> KotlinConstructor {
         let (name, is_factory) = match ctor {
             ConstructorDef::Default { .. } => ("new".to_string(), false),
             ConstructorDef::NamedFactory { name, .. } => (name.as_str().to_string(), true),
@@ -1220,6 +1241,129 @@ impl<'a> KotlinLowerer<'a> {
                 KotlinMethodImpl::SyncMethod(rendered)
             },
             is_static: method.receiver == Receiver::Static,
+        }
+    }
+
+    fn lower_value_type_method(
+        &self,
+        method: &MethodDef,
+        call_id: &CallId,
+        type_name: &str,
+    ) -> KotlinMethod {
+        let call = self.find_abi_call(call_id);
+        let call_without_self = Self::strip_self_param(call);
+        let call_ref = &call_without_self;
+        let output_route = &call_ref.returns;
+        let wire_writers = self.wire_writers_for_params(call_ref);
+        let native_args = self.native_args_for_params(call_ref, &method.params, &wire_writers);
+        let signature_params = method
+            .params
+            .iter()
+            .map(|param| KotlinSignatureParam {
+                name: NamingConvention::param_name(param.name.as_str()),
+                kotlin_type: self.kotlin_type(&param.type_expr),
+            })
+            .collect::<Vec<_>>();
+
+        let mutating_void =
+            method.receiver == Receiver::RefMutSelf && matches!(method.returns, ReturnDef::Void);
+
+        let return_type = if mutating_void {
+            Some(NamingConvention::class_name(type_name))
+        } else {
+            self.kotlin_return_type_from_def(&method.returns, output_route)
+        };
+        let return_meta = self.kotlin_return_meta(output_route);
+        let decode_expr = self.decode_expr_for_call_return(output_route, &method.returns);
+        let is_blittable_return = self.is_blittable_return(output_route, &method.returns);
+        let ffi_name = call.symbol.as_str().to_string();
+        let err_type = self.error_type_name(&method.returns);
+
+        let self_wire = self.build_self_wire_writer(call);
+        let self_native_arg = self.build_self_native_arg(call);
+
+        let all_wire_writers: Vec<_> = self_wire.into_iter().chain(wire_writers).collect();
+        let all_wire_writer_closes: Vec<String> = all_wire_writers
+            .iter()
+            .map(|w| w.binding_name.clone())
+            .collect();
+        let all_native_args: Vec<_> = self_native_arg.into_iter().chain(native_args).collect();
+
+        let rendered = WireMethodTemplate {
+            method_name: &NamingConvention::method_name(method.id.as_str()),
+            signature_params: &signature_params,
+            return_type: return_type.as_deref(),
+            wire_writers: &all_wire_writers,
+            wire_writer_closes: &all_wire_writer_closes,
+            native_args: &all_native_args,
+            throws: self.is_throwing_return(&method.returns),
+            err_type: &err_type,
+            ffi_name: &ffi_name,
+            return_is_unit: return_meta.is_unit && !mutating_void,
+            return_is_direct: return_meta.is_direct,
+            return_cast: &return_meta.cast,
+            decode_expr: &decode_expr,
+            is_blittable_return,
+            include_handle: false,
+            doc: &method.doc,
+        }
+        .render()
+        .unwrap();
+
+        KotlinMethod {
+            impl_: KotlinMethodImpl::SyncMethod(rendered),
+            is_static: method.receiver == Receiver::Static,
+        }
+    }
+
+    fn strip_self_param(call: &AbiCall) -> AbiCall {
+        AbiCall {
+            params: call
+                .params
+                .iter()
+                .filter(|p| p.name.as_str() != "self")
+                .cloned()
+                .collect(),
+            ..call.clone()
+        }
+    }
+
+    fn build_self_wire_writer(&self, call: &AbiCall) -> Vec<KotlinWireWriter> {
+        let self_param = call.params.iter().find(|p| p.name.as_str() == "self");
+        let Some(param) = self_param else {
+            return vec![];
+        };
+        if let ParamRole::Input {
+            encode_ops: Some(ops),
+            ..
+        } = &param.role
+        {
+            let remapped = remap_root_in_seq(ops, ValueExpr::Var("this".into()));
+            vec![KotlinWireWriter {
+                binding_name: "wire_writer_self".to_string(),
+                size_expr: emit::emit_size_expr_for_write_seq(&remapped),
+                encode_expr: emit::emit_write_expr(&remapped),
+            }]
+        } else {
+            vec![]
+        }
+    }
+
+    fn build_self_native_arg(&self, call: &AbiCall) -> Vec<String> {
+        let self_param = call.params.iter().find(|p| p.name.as_str() == "self");
+        let Some(param) = self_param else {
+            return vec![];
+        };
+        match &param.role {
+            ParamRole::Input {
+                encode_ops: Some(_),
+                ..
+            } => vec!["wire_writer_self.bytes".to_string()],
+            ParamRole::Input {
+                transport: Transport::Scalar(_),
+                ..
+            } => vec!["this.value".to_string()],
+            _ => vec![],
         }
     }
 
@@ -1853,8 +1997,8 @@ impl<'a> KotlinLowerer<'a> {
             .abi
             .calls
             .iter()
-            .filter(|call| call.returns.decode_ops.is_some())
             .filter(|call| !declared_symbols.contains(call.symbol.as_str()))
+            .filter(|call| matches!(call.mode, CallMode::Sync))
             .map(|call| KotlinNativeWireFunction {
                 ffi_name: call.symbol.as_str().to_string(),
                 params: self
@@ -1865,7 +2009,7 @@ impl<'a> KotlinLowerer<'a> {
                         jni_type: self.jni_type_for_param(param),
                     })
                     .collect(),
-                return_jni_type: "ByteArray?".to_string(),
+                return_jni_type: self.jni_type_for_return_shape(&call.returns),
             })
             .collect::<Vec<_>>();
         let classes = self
@@ -3222,6 +3366,14 @@ impl<'a> KotlinLowerer<'a> {
                     }
             })
             .expect("abi call missing for constructor")
+    }
+
+    fn find_abi_call(&self, call_id: &CallId) -> &AbiCall {
+        self.abi
+            .calls
+            .iter()
+            .find(|call| call.id == *call_id)
+            .expect("abi call missing")
     }
 
     fn abi_callback_for(&self, callback_id: &CallbackId) -> &AbiCallbackInvocation {

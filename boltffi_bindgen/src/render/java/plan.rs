@@ -1,15 +1,50 @@
 use super::JavaVersion;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaAsyncMode {
+    CompletableFuture,
+    VirtualThread,
+}
+
+impl JavaAsyncMode {
+    pub fn from_version(version: JavaVersion) -> Self {
+        if version.supports_virtual_threads() {
+            Self::VirtualThread
+        } else {
+            Self::CompletableFuture
+        }
+    }
+
+    pub fn is_completable_future(&self) -> bool {
+        matches!(self, Self::CompletableFuture)
+    }
+
+    pub fn is_virtual_thread(&self) -> bool {
+        matches!(self, Self::VirtualThread)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaAsyncCall {
+    pub poll: String,
+    pub complete: String,
+    pub cancel: String,
+    pub free: String,
+    pub complete_strategy: JavaReturnStrategy,
+}
+
 #[derive(Debug, Clone)]
 pub struct JavaModule {
     pub package_name: String,
     pub class_name: String,
     pub lib_name: String,
     pub java_version: JavaVersion,
+    pub async_mode: JavaAsyncMode,
     pub prefix: String,
     pub records: Vec<JavaRecord>,
     pub enums: Vec<JavaEnum>,
     pub functions: Vec<JavaFunction>,
+    pub classes: Vec<JavaClass>,
 }
 
 impl JavaModule {
@@ -17,8 +52,17 @@ impl JavaModule {
         self.package_name.replace('.', "/")
     }
 
+    pub fn has_async(&self) -> bool {
+        self.functions.iter().any(|f| f.async_call.is_some())
+            || self
+                .classes
+                .iter()
+                .any(|c| c.methods.iter().any(|m| m.async_call.is_some()))
+    }
+
     pub fn has_wire_params(&self) -> bool {
         self.functions.iter().any(|f| !f.wire_writers.is_empty())
+            || self.classes.iter().any(|c| c.has_wire_params())
     }
 
     pub fn needs_wire_writer(&self) -> bool {
@@ -26,7 +70,7 @@ impl JavaModule {
     }
 
     pub fn has_data_enums(&self) -> bool {
-        self.enums.iter().any(|e| !e.is_c_style())
+        self.enums.iter().any(|e| !e.is_c_style() && !e.is_error())
     }
 }
 
@@ -52,6 +96,10 @@ impl JavaEnum {
         matches!(self.kind, JavaEnumKind::CStyle)
     }
 
+    pub fn is_error(&self) -> bool {
+        matches!(self.kind, JavaEnumKind::Error)
+    }
+
     pub fn is_sealed(&self) -> bool {
         matches!(self.kind, JavaEnumKind::SealedInterface)
     }
@@ -64,6 +112,7 @@ impl JavaEnum {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JavaEnumKind {
     CStyle,
+    Error,
     SealedInterface,
     AbstractClass,
 }
@@ -160,6 +209,16 @@ pub enum JavaReturnStrategy {
     BufferDecode {
         decode_expr: String,
     },
+    HandleReturn {
+        class_name: String,
+        nullable: bool,
+    },
+    ResultDecode {
+        ok_decode_expr: String,
+        err_decode_expr: String,
+        err_is_string: bool,
+        err_exception_class: Option<String>,
+    },
 }
 
 impl JavaReturnStrategy {
@@ -183,6 +242,60 @@ impl JavaReturnStrategy {
         matches!(self, Self::BufferDecode { .. })
     }
 
+    pub fn is_handle(&self) -> bool {
+        matches!(self, Self::HandleReturn { .. })
+    }
+
+    pub fn is_result(&self) -> bool {
+        matches!(self, Self::ResultDecode { .. })
+    }
+
+    pub fn result_ok_decode(&self) -> &str {
+        match self {
+            Self::ResultDecode { ok_decode_expr, .. } => ok_decode_expr,
+            _ => "",
+        }
+    }
+
+    pub fn result_err_decode(&self) -> &str {
+        match self {
+            Self::ResultDecode {
+                err_decode_expr, ..
+            } => err_decode_expr,
+            _ => "",
+        }
+    }
+
+    pub fn result_err_is_string(&self) -> bool {
+        matches!(
+            self,
+            Self::ResultDecode {
+                err_is_string: true,
+                ..
+            }
+        )
+    }
+
+    pub fn result_err_exception_class(&self) -> &str {
+        match self {
+            Self::ResultDecode {
+                err_exception_class: Some(class),
+                ..
+            } => class,
+            _ => "",
+        }
+    }
+
+    pub fn result_has_typed_exception(&self) -> bool {
+        matches!(
+            self,
+            Self::ResultDecode {
+                err_exception_class: Some(_),
+                ..
+            }
+        )
+    }
+
     pub fn decode_expr(&self) -> &str {
         match self {
             Self::WireDecode { decode_expr } | Self::BufferDecode { decode_expr } => decode_expr,
@@ -197,12 +310,26 @@ impl JavaReturnStrategy {
         }
     }
 
+    pub fn handle_class(&self) -> &str {
+        match self {
+            Self::HandleReturn { class_name, .. } => class_name,
+            _ => "",
+        }
+    }
+
+    pub fn handle_nullable(&self) -> bool {
+        matches!(self, Self::HandleReturn { nullable: true, .. })
+    }
+
     pub fn native_return_type<'a>(&'a self, return_type: &'a str) -> &'a str {
         match self {
             Self::Void => "void",
             Self::Direct => return_type,
             Self::CStyleEnumDecode { native_type, .. } => native_type,
-            Self::WireDecode { .. } | Self::BufferDecode { .. } => "byte[]",
+            Self::HandleReturn { .. } => "long",
+            Self::WireDecode { .. } | Self::BufferDecode { .. } | Self::ResultDecode { .. } => {
+                "byte[]"
+            }
         }
     }
 }
@@ -215,9 +342,18 @@ pub struct JavaFunction {
     pub return_type: String,
     pub strategy: JavaReturnStrategy,
     pub wire_writers: Vec<JavaWireWriter>,
+    pub async_call: Option<JavaAsyncCall>,
 }
 
 impl JavaFunction {
+    pub fn is_async(&self) -> bool {
+        self.async_call.is_some()
+    }
+
+    pub fn boxed_return_type(&self) -> &str {
+        box_java_type(&self.return_type)
+    }
+
     pub fn native_return_type(&self) -> &str {
         self.strategy.native_return_type(&self.return_type)
     }
@@ -237,4 +373,96 @@ pub struct JavaParam {
     pub java_type: String,
     pub native_type: String,
     pub native_expr: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaClass {
+    pub class_name: String,
+    pub ffi_free: String,
+    pub constructors: Vec<JavaConstructor>,
+    pub methods: Vec<JavaClassMethod>,
+}
+
+impl JavaClass {
+    pub fn has_factory_constructors(&self) -> bool {
+        self.constructors
+            .iter()
+            .any(|c| matches!(c.kind, JavaConstructorKind::Factory))
+    }
+
+    pub fn has_static_methods(&self) -> bool {
+        self.methods.iter().any(|m| m.is_static)
+    }
+
+    pub fn has_async_methods(&self) -> bool {
+        self.methods.iter().any(|m| m.async_call.is_some())
+    }
+
+    pub fn has_wire_params(&self) -> bool {
+        self.constructors.iter().any(|c| !c.wire_writers.is_empty())
+            || self.methods.iter().any(|m| !m.wire_writers.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaConstructorKind {
+    Primary,
+    Factory,
+    Secondary,
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaConstructor {
+    pub kind: JavaConstructorKind,
+    pub name: String,
+    pub is_fallible: bool,
+    pub params: Vec<JavaParam>,
+    pub ffi_name: String,
+    pub wire_writers: Vec<JavaWireWriter>,
+}
+
+impl JavaConstructor {
+    pub fn is_factory(&self) -> bool {
+        matches!(self.kind, JavaConstructorKind::Factory)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaClassMethod {
+    pub name: String,
+    pub ffi_name: String,
+    pub is_static: bool,
+    pub params: Vec<JavaParam>,
+    pub return_type: String,
+    pub strategy: JavaReturnStrategy,
+    pub wire_writers: Vec<JavaWireWriter>,
+    pub async_call: Option<JavaAsyncCall>,
+}
+
+impl JavaClassMethod {
+    pub fn is_async(&self) -> bool {
+        self.async_call.is_some()
+    }
+
+    pub fn boxed_return_type(&self) -> &str {
+        box_java_type(&self.return_type)
+    }
+
+    pub fn native_return_type(&self) -> &str {
+        self.strategy.native_return_type(&self.return_type)
+    }
+}
+
+fn box_java_type(java_type: &str) -> &str {
+    match java_type {
+        "void" => "Void",
+        "boolean" => "Boolean",
+        "byte" => "Byte",
+        "short" => "Short",
+        "int" => "Integer",
+        "long" => "Long",
+        "float" => "Float",
+        "double" => "Double",
+        other => other,
+    }
 }

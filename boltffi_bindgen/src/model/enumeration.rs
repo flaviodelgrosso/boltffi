@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::class::Constructor;
+use super::method::Method;
 use super::record::RecordField;
 use super::types::{Deprecation, Primitive};
 
@@ -7,6 +9,10 @@ use super::types::{Deprecation, Primitive};
 pub struct Enumeration {
     pub name: String,
     pub variants: Vec<Variant>,
+    #[serde(default)]
+    pub constructors: Vec<Constructor>,
+    #[serde(default)]
+    pub methods: Vec<Method>,
     pub doc: Option<String>,
     pub deprecated: Option<Deprecation>,
     pub is_error: bool,
@@ -18,6 +24,8 @@ impl Enumeration {
         Self {
             name: name.into(),
             variants: Vec::new(),
+            constructors: Vec::new(),
+            methods: Vec::new(),
             doc: None,
             deprecated: None,
             is_error: false,
@@ -33,6 +41,20 @@ impl Enumeration {
     pub fn with_variant(mut self, variant: Variant) -> Self {
         self.variants.push(variant);
         self
+    }
+
+    pub fn with_constructor(mut self, constructor: Constructor) -> Self {
+        self.constructors.push(constructor);
+        self
+    }
+
+    pub fn with_method(mut self, method: Method) -> Self {
+        self.methods.push(method);
+        self
+    }
+
+    pub fn has_methods(&self) -> bool {
+        !self.constructors.is_empty() || !self.methods.is_empty()
     }
 
     pub fn with_doc(mut self, doc: impl Into<String>) -> Self {

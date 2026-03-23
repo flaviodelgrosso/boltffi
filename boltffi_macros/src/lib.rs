@@ -11,6 +11,7 @@ mod custom_types;
 mod data;
 mod data_types;
 mod export;
+mod method_common;
 mod params;
 mod returns;
 mod safety;
@@ -70,7 +71,11 @@ pub fn custom_type(item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn data(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn data(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr_str = attr.to_string();
+    if attr_str.trim() == "impl" {
+        return data::data_impl_block(item);
+    }
     data::data_impl(item)
 }
 

@@ -4,6 +4,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 public final class DemoTest {
     public static void main(String[] args) {
@@ -26,6 +27,11 @@ public final class DemoTest {
         testVecStrings();
         testOptions();
         testRecordsWithVecs();
+        testAsyncFunctions();
+        testAsyncClassMethods();
+        testResultFunctions();
+        testResultClassMethods();
+        testResultEnumErrors();
         System.out.println("All tests passed!");
     }
 
@@ -477,6 +483,186 @@ public final class DemoTest {
         assert ts.label().equals("math") : "echoTaggedScores.label";
         assert ts.scores().length == 2 : "echoTaggedScores.scores.length";
         assert Math.abs(Demo.averageScore(new TaggedScores("x", new double[]{80.0, 100.0})) - 90.0) < 0.0001 : "averageScore";
+
+        System.out.println("  PASS\n");
+    }
+
+    private static void testAsyncFunctions() {
+        System.out.println("Testing async functions...");
+        try {
+            CompletableFuture<Integer> addFuture = Demo.asyncAdd(3, 7);
+            assert addFuture.get() == 10 : "asyncAdd(3, 7)";
+
+            CompletableFuture<String> echoFuture = Demo.asyncEcho("hello async");
+            assert echoFuture.get().equals("Echo: hello async") : "asyncEcho";
+
+            CompletableFuture<int[]> doubleFuture = Demo.asyncDoubleAll(new int[]{1, 2, 3});
+            int[] doubled = doubleFuture.get();
+            assert doubled.length == 3 : "asyncDoubleAll length";
+            assert doubled[0] == 2 && doubled[1] == 4 && doubled[2] == 6 : "asyncDoubleAll values";
+
+            CompletableFuture<Optional<Integer>> findSome = Demo.asyncFindPositive(new int[]{-1, 0, 5, 3});
+            assert findSome.get().isPresent() && findSome.get().get() == 5 : "asyncFindPositive some";
+
+            CompletableFuture<Optional<Integer>> findNone = Demo.asyncFindPositive(new int[]{-1, -2, -3});
+            assert !findNone.get().isPresent() : "asyncFindPositive none";
+
+            CompletableFuture<String> concatFuture = Demo.asyncConcat(Arrays.asList("a", "b", "c"));
+            assert concatFuture.get().equals("a, b, c") : "asyncConcat";
+        } catch (Exception e) {
+            throw new RuntimeException("async function test failed", e);
+        }
+        System.out.println("  PASS\n");
+    }
+
+    private static void testAsyncClassMethods() {
+        System.out.println("Testing async class methods...");
+        try {
+            AsyncWorker worker = new AsyncWorker("test");
+            assert worker.getPrefix().equals("test") : "AsyncWorker.getPrefix";
+
+            String processed = worker.process("data").get();
+            assert processed.equals("test: data") : "AsyncWorker.process";
+
+            Optional<String> found = worker.findItem(42).get();
+            assert found.isPresent() : "AsyncWorker.findItem some";
+            assert found.get().equals("test_42") : "AsyncWorker.findItem value";
+
+            Optional<String> notFound = worker.findItem(-1).get();
+            assert !notFound.isPresent() : "AsyncWorker.findItem none";
+
+            List<String> batch = worker.processBatch(Arrays.asList("x", "y")).get();
+            assert batch.size() == 2 : "AsyncWorker.processBatch size";
+            assert batch.get(0).equals("test: x") : "AsyncWorker.processBatch[0]";
+            assert batch.get(1).equals("test: y") : "AsyncWorker.processBatch[1]";
+
+            worker.close();
+        } catch (Exception e) {
+            throw new RuntimeException("async class method test failed", e);
+        }
+        System.out.println("  PASS\n");
+    }
+
+    private static void testResultFunctions() {
+        System.out.println("Testing result functions...");
+
+        assert Demo.safeDivide(10, 2) == 5 : "safeDivide ok";
+        try {
+            Demo.safeDivide(10, 0);
+            assert false : "safeDivide should throw on zero divisor";
+        } catch (RuntimeException e) {
+            assert e.getMessage().contains("division by zero") : "safeDivide error message";
+        }
+
+        assert Demo.alwaysOk(21) == 42 : "alwaysOk";
+        try {
+            Demo.alwaysErr("boom");
+            assert false : "alwaysErr should throw";
+        } catch (RuntimeException e) {
+            assert e.getMessage().contains("boom") : "alwaysErr error message";
+        }
+
+        Point p = Demo.parsePoint("3.0,4.0");
+        assert p.x() == 3.0 : "parsePoint x";
+        assert p.y() == 4.0 : "parsePoint y";
+        try {
+            Demo.parsePoint("bad");
+            assert false : "parsePoint should throw on bad input";
+        } catch (RuntimeException ignored) {}
+
+        assert Demo.resultOfString(1).equals("item_1") : "resultOfString ok";
+        try {
+            Demo.resultOfString(-1);
+            assert false : "resultOfString should throw on negative key";
+        } catch (RuntimeException ignored) {}
+
+        Optional<Integer> some = Demo.resultOfOption(5);
+        assert some.isPresent() && some.get() == 10 : "resultOfOption present";
+        Optional<Integer> none = Demo.resultOfOption(0);
+        assert !none.isPresent() : "resultOfOption empty";
+        try {
+            Demo.resultOfOption(-1);
+            assert false : "resultOfOption should throw on negative key";
+        } catch (RuntimeException ignored) {}
+
+        int[] vec = Demo.resultOfVec(3);
+        assert vec.length == 3 : "resultOfVec length";
+        assert vec[0] == 0 && vec[1] == 1 && vec[2] == 2 : "resultOfVec values";
+        try {
+            Demo.resultOfVec(-1);
+            assert false : "resultOfVec should throw on negative count";
+        } catch (RuntimeException ignored) {}
+
+        System.out.println("  PASS\n");
+    }
+
+    private static void testResultClassMethods() {
+        System.out.println("Testing result class methods...");
+
+        try (Counter counter = new Counter(0)) {
+            counter.increment();
+            counter.increment();
+            counter.increment();
+            int val = counter.tryGetPositive();
+            assert val == 3 : "tryGetPositive ok: " + val;
+        }
+
+        try (Counter counter = new Counter(0)) {
+            try {
+                counter.tryGetPositive();
+                assert false : "tryGetPositive should throw when zero";
+            } catch (RuntimeException ignored) {}
+        }
+
+        System.out.println("  PASS\n");
+    }
+
+    private static void testResultEnumErrors() {
+        System.out.println("Testing result enum errors...");
+
+        assert Demo.checkedDivide(10, 2) == 5 : "checkedDivide ok";
+        try {
+            Demo.checkedDivide(10, 0);
+            assert false : "checkedDivide should throw on zero divisor";
+        } catch (MathError.Exception e) {
+            assert e.getError() == MathError.DIVISION_BY_ZERO : "checkedDivide typed error";
+        }
+
+        assert Demo.checkedSqrt(9.0) == 3.0 : "checkedSqrt ok";
+        try {
+            Demo.checkedSqrt(-1.0);
+            assert false : "checkedSqrt should throw on negative";
+        } catch (MathError.Exception e) {
+            assert e.getError() == MathError.NEGATIVE_INPUT : "checkedSqrt typed error";
+        }
+
+        assert Demo.checkedAdd(1, 2) == 3 : "checkedAdd ok";
+        try {
+            Demo.checkedAdd(Integer.MAX_VALUE, 1);
+            assert false : "checkedAdd should throw on overflow";
+        } catch (MathError.Exception e) {
+            assert e.getError() == MathError.OVERFLOW : "checkedAdd typed error";
+        }
+
+        assert Demo.validateUsername("alice").equals("alice") : "validateUsername ok";
+        try {
+            Demo.validateUsername("ab");
+            assert false : "validateUsername should throw on short name";
+        } catch (ValidationError.Exception e) {
+            assert e.getError() == ValidationError.TOO_SHORT : "validateUsername typed error";
+        }
+        try {
+            Demo.validateUsername("a]bcdefghijklmnopqrstu");
+            assert false : "validateUsername should throw on long name";
+        } catch (ValidationError.Exception e) {
+            assert e.getError() == ValidationError.TOO_LONG : "validateUsername typed error";
+        }
+        try {
+            Demo.validateUsername("has space");
+            assert false : "validateUsername should throw on spaces";
+        } catch (ValidationError.Exception e) {
+            assert e.getError() == ValidationError.INVALID_FORMAT : "validateUsername typed error";
+        }
 
         System.out.println("  PASS\n");
     }

@@ -1,5 +1,6 @@
 use boltffi_ffi_rules::classification::{self, FieldPrimitive, PassableCategory};
 
+use crate::ir::abi::CallId;
 use crate::ir::ids::{
     CallbackId, ClassId, ConverterPath, CustomTypeId, EnumId, FieldName, FunctionId, MethodId,
     ParamName, QualifiedName, RecordId, StreamId, VariantName,
@@ -17,11 +18,41 @@ pub struct RecordDef {
     pub id: RecordId,
     pub is_repr_c: bool,
     pub fields: Vec<FieldDef>,
+    pub constructors: Vec<ConstructorDef>,
+    pub methods: Vec<MethodDef>,
     pub doc: Option<String>,
     pub deprecated: Option<DeprecationInfo>,
 }
 
 impl RecordDef {
+    pub fn has_methods(&self) -> bool {
+        !self.constructors.is_empty() || !self.methods.is_empty()
+    }
+
+    pub fn constructor_calls(&self) -> impl Iterator<Item = (CallId, &ConstructorDef)> {
+        self.constructors.iter().enumerate().map(|(i, ctor)| {
+            (
+                CallId::RecordConstructor {
+                    record_id: self.id.clone(),
+                    index: i,
+                },
+                ctor,
+            )
+        })
+    }
+
+    pub fn method_calls(&self) -> impl Iterator<Item = (CallId, &MethodDef)> {
+        self.methods.iter().map(|m| {
+            (
+                CallId::RecordMethod {
+                    record_id: self.id.clone(),
+                    method_id: m.id.clone(),
+                },
+                m,
+            )
+        })
+    }
+
     pub fn is_blittable(&self) -> bool {
         let field_primitives: Vec<FieldPrimitive> = self
             .fields
@@ -70,11 +101,41 @@ pub struct EnumDef {
     pub id: EnumId,
     pub repr: EnumRepr,
     pub is_error: bool,
+    pub constructors: Vec<ConstructorDef>,
+    pub methods: Vec<MethodDef>,
     pub doc: Option<String>,
     pub deprecated: Option<DeprecationInfo>,
 }
 
 impl EnumDef {
+    pub fn has_methods(&self) -> bool {
+        !self.constructors.is_empty() || !self.methods.is_empty()
+    }
+
+    pub fn constructor_calls(&self) -> impl Iterator<Item = (CallId, &ConstructorDef)> {
+        self.constructors.iter().enumerate().map(|(i, ctor)| {
+            (
+                CallId::EnumConstructor {
+                    enum_id: self.id.clone(),
+                    index: i,
+                },
+                ctor,
+            )
+        })
+    }
+
+    pub fn method_calls(&self) -> impl Iterator<Item = (CallId, &MethodDef)> {
+        self.methods.iter().map(|m| {
+            (
+                CallId::EnumMethod {
+                    enum_id: self.id.clone(),
+                    method_id: m.id.clone(),
+                },
+                m,
+            )
+        })
+    }
+
     pub fn variant_docs(&self) -> Vec<Option<String>> {
         match &self.repr {
             EnumRepr::CStyle { variants, .. } => variants.iter().map(|v| v.doc.clone()).collect(),
@@ -182,12 +243,14 @@ pub enum ConstructorDef {
     Default {
         params: Vec<ParamDef>,
         is_fallible: bool,
+        is_optional: bool,
         doc: Option<String>,
         deprecated: Option<DeprecationInfo>,
     },
     NamedFactory {
         name: MethodId,
         is_fallible: bool,
+        is_optional: bool,
         doc: Option<String>,
         deprecated: Option<DeprecationInfo>,
     },
@@ -196,6 +259,7 @@ pub enum ConstructorDef {
         first_param: ParamDef,
         rest_params: Vec<ParamDef>,
         is_fallible: bool,
+        is_optional: bool,
         doc: Option<String>,
         deprecated: Option<DeprecationInfo>,
     },
@@ -219,6 +283,14 @@ impl ConstructorDef {
             Self::Default { is_fallible, .. }
             | Self::NamedFactory { is_fallible, .. }
             | Self::NamedInit { is_fallible, .. } => *is_fallible,
+        }
+    }
+
+    pub fn is_optional(&self) -> bool {
+        match self {
+            Self::Default { is_optional, .. }
+            | Self::NamedFactory { is_optional, .. }
+            | Self::NamedInit { is_optional, .. } => *is_optional,
         }
     }
 

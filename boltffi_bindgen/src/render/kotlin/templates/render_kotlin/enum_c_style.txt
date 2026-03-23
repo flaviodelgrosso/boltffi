@@ -5,5 +5,32 @@
 
     companion object {
         fun fromValue(value: {{ value_type }}): {{ class_name }} = entries.first { it.value == value }
+{%- for ctor in constructors %}
+
+{{ self::kdoc_block(ctor.doc, "        ") }}        fun {{ ctor.name }}({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}): {{ class_name }} {
+{%- if ctor.wire_writers.is_empty() %}
+            return {{ class_name }}.fromValue(Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}))
+{%- else %}
+{%- for binding in ctor.wire_writers %}
+            val {{ binding.binding_name }} = WireWriterPool.acquire({{ binding.size_expr }})
+{%- endfor %}
+            try {
+{%- for binding in ctor.wire_writers %}
+                run {
+                    val wire = {{ binding.binding_name }}.writer
+                    {{ binding.encode_expr }}
+                }
+{%- endfor %}
+                return {{ class_name }}.fromValue(Native.{{ ctor.ffi_name }}({% for arg in ctor.native_args %}{{ arg }}{% if !loop.last %}, {% endif %}{% endfor %}))
+            } finally {
+{%- for binding_name in ctor.wire_writer_closes %}
+                {{ binding_name }}.close()
+{%- endfor %}
+            }
+{%- endif %}
+        }
+{%- endfor %}
+{%- include "_companion_methods.txt" %}
     }
+{%- include "_instance_methods.txt" %}
 }

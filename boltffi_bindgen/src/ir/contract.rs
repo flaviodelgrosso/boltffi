@@ -1,7 +1,8 @@
 use indexmap::IndexMap;
 
+use crate::ir::abi::CallId;
 use crate::ir::definitions::{
-    CallbackTraitDef, ClassDef, CustomTypeDef, EnumDef, FunctionDef, RecordDef,
+    CallbackTraitDef, ClassDef, CustomTypeDef, EnumDef, FunctionDef, ParamDef, RecordDef,
 };
 use crate::ir::ids::{BuiltinId, CallbackId, ClassId, CustomTypeId, EnumId, RecordId};
 use crate::ir::types::BuiltinDef;
@@ -109,5 +110,40 @@ impl TypeCatalog {
 
     pub fn all_builtins(&self) -> impl Iterator<Item = &BuiltinDef> {
         self.builtins.values()
+    }
+
+    pub fn params_for_value_call(&self, call_id: &CallId) -> Vec<&ParamDef> {
+        match call_id {
+            CallId::RecordConstructor { record_id, index } => {
+                self.resolve_record(record_id).unwrap().constructors[*index].params()
+            }
+            CallId::RecordMethod {
+                record_id,
+                method_id,
+            } => self
+                .resolve_record(record_id)
+                .unwrap()
+                .methods
+                .iter()
+                .find(|m| m.id == *method_id)
+                .unwrap()
+                .params
+                .iter()
+                .collect(),
+            CallId::EnumConstructor { enum_id, index } => {
+                self.resolve_enum(enum_id).unwrap().constructors[*index].params()
+            }
+            CallId::EnumMethod { enum_id, method_id } => self
+                .resolve_enum(enum_id)
+                .unwrap()
+                .methods
+                .iter()
+                .find(|m| m.id == *method_id)
+                .unwrap()
+                .params
+                .iter()
+                .collect(),
+            _ => vec![],
+        }
     }
 }
