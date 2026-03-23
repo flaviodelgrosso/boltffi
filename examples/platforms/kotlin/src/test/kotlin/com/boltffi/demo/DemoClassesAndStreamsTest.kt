@@ -115,6 +115,26 @@ class DemoClassesAndStreamsTest {
 
     @Test
     fun eventBusStreamsDeliverValuesAndPoints() = runBlocking {
-        assertIsolatedCaseSucceeds("event-bus-streams")
+        withTimeout(10_000) {
+            EventBus().use { bus ->
+                val valuesDeferred = async {
+                    withTimeout(5_000) {
+                        bus.subscribeValues().take(4).toList()
+                    }
+                }
+                val pointsDeferred = async {
+                    withTimeout(5_000) {
+                        bus.subscribePoints().take(2).toList()
+                    }
+                }
+                delay(100)
+                bus.emitValue(1)
+                assertEquals(3u, bus.emitBatch(intArrayOf(2, 3, 4)))
+                bus.emitPoint(Point(1.0, 2.0))
+                bus.emitPoint(Point(3.0, 4.0))
+                assertEquals(listOf(1, 2, 3, 4), valuesDeferred.await())
+                assertEquals(listOf(Point(1.0, 2.0), Point(3.0, 4.0)), pointsDeferred.await())
+            }
+        }
     }
 }

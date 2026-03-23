@@ -56,21 +56,20 @@ class DemoCallbacksAndAsyncTest {
         val optionCallback = object : OptionCallback {
             override fun findValue(key: Int): Int? = key.takeIf { it > 0 }?.times(10)
         }
+        val vecProcessor = object : VecProcessor {
+            override fun process(values: IntArray): IntArray = values.map { it * it }.toIntArray()
+        }
 
         assertEquals(8, invokeValueCallback(doubler, 4))
         assertEquals(14, invokeValueCallbackTwice(doubler, 3, 4))
         assertEquals(10, invokeBoxedValueCallback(doubler, 5))
         assertEquals(Status.ACTIVE, mapStatus(statusMapper, Status.PENDING))
+        assertContentEquals(intArrayOf(1, 4, 9), processVec(vecProcessor, intArrayOf(1, 2, 3)))
         assertEquals(21, invokeMultiMethod(multiMethod, 3, 4))
         assertEquals(21, invokeMultiMethodBoxed(multiMethod, 3, 4))
         assertEquals(25, invokeTwoCallbacks(doubler, tripler, 5))
         assertEquals(70, invokeOptionCallback(optionCallback, 7))
         assertNull(invokeOptionCallback(optionCallback, 0))
-    }
-
-    @Test
-    fun vecProcessorCallbackUsesTheCorrectBridgeConversions() {
-        assertIsolatedCaseSucceeds("vec-processor-callback")
     }
 
     @Test
@@ -110,6 +109,19 @@ class DemoCallbacksAndAsyncTest {
 
     @Test
     fun asyncCallbackTraitsRoundTripThroughKotlin() = runBlocking {
-        assertIsolatedCaseSucceeds("async-callback-traits")
+        withTimeout(10_000) {
+            val asyncFetcher = object : AsyncFetcher {
+                override suspend fun fetchValue(key: Int): Int = key * 100
+                override suspend fun fetchString(input: String): String = input.uppercase()
+            }
+            val asyncOptionFetcher = object : AsyncOptionFetcher {
+                override suspend fun find(key: Int): Long? = key.takeIf { it > 0 }?.toLong()?.times(1000L)
+            }
+
+            assertEquals(500, fetchWithAsyncCallback(asyncFetcher, 5))
+            assertEquals("BOLTFFI", fetchStringWithAsyncCallback(asyncFetcher, "boltffi"))
+            assertEquals(7_000L, invokeAsyncOptionFetcher(asyncOptionFetcher, 7))
+            assertNull(invokeAsyncOptionFetcher(asyncOptionFetcher, 0))
+        }
     }
 }

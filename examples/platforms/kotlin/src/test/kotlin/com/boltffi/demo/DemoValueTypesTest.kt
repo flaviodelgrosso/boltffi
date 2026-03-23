@@ -139,11 +139,8 @@ class DemoValueTypesTest {
         assertMessageContains(assertFailsWith<FfiException> { parsePoint("wat") }, "expected format")
         assertEquals(42, alwaysOk(21))
         assertMessageContains(assertFailsWith<FfiException> { alwaysErr("boom") }, "boom")
-    }
-
-    @Test
-    fun resultInputRoundTripFunctionUsesCorrectKotlinSurface() {
-        assertIsolatedCaseSucceeds("result-input-roundtrip")
+        assertEquals("ok: 7", resultToString(BoltFFIResult.Ok(7)))
+        assertEquals("err: bad", resultToString(BoltFFIResult.Err("bad")))
     }
 
     @Test
