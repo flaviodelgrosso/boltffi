@@ -1348,9 +1348,7 @@ impl<'a> TypeScriptLowerer<'a> {
                 }
             } else if return_route.is_f64_optional() {
                 Some("number".to_string())
-            } else if return_route.is_struct_return_slot() {
-                None
-            } else if return_route.is_void_slot() {
+            } else if return_route.is_struct_return_slot() || return_route.is_void_slot() {
                 None
             } else if return_route.is_packed() || return_route.is_raw_packed() {
                 Some("bigint".to_string())

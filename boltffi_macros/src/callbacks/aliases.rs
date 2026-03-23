@@ -134,10 +134,8 @@ impl AliasResolver {
 
         let original_args = first.arguments.clone();
         let mut adjusted = resolved;
-        if is_single {
-            if let Some(last) = adjusted.last_mut() {
-                last.arguments = original_args;
-            }
+        if is_single && let Some(last) = adjusted.last_mut() {
+            last.arguments = original_args;
         }
 
         Some(build_path(adjusted))

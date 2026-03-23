@@ -1317,7 +1317,7 @@ pub enum SwiftConversion {
         nullable: bool,
     },
     InlineClosure {
-        closure: SwiftClosureTrampoline,
+        closure: Box<SwiftClosureTrampoline>,
     },
     PassHandle {
         class_name: String,

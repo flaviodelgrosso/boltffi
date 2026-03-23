@@ -1189,7 +1189,7 @@ impl<'a> SwiftLowerer<'a> {
                     (
                         swift_type,
                         SwiftConversion::InlineClosure {
-                            closure: closure_plan,
+                            closure: Box::new(closure_plan),
                         },
                     )
                 }

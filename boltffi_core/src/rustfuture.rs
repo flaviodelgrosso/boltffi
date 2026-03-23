@@ -635,12 +635,9 @@ mod tests {
                     thread::spawn(move || {
                         thread::sleep(delay);
                         delayed_state.is_ready.store(true, Ordering::Release);
-                        delayed_state
-                            .pending_waker
-                            .lock()
-                            .unwrap()
-                            .take()
-                            .map(Waker::wake);
+                        if let Some(waker) = delayed_state.pending_waker.lock().unwrap().take() {
+                            waker.wake();
+                        }
                     });
                 }
                 Poll::Pending

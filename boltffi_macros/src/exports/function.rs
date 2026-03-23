@@ -223,7 +223,7 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
 
     let has_params = !ffi_params.is_empty();
 
-    let expanded = if return_abi.is_unit() {
+    if return_abi.is_unit() {
         let body = quote! {
             #(#conversions)*
             #fn_name(#(#call_args),*);
@@ -359,14 +359,7 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
             &custom_types,
         );
 
-        return build_encoded_return_exports(
-            &input,
-            fn_vis,
-            &export_ident,
-            &ffi_params,
-            encode_body,
-        )
-        .into();
+        build_encoded_return_exports(&input, fn_vis, &export_ident, &ffi_params, encode_body).into()
     } else if return_abi.is_passable_value() {
         let rust_type = return_abi.rust_type();
         let body = quote! {
@@ -404,9 +397,7 @@ fn ffi_export_item_impl(input: ItemFn) -> proc_macro2::TokenStream {
             "unsupported function export return strategy: {:?}",
             return_abi.value_return_strategy()
         )
-    };
-
-    expanded
+    }
 }
 
 pub fn ffi_export_impl(item: TokenStream) -> TokenStream {

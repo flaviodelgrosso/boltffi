@@ -201,11 +201,11 @@ fn extract_closure_signature(ty: &Type) -> Option<(Vec<syn::Type>, Option<syn::T
 }
 
 fn extract_slice_inner(ty: &Type) -> Option<(syn::Type, bool)> {
-    if let Type::Reference(ref_ty) = ty {
-        if let Type::Slice(slice_ty) = ref_ty.elem.as_ref() {
-            let is_mut = ref_ty.mutability.is_some();
-            return Some((*slice_ty.elem.clone(), is_mut));
-        }
+    if let Type::Reference(ref_ty) = ty
+        && let Type::Slice(slice_ty) = ref_ty.elem.as_ref()
+    {
+        let is_mut = ref_ty.mutability.is_some();
+        return Some((*slice_ty.elem.clone(), is_mut));
     }
     None
 }
@@ -262,54 +262,39 @@ fn is_non_callback_bound(modifier: syn::TraitBoundModifier, name: &str) -> bool 
 }
 
 fn extract_dyn_trait_in_container(ty: &Type, container: &str) -> Option<syn::Path> {
-    if let Type::Path(type_path) = ty {
-        if type_path.qself.is_none() {
-            if let Some(segment) = type_path.path.segments.last() {
-                if segment.ident == container {
-                    if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                        if let Some(syn::GenericArgument::Type(Type::TraitObject(trait_obj))) =
-                            args.args.first()
-                        {
-                            if let Some(syn::TypeParamBound::Trait(trait_bound)) =
-                                trait_obj.bounds.first()
-                            {
-                                return Some(trait_bound.path.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    if let Type::Path(type_path) = ty
+        && type_path.qself.is_none()
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == container
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(Type::TraitObject(trait_obj))) = args.args.first()
+        && let Some(syn::TypeParamBound::Trait(trait_bound)) = trait_obj.bounds.first()
+    {
+        return Some(trait_bound.path.clone());
     }
     None
 }
 
 fn extract_vec_param_inner(ty: &Type) -> Option<syn::Type> {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "Vec" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                        return Some(inner_ty.clone());
-                    }
-                }
-            }
-        }
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == "Vec"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+    {
+        return Some(inner_ty.clone());
     }
     None
 }
 
 fn extract_option_param_inner(ty: &Type) -> Option<syn::Type> {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "Option" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                        return Some(inner_ty.clone());
-                    }
-                }
-            }
-        }
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == "Option"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+    {
+        return Some(inner_ty.clone());
     }
     None
 }
