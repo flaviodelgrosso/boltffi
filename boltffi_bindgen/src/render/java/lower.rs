@@ -1451,9 +1451,9 @@ impl<'a> JavaLowerer<'a> {
                 id: id.clone(),
                 value: Self::prefix_value(value, binding),
             },
-            SizeExpr::WireSize { value, record_id } => SizeExpr::WireSize {
+            SizeExpr::WireSize { value, owner } => SizeExpr::WireSize {
                 value: Self::prefix_value(value, binding),
-                record_id: record_id.clone(),
+                owner: owner.clone(),
             },
             SizeExpr::OptionSize { value, inner } => SizeExpr::OptionSize {
                 value: Self::prefix_value(value, binding),

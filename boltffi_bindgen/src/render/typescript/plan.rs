@@ -378,10 +378,27 @@ impl TsParam {
                 primitive_buffer_alloc_method(element_abi),
                 self.name
             )),
+            TsInputRoute::CompositeBuffer {
+                codec_name,
+                element_size,
+            } => {
+                let writer_name = format!("{}_writer", self.name);
+                Some(format!(
+                    "const {writer_name} = _module.allocCompositeBuffer({}, {element_size}, (writer, item) => {{ {codec_name}Codec.encode(writer, item); }});",
+                    self.name
+                ))
+            }
             TsInputRoute::Callback { interface_name } => Some(format!(
                 "const {}_handle = register{}({});",
                 self.name, interface_name, self.name
             )),
+            TsInputRoute::StructValue { codec_name } => {
+                let writer_name = format!("{}_writer", self.name);
+                Some(format!(
+                    "const {writer_name} = _module.allocWriter({codec_name}Codec.size({}));\n  {codec_name}Codec.encode({writer_name}, {});",
+                    self.name, self.name
+                ))
+            }
             TsInputRoute::CodecEncoded { codec_name } => {
                 let writer_name = format!("{}_writer", self.name);
                 Some(format!(
@@ -415,8 +432,17 @@ impl TsParam {
                     format!("{}_alloc.len", self.name),
                 ]
             }
+            TsInputRoute::CompositeBuffer { .. } => {
+                vec![
+                    format!("{}_writer.ptr", self.name),
+                    format!("{}_writer.len", self.name),
+                ]
+            }
             TsInputRoute::Callback { .. } => {
                 vec![format!("{}_handle", self.name)]
+            }
+            TsInputRoute::StructValue { .. } => {
+                vec![format!("{}_writer.ptr", self.name)]
             }
             TsInputRoute::CodecEncoded { .. } | TsInputRoute::OtherEncoded { .. } => {
                 vec![
@@ -436,7 +462,10 @@ impl TsParam {
             TsInputRoute::PrimitiveBuffer { .. } => {
                 Some(format!("_module.freePrimitiveBuffer({}_alloc);", self.name))
             }
-            TsInputRoute::CodecEncoded { .. } | TsInputRoute::OtherEncoded { .. } => {
+            TsInputRoute::CompositeBuffer { .. }
+            | TsInputRoute::StructValue { .. }
+            | TsInputRoute::CodecEncoded { .. }
+            | TsInputRoute::OtherEncoded { .. } => {
                 Some(format!("_module.freeWriter({}_writer);", self.name))
             }
         }
@@ -456,10 +485,25 @@ pub enum TsInputRoute {
     Direct,
     String,
     Bytes,
-    PrimitiveBuffer { element_abi: AbiType },
-    Callback { interface_name: String },
-    CodecEncoded { codec_name: String },
-    OtherEncoded { encode: WriteSeq },
+    PrimitiveBuffer {
+        element_abi: AbiType,
+    },
+    CompositeBuffer {
+        codec_name: String,
+        element_size: usize,
+    },
+    Callback {
+        interface_name: String,
+    },
+    StructValue {
+        codec_name: String,
+    },
+    CodecEncoded {
+        codec_name: String,
+    },
+    OtherEncoded {
+        encode: WriteSeq,
+    },
 }
 
 fn primitive_buffer_alloc_method(abi_type: &AbiType) -> &'static str {
@@ -473,8 +517,8 @@ fn primitive_buffer_alloc_method(abi_type: &AbiType) -> &'static str {
         AbiType::U32 => "allocU32Array",
         AbiType::I64 => "allocI64Array",
         AbiType::U64 => "allocU64Array",
-        AbiType::ISize => "allocI64Array",
-        AbiType::USize => "allocU64Array",
+        AbiType::ISize => "allocI32Array",
+        AbiType::USize => "allocU32Array",
         AbiType::F32 => "allocF32Array",
         AbiType::F64 => "allocF64Array",
         AbiType::Void
@@ -536,6 +580,37 @@ mod tests {
             Some("const values_alloc = _module.allocI64Array(values);".to_string())
         );
     }
+
+    #[test]
+    fn composite_buffer_param_generates_expected_wrapper_and_cleanup() {
+        let param = TsParam {
+            name: "points".to_string(),
+            ts_type: "Point[]".to_string(),
+            input_route: TsInputRoute::CompositeBuffer {
+                codec_name: "Point".to_string(),
+                element_size: 16,
+            },
+        };
+
+        assert_eq!(
+            param.wrapper_code(),
+            Some(
+                "const points_writer = _module.allocCompositeBuffer(points, 16, (writer, item) => { PointCodec.encode(writer, item); });".to_string()
+            )
+        );
+        assert_eq!(
+            param.ffi_args(),
+            vec![
+                "points_writer.ptr".to_string(),
+                "points_writer.len".to_string()
+            ]
+        );
+        assert_eq!(
+            param.cleanup_code(),
+            Some("_module.freeWriter(points_writer);".to_string())
+        );
+        assert!(param.needs_cleanup());
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -546,7 +621,9 @@ pub struct TsOutputRoute {
     is_raw_packed: bool,
     is_f64_optional: bool,
     is_void_slot: bool,
+    is_struct_return_slot: bool,
     is_async_scalar: bool,
+    return_slot_size: Option<usize>,
     ts_cast: String,
     decode_expr: String,
 }
@@ -560,7 +637,9 @@ impl TsOutputRoute {
             is_raw_packed: false,
             is_f64_optional: false,
             is_void_slot: false,
+            is_struct_return_slot: false,
             is_async_scalar: false,
+            return_slot_size: None,
             ts_cast: String::new(),
             decode_expr: String::new(),
         }
@@ -574,7 +653,9 @@ impl TsOutputRoute {
             is_raw_packed: false,
             is_f64_optional: false,
             is_void_slot: false,
+            is_struct_return_slot: false,
             is_async_scalar: false,
+            return_slot_size: None,
             ts_cast,
             decode_expr: String::new(),
         }
@@ -588,7 +669,9 @@ impl TsOutputRoute {
             is_raw_packed: false,
             is_f64_optional: false,
             is_void_slot: false,
+            is_struct_return_slot: false,
             is_async_scalar: false,
+            return_slot_size: None,
             ts_cast: String::new(),
             decode_expr,
         }
@@ -602,7 +685,9 @@ impl TsOutputRoute {
             is_raw_packed: true,
             is_f64_optional: false,
             is_void_slot: false,
+            is_struct_return_slot: false,
             is_async_scalar: false,
+            return_slot_size: None,
             ts_cast: String::new(),
             decode_expr,
         }
@@ -616,7 +701,9 @@ impl TsOutputRoute {
             is_raw_packed: false,
             is_f64_optional: true,
             is_void_slot: false,
+            is_struct_return_slot: false,
             is_async_scalar: false,
+            return_slot_size: None,
             ts_cast: String::new(),
             decode_expr,
         }
@@ -630,7 +717,9 @@ impl TsOutputRoute {
             is_raw_packed: false,
             is_f64_optional: false,
             is_void_slot: false,
+            is_struct_return_slot: false,
             is_async_scalar: true,
+            return_slot_size: None,
             ts_cast,
             decode_expr: String::new(),
         }
@@ -644,7 +733,25 @@ impl TsOutputRoute {
             is_raw_packed: false,
             is_f64_optional: false,
             is_void_slot: true,
+            is_struct_return_slot: false,
             is_async_scalar: false,
+            return_slot_size: None,
+            ts_cast: String::new(),
+            decode_expr,
+        }
+    }
+
+    pub fn struct_return_slot(return_slot_size: usize, decode_expr: String) -> Self {
+        Self {
+            is_void: false,
+            is_direct: false,
+            is_packed: false,
+            is_raw_packed: false,
+            is_f64_optional: false,
+            is_void_slot: false,
+            is_struct_return_slot: true,
+            is_async_scalar: false,
+            return_slot_size: Some(return_slot_size),
             ts_cast: String::new(),
             decode_expr,
         }
@@ -674,6 +781,10 @@ impl TsOutputRoute {
         self.is_void_slot
     }
 
+    pub fn is_struct_return_slot(&self) -> bool {
+        self.is_struct_return_slot
+    }
+
     pub fn is_async_scalar(&self) -> bool {
         self.is_async_scalar
     }
@@ -684,6 +795,10 @@ impl TsOutputRoute {
 
     pub fn decode_expr(&self) -> &str {
         self.decode_expr.as_str()
+    }
+
+    pub fn return_slot_size(&self) -> Option<usize> {
+        self.return_slot_size
     }
 }
 

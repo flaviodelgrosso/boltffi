@@ -23,7 +23,7 @@ use crate::ir::ids::{
 };
 use crate::ir::ops::{
     FieldReadOp, FieldWriteOp, OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WireShape,
-    WriteOp, WriteSeq,
+    WireSizeOwner, WriteOp, WriteSeq,
 };
 use crate::ir::plan::{
     AbiType, AsyncPlan, CallPlan, CallPlanKind, CallTarget, CallbackStyle, CompletionCallback,
@@ -1034,7 +1034,7 @@ impl<'c> Lowerer<'c> {
                         } else {
                             SizeExpr::WireSize {
                                 value: value.clone(),
-                                record_id: None,
+                                owner: None,
                             }
                         }
                     }),
@@ -1131,7 +1131,7 @@ impl<'c> Lowerer<'c> {
                     RecordLayout::Blittable { size, .. } => SizeExpr::Fixed(*size),
                     _ => SizeExpr::WireSize {
                         value: value.clone(),
-                        record_id: Some(id.clone()),
+                        owner: Some(WireSizeOwner::Record(id.clone())),
                     },
                 };
                 WriteSeq {
@@ -1149,7 +1149,7 @@ impl<'c> Lowerer<'c> {
                     EnumLayout::CStyle { .. } => SizeExpr::Fixed(4),
                     _ => SizeExpr::WireSize {
                         value: value.clone(),
-                        record_id: None,
+                        owner: Some(WireSizeOwner::Enum(id.clone())),
                     },
                 };
                 WriteSeq {
