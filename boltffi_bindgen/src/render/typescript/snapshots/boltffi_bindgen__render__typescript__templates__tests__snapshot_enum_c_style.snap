@@ -16,14 +16,26 @@ export enum Color {
 
 const ColorCodec: WireCodec<Color> = {
   size: (_v) => 4,
-  encode: (writer, v) => { writer.writeI32(v); },
+  encode: (writer, v) => {
+    switch (v) {
+      case Color.Red:
+        writer.writeI32(0);
+        break;
+      case Color.Green:
+        writer.writeI32(1);
+        break;
+      case Color.Blue:
+        writer.writeI32(2);
+        break;
+    }
+  },
   decode: (reader) => {
     const value = reader.readI32();
     switch (value) {
       case 0: return Color.Red;
       case 1: return Color.Green;
       case 2: return Color.Blue;
-      default: throw new Error(`Unknown Color discriminant: ${value}`);
+      default: throw new Error(`Unknown Color wire tag: ${value}`);
     }
   },
 };

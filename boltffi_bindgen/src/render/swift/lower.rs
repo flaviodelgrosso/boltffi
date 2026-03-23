@@ -1081,33 +1081,28 @@ impl<'a> SwiftLowerer<'a> {
                 transport: Transport::Span(SpanContent::Scalar(origin)),
                 mutability,
                 ..
-            } => {
-                let primitive = origin.primitive();
-                let element_abi = AbiType::from(primitive);
-                let element_type = self.abi_to_swift(&element_abi);
-                if let ScalarOrigin::CStyleEnum { enum_id, .. } = origin {
-                    let swift_enum = self.swift_name_for_enum(enum_id);
-                    (
-                        format!("[{}]", swift_enum),
-                        SwiftConversion::EnumBufferInput {
-                            swift_enum: swift_enum.clone(),
-                            element_type: element_type.clone(),
-                        },
-                    )
-                } else if element_abi == AbiType::U8 && *mutability == Mutability::Shared {
-                    ("Data".to_string(), SwiftConversion::ToData)
-                } else {
-                    let conversion = match mutability {
-                        Mutability::Mutable => SwiftConversion::MutableBuffer {
-                            element_type: element_type.clone(),
-                        },
-                        Mutability::Shared => SwiftConversion::PrimitiveBuffer {
-                            element_type: element_type.clone(),
-                        },
-                    };
-                    (format!("[{}]", element_type), conversion)
+            } => match origin {
+                ScalarOrigin::Primitive(primitive) => {
+                    let element_abi = AbiType::from(*primitive);
+                    let element_type = self.abi_to_swift(&element_abi);
+                    if element_abi == AbiType::U8 && *mutability == Mutability::Shared {
+                        ("Data".to_string(), SwiftConversion::ToData)
+                    } else {
+                        let conversion = match mutability {
+                            Mutability::Mutable => SwiftConversion::MutableBuffer {
+                                element_type: element_type.clone(),
+                            },
+                            Mutability::Shared => SwiftConversion::PrimitiveBuffer {
+                                element_type: element_type.clone(),
+                            },
+                        };
+                        (format!("[{}]", element_type), conversion)
+                    }
                 }
-            }
+                ScalarOrigin::CStyleEnum { .. } => {
+                    unreachable!("c-style enum buffers must be wire-encoded")
+                }
+            },
             ParamRole::Input {
                 transport: Transport::Span(SpanContent::Utf8),
                 ..

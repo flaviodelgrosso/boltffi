@@ -5,6 +5,11 @@
 
     companion object {
         fun fromValue(value: {{ value_type }}): {{ class_name }} = entries.first { it.value == value }
+        fun fromWireTag(tag: Int): {{ class_name }} = entries.getOrElse(tag) {
+            throw FfiException(-1, "Unknown {{ class_name }} wire tag: $tag")
+        }
+
+        fun decode(reader: WireReader): {{ class_name }} = fromWireTag(reader.readI32())
 {%- for ctor in constructors %}
 
 {{ self::kdoc_block(ctor.doc, "        ") }}        fun {{ ctor.name }}({% for param in ctor.signature_params %}{{ param.name }}: {{ param.kotlin_type }}{% if !loop.last %}, {% endif %}{% endfor %}): {{ class_name }} {
@@ -31,6 +36,12 @@
         }
 {%- endfor %}
 {%- include "_companion_methods.txt" %}
+    }
+
+    fun wireTag(): Int = ordinal
+
+    fun wireEncodeTo(wire: WireWriter) {
+        wire.writeI32(wireTag())
     }
 {%- include "_instance_methods.txt" %}
 }

@@ -14,5 +14,16 @@ enum class Direction(val value: Int) {
 
     companion object {
         fun fromValue(value: Int): Direction = entries.first { it.value == value }
+        fun fromWireTag(tag: Int): Direction = entries.getOrElse(tag) {
+            throw FfiException(-1, "Unknown Direction wire tag: $tag")
+        }
+
+        fun decode(reader: WireReader): Direction = fromWireTag(reader.readI32())
+    }
+
+    fun wireTag(): Int = ordinal
+
+    fun wireEncodeTo(wire: WireWriter) {
+        wire.writeI32(wireTag())
     }
 }

@@ -5,12 +5,28 @@
 
     @usableFromInline init(fromC c: {{ self::swift_c_style_enum_raw_type(tag_type) }}) { self = {{ class_name }}(rawValue: c)! }
     @usableFromInline var cValue: {{ self::swift_c_style_enum_raw_type(tag_type) }} { rawValue }
+    @usableFromInline init(wireTag: Int32) {
+        switch wireTag {
+{%- for variant in variants %}
+        case {{ loop.index0 }}: self = .{{ variant.swift_name }}
+{%- endfor %}
+        default: fatalError("Invalid {{ class_name }} wire tag: \\(wireTag)")
+        }
+    }
+    @usableFromInline var wireTag: Int32 {
+        switch rawValue {
+{%- for variant in variants %}
+        case {{ variant.discriminant }}: return {{ loop.index0 }}
+{%- endfor %}
+        default: fatalError("Invalid {{ class_name }} raw value: \\(rawValue)")
+        }
+    }
 
 }
 
 extension {{ class_name }}: WireCodable {
-    @inlinable static func decode(from reader: inout WireReader) -> {{ class_name }} { {{ class_name }}(rawValue: {{ self::swift_c_style_enum_decode_expr(tag_type) }})! }
-    @inlinable func encode(to writer: inout WireWriter) { {{ self::swift_c_style_enum_encode_stmt(tag_type) }} }
+    @inlinable static func decode(from reader: inout WireReader) -> {{ class_name }} { {{ class_name }}(wireTag: reader.readI32()) }
+    @inlinable func encode(to writer: inout WireWriter) { writer.writeI32(wireTag) }
 }
 {%- if !constructors.is_empty() || !methods.is_empty() %}
 

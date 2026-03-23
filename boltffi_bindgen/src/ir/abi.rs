@@ -6,6 +6,7 @@ use boltffi_ffi_rules::transport::{
     ScalarReturnStrategy, ValueReturnMethod, ValueReturnStrategy,
 };
 
+use crate::ir::codec::EnumTagStrategy;
 use crate::ir::contract::PackageInfo;
 use crate::ir::definitions::StreamMode;
 use crate::ir::ids::{
@@ -49,7 +50,14 @@ pub struct AbiEnum {
     pub decode_ops: ReadSeq,
     pub encode_ops: WriteSeq,
     pub is_c_style: bool,
+    pub codec_tag_strategy: EnumTagStrategy,
     pub variants: Vec<AbiEnumVariant>,
+}
+
+impl AbiEnum {
+    pub fn resolve_codec_tag(&self, ordinal: usize, discriminant: i128) -> i128 {
+        self.codec_tag_strategy.resolve_tag(ordinal, discriminant)
+    }
 }
 
 #[derive(Debug, Clone)]

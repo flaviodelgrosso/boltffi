@@ -1,6 +1,5 @@
 use crate::ir::ops::{ReadSeq, WriteSeq};
 use crate::ir::plan::AbiType;
-use crate::ir::types::PrimitiveType;
 use crate::render::typescript::emit;
 
 #[derive(Debug, Clone)]
@@ -281,7 +280,6 @@ pub struct TsEnum {
     pub name: String,
     pub variants: Vec<TsVariant>,
     pub kind: TsEnumKind,
-    pub c_style_tag_type: Option<PrimitiveType>,
     pub doc: Option<String>,
 }
 

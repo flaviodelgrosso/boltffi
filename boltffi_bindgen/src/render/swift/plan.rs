@@ -1075,13 +1075,6 @@ impl SwiftParam {
             SwiftConversion::PrimitiveBuffer { .. } => {
                 format!("{}Ptr.baseAddress, UInt({}Ptr.count)", self.name, self.name)
             }
-            SwiftConversion::EnumBufferInput { element_type, .. } => {
-                format!(
-                    "{n}Ptr.baseAddress.map {{ UnsafeRawPointer($0).assumingMemoryBound(to: {t}.self) }}, UInt({n}Ptr.count)",
-                    n = self.name,
-                    t = element_type,
-                )
-            }
             SwiftConversion::MutableBuffer { .. } => {
                 format!("{}Ptr.baseAddress, UInt({}Ptr.count)", self.name, self.name)
             }
@@ -1140,7 +1133,6 @@ impl SwiftParam {
                 | SwiftConversion::ToData
                 | SwiftConversion::PrimitiveBuffer { .. }
                 | SwiftConversion::MutableBuffer { .. }
-                | SwiftConversion::EnumBufferInput { .. }
         )
     }
 
@@ -1159,10 +1151,6 @@ impl SwiftParam {
                 "{}.withUnsafeMutableBufferPointer {{ {}Ptr in",
                 self.name, self.name
             )),
-            SwiftConversion::EnumBufferInput { .. } => Some(format!(
-                "{}.withUnsafeBufferPointer {{ {}Ptr in",
-                self.name, self.name
-            )),
             _ => None,
         }
     }
@@ -1170,9 +1158,9 @@ impl SwiftParam {
     pub fn closure_wrap_close(&self) -> Option<&'static str> {
         match &self.conversion {
             SwiftConversion::ToString | SwiftConversion::ToData => Some("}"),
-            SwiftConversion::PrimitiveBuffer { .. }
-            | SwiftConversion::MutableBuffer { .. }
-            | SwiftConversion::EnumBufferInput { .. } => Some("}"),
+            SwiftConversion::PrimitiveBuffer { .. } | SwiftConversion::MutableBuffer { .. } => {
+                Some("}")
+            }
             _ => None,
         }
     }
@@ -1291,10 +1279,6 @@ pub enum SwiftConversion {
         fields: Vec<CompositeFieldMapping>,
     },
     PrimitiveBuffer {
-        element_type: String,
-    },
-    EnumBufferInput {
-        swift_enum: String,
         element_type: String,
     },
     MutableBuffer {

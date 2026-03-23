@@ -10,8 +10,8 @@ use crate::ir::abi::{
     ErrorTransport, ParamRole, ReturnShape, StreamItemTransport,
 };
 use crate::ir::codec::{
-    BlittableField, CodecPlan, EncodedField, EnumLayout, RecordLayout, VariantLayout,
-    VariantPayloadLayout, VecLayout,
+    BlittableField, CodecPlan, EncodedField, EnumLayout, EnumTagStrategy, RecordLayout,
+    VariantLayout, VariantPayloadLayout, VecLayout,
 };
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
@@ -499,12 +499,13 @@ impl<'c> Lowerer<'c> {
         let codec = self.build_codec(&TypeExpr::Enum(enumeration.id.clone()));
         let decode_ops = self.expand_decode(&codec);
         let encode_ops = self.expand_encode(&codec, ValueExpr::Instance);
-        let (is_c_style, variants) = match codec {
+        let (is_c_style, codec_tag_strategy, variants) = match codec {
             CodecPlan::Enum {
-                layout: EnumLayout::CStyle { .. },
+                layout: EnumLayout::CStyle { tag_strategy, .. },
                 ..
             } => (
                 true,
+                tag_strategy,
                 match &enumeration.repr {
                     EnumRepr::CStyle { variants, .. } => variants
                         .iter()
@@ -518,10 +519,16 @@ impl<'c> Lowerer<'c> {
                 },
             ),
             CodecPlan::Enum {
-                layout: EnumLayout::Data { variants, .. },
+                layout:
+                    EnumLayout::Data {
+                        tag_strategy,
+                        variants,
+                        ..
+                    },
                 ..
             } => (
                 false,
+                tag_strategy,
                 match &enumeration.repr {
                     EnumRepr::Data {
                         variants: data_variants,
@@ -564,7 +571,7 @@ impl<'c> Lowerer<'c> {
                     _ => Vec::new(),
                 },
             ),
-            _ => (false, vec![]),
+            _ => (false, EnumTagStrategy::OrdinalIndex, vec![]),
         };
 
         AbiEnum {
@@ -572,6 +579,7 @@ impl<'c> Lowerer<'c> {
             decode_ops,
             encode_ops,
             is_c_style,
+            codec_tag_strategy,
             variants,
         }
     }
@@ -1812,10 +1820,9 @@ impl<'c> Lowerer<'c> {
                 TypeExpr::Primitive(p) => {
                     Transport::Span(SpanContent::Scalar(ScalarOrigin::Primitive(*p)))
                 }
-                TypeExpr::Enum(id) => match self.classify_enum(id) {
-                    Transport::Scalar(origin) => Transport::Span(SpanContent::Scalar(origin)),
-                    _ => Transport::Span(SpanContent::Encoded(self.build_codec(type_expr))),
-                },
+                TypeExpr::Enum(_) => {
+                    Transport::Span(SpanContent::Encoded(self.build_codec(type_expr)))
+                }
                 _ => Transport::Span(SpanContent::Encoded(self.build_codec(type_expr))),
             },
 
@@ -2069,11 +2076,13 @@ impl<'c> Lowerer<'c> {
         let layout = match &def.repr {
             EnumRepr::CStyle { tag_type, .. } => EnumLayout::CStyle {
                 tag_type: *tag_type,
+                tag_strategy: EnumTagStrategy::OrdinalIndex,
                 is_error: def.is_error,
             },
 
             EnumRepr::Data { tag_type, variants } => EnumLayout::Data {
                 tag_type: *tag_type,
+                tag_strategy: EnumTagStrategy::OrdinalIndex,
                 variants: variants
                     .iter()
                     .map(|v| VariantLayout {
@@ -4024,5 +4033,21 @@ mod tests {
             "c-style enum self should be Scalar, got: {:?}",
             self_param.transport
         );
+    }
+
+    #[test]
+    fn vec_c_style_enum_uses_wire_encoded_transport() {
+        let mut contract = test_contract();
+        contract.catalog.insert_enum(c_style_enum_with_method());
+
+        let lowerer = lowerer_for_contract(&contract);
+        let strategy = lowerer.classify_type(&TypeExpr::Vec(Box::new(TypeExpr::Enum(
+            EnumId::new("Direction"),
+        ))));
+
+        assert!(matches!(
+            strategy,
+            Transport::Span(SpanContent::Encoded(CodecPlan::Vec { .. }))
+        ));
     }
 }

@@ -7,6 +7,7 @@ use crate::ir::abi::{
     AbiEnumPayload, AbiEnumVariant, AbiParam, AbiRecord, AbiStream, CallId, CallMode,
     ErrorTransport, ParamRole, ReturnShape, StreamItemTransport,
 };
+use crate::ir::codec::EnumTagStrategy;
 use crate::ir::codec::VecLayout;
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::Receiver;
@@ -728,7 +729,7 @@ impl<'a> KotlinLowerer<'a> {
             .iter()
             .enumerate()
             .map(|(i, variant)| {
-                let mut v = self.lower_enum_variant(variant, i as i128, kind, &variant_names);
+                let mut v = self.lower_enum_variant(abi_enum, variant, i, kind, &variant_names);
                 v.doc = variant_docs.get(i).cloned().flatten();
                 v
             })
@@ -763,8 +764,9 @@ impl<'a> KotlinLowerer<'a> {
 
     fn lower_enum_variant(
         &self,
+        abi_enum: &AbiEnum,
         variant: &AbiEnumVariant,
-        index: i128,
+        ordinal: usize,
         kind: KotlinEnumKind,
         variant_names: &HashSet<String>,
     ) -> KotlinEnumVariant {
@@ -781,11 +783,7 @@ impl<'a> KotlinLowerer<'a> {
         };
         KotlinEnumVariant {
             name,
-            tag: if matches!(kind, KotlinEnumKind::Error) {
-                index
-            } else {
-                variant.discriminant
-            },
+            tag: self.kotlin_enum_variant_tag(abi_enum, kind, ordinal, variant.discriminant),
             fields,
             doc: None,
         }
@@ -817,6 +815,7 @@ impl<'a> KotlinLowerer<'a> {
     }
 
     fn lower_data_enum_codec(&self, enumeration: &EnumDef) -> KotlinDataEnumCodec {
+        let abi_enum = self.abi_enum_for(enumeration);
         let layout = self.data_enum_layout(enumeration);
         let class_name = NamingConvention::class_name(enumeration.id.as_str());
         let codec_name = format!("{}Codec", class_name);
@@ -827,7 +826,7 @@ impl<'a> KotlinLowerer<'a> {
                 .map(|(index, variant)| KotlinDataEnumVariant {
                     name: NamingConvention::class_name(variant.name.as_str()),
                     const_name: variant.name.as_str().to_uppercase(),
-                    tag_value: variant.discriminant,
+                    tag_value: abi_enum.resolve_codec_tag(index, variant.discriminant),
                     fields: self.lower_data_enum_codec_fields(
                         &variant.payload,
                         layout.variant_offsets.get(index),
@@ -842,6 +841,22 @@ impl<'a> KotlinLowerer<'a> {
             struct_size: layout.as_ref().map(|l| l.struct_size).unwrap_or(0),
             payload_offset: layout.as_ref().map(|l| l.payload_offset).unwrap_or(0),
             variants,
+        }
+    }
+
+    fn kotlin_enum_variant_tag(
+        &self,
+        abi_enum: &AbiEnum,
+        kind: KotlinEnumKind,
+        ordinal: usize,
+        discriminant: i128,
+    ) -> i128 {
+        match kind {
+            KotlinEnumKind::CStyle => discriminant,
+            KotlinEnumKind::Sealed | KotlinEnumKind::Error => match abi_enum.codec_tag_strategy {
+                EnumTagStrategy::Discriminant => discriminant,
+                EnumTagStrategy::OrdinalIndex => abi_enum.resolve_codec_tag(ordinal, discriminant),
+            },
         }
     }
 

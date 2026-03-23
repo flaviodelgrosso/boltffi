@@ -31,42 +31,6 @@ pub fn swift_c_style_enum_raw_type(tag_type: &PrimitiveType) -> String {
     emit::swift_primitive(*tag_type)
 }
 
-pub fn swift_c_style_enum_decode_expr(tag_type: &PrimitiveType) -> String {
-    match tag_type {
-        PrimitiveType::Bool => "reader.readBool() ? 1 : 0".to_string(),
-        PrimitiveType::I8 => "reader.readI8()".to_string(),
-        PrimitiveType::U8 => "reader.readU8()".to_string(),
-        PrimitiveType::I16 => "reader.readI16()".to_string(),
-        PrimitiveType::U16 => "reader.readU16()".to_string(),
-        PrimitiveType::I32 => "reader.readI32()".to_string(),
-        PrimitiveType::U32 => "reader.readU32()".to_string(),
-        PrimitiveType::I64 => "reader.readI64()".to_string(),
-        PrimitiveType::U64 => "reader.readU64()".to_string(),
-        PrimitiveType::ISize => "Int(reader.readI64())".to_string(),
-        PrimitiveType::USize => "UInt(reader.readU64())".to_string(),
-        PrimitiveType::F32 => "reader.readF32()".to_string(),
-        PrimitiveType::F64 => "reader.readF64()".to_string(),
-    }
-}
-
-pub fn swift_c_style_enum_encode_stmt(tag_type: &PrimitiveType) -> String {
-    match tag_type {
-        PrimitiveType::Bool => "writer.writeBool(rawValue != 0)".to_string(),
-        PrimitiveType::I8 => "writer.writeI8(rawValue)".to_string(),
-        PrimitiveType::U8 => "writer.writeU8(rawValue)".to_string(),
-        PrimitiveType::I16 => "writer.writeI16(rawValue)".to_string(),
-        PrimitiveType::U16 => "writer.writeU16(rawValue)".to_string(),
-        PrimitiveType::I32 => "writer.writeI32(rawValue)".to_string(),
-        PrimitiveType::U32 => "writer.writeU32(rawValue)".to_string(),
-        PrimitiveType::I64 => "writer.writeI64(rawValue)".to_string(),
-        PrimitiveType::U64 => "writer.writeU64(rawValue)".to_string(),
-        PrimitiveType::ISize => "writer.writeI64(Int64(rawValue))".to_string(),
-        PrimitiveType::USize => "writer.writeU64(UInt64(rawValue))".to_string(),
-        PrimitiveType::F32 => "writer.writeF32(rawValue)".to_string(),
-        PrimitiveType::F64 => "writer.writeF64(rawValue)".to_string(),
-    }
-}
-
 #[derive(Template)]
 #[template(path = "preamble_header.txt", escape = "none")]
 pub struct PreambleHeaderTemplate<'a> {

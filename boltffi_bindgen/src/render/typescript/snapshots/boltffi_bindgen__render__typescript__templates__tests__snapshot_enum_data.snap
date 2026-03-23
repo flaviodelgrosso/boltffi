@@ -40,7 +40,7 @@ const ShapeCodec: WireCodec<Shape> = {
         return { tag: "Rectangle", width: reader.readF64(), height: reader.readF64() };
       case 2:
         return { tag: "Nothing" };
-      default: throw new Error(`Unknown Shape discriminant: ${tag}`);
+      default: throw new Error(`Unknown Shape wire tag: ${tag}`);
     }
   },
 };

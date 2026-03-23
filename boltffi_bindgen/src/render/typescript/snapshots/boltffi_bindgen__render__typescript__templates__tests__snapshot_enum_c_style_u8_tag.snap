@@ -1,6 +1,5 @@
 ---
 source: boltffi_bindgen/src/render/typescript/templates.rs
-assertion_line: 761
 expression: template.render().unwrap()
 ---
 /**
@@ -12,14 +11,23 @@ export enum ByteState {
 }
 
 const ByteStateCodec: WireCodec<ByteState> = {
-  size: (_v) => 1,
-  encode: (writer, v) => { writer.writeU8(v); },
+  size: (_v) => 4,
+  encode: (writer, v) => {
+    switch (v) {
+      case ByteState.None:
+        writer.writeI32(0);
+        break;
+      case ByteState.Some:
+        writer.writeI32(1);
+        break;
+    }
+  },
   decode: (reader) => {
-    const value = reader.readU8();
+    const value = reader.readI32();
     switch (value) {
       case 0: return ByteState.None;
-      case 255: return ByteState.Some;
-      default: throw new Error(`Unknown ByteState discriminant: ${value}`);
+      case 1: return ByteState.Some;
+      default: throw new Error(`Unknown ByteState wire tag: ${value}`);
     }
   },
 };

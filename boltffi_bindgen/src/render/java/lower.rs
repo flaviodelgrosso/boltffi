@@ -18,6 +18,7 @@ use crate::ir::abi::{
     AbiCall, AbiContract, AbiEnum, AbiEnumField, AbiEnumPayload, AbiEnumVariant, AbiParam,
     AbiRecord, CallId, CallMode, ParamRole,
 };
+use crate::ir::codec::EnumTagStrategy;
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
     ClassDef, ConstructorDef, EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef, Receiver,
@@ -1234,7 +1235,10 @@ impl<'a> JavaLowerer<'a> {
         let variants = abi_enum
             .variants
             .iter()
-            .map(|variant| self.lower_enum_variant(variant, kind, &variant_names))
+            .enumerate()
+            .map(|(ordinal, variant)| {
+                self.lower_enum_variant(abi_enum, variant, ordinal, kind, &variant_names)
+            })
             .collect();
         JavaEnum {
             class_name,
@@ -1258,7 +1262,9 @@ impl<'a> JavaLowerer<'a> {
 
     fn lower_enum_variant(
         &self,
+        abi_enum: &AbiEnum,
         variant: &AbiEnumVariant,
+        ordinal: usize,
         kind: JavaEnumKind,
         sibling_names: &HashSet<String>,
     ) -> JavaEnumVariant {
@@ -1277,8 +1283,28 @@ impl<'a> JavaLowerer<'a> {
         };
         JavaEnumVariant {
             name,
-            tag: variant.discriminant,
+            tag: self.java_enum_variant_tag(abi_enum, kind, ordinal, variant.discriminant),
             fields,
+        }
+    }
+
+    fn java_enum_variant_tag(
+        &self,
+        abi_enum: &AbiEnum,
+        kind: JavaEnumKind,
+        ordinal: usize,
+        discriminant: i128,
+    ) -> i128 {
+        match kind {
+            JavaEnumKind::CStyle => discriminant,
+            JavaEnumKind::Error | JavaEnumKind::SealedInterface | JavaEnumKind::AbstractClass => {
+                match abi_enum.codec_tag_strategy {
+                    EnumTagStrategy::Discriminant => discriminant,
+                    EnumTagStrategy::OrdinalIndex => {
+                        abi_enum.resolve_codec_tag(ordinal, discriminant)
+                    }
+                }
+            }
         }
     }
 

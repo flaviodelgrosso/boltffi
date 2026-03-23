@@ -1,6 +1,6 @@
 use boltffi_ffi_rules::naming::to_upper_camel_case as pascal_case;
 
-use crate::ir::codec::{EnumLayout, VecLayout};
+use crate::ir::codec::{EnumLayout, EnumTagStrategy, VecLayout};
 use crate::ir::ids::BuiltinId;
 use crate::ir::ops::{OffsetExpr, ReadOp, ReadSeq, SizeExpr, ValueExpr, WriteOp, WriteSeq};
 use crate::ir::types::{PrimitiveType, TypeExpr};
@@ -549,14 +549,28 @@ fn emit_read_op(op: &ReadOp, base_name: &str, base_expr: &str) -> (String, ReadR
         ReadOp::Enum { id, offset, layout } => {
             let offset_expr = emit_offset_expr(offset, base_name, base_expr);
             match layout {
-                EnumLayout::CStyle { tag_type, .. } => (
-                    format!(
-                        "{}(fromC: {})",
-                        pascal_case(id.as_str()),
-                        c_style_enum_read_at(*tag_type, &offset_expr)
+                EnumLayout::CStyle {
+                    tag_type,
+                    tag_strategy,
+                    ..
+                } => match tag_strategy {
+                    EnumTagStrategy::Discriminant => (
+                        format!(
+                            "{}(fromC: {})",
+                            pascal_case(id.as_str()),
+                            c_style_enum_read_at(*tag_type, &offset_expr)
+                        ),
+                        ReadReturn::BareValue(tag_type.wire_size_bytes()),
                     ),
-                    ReadReturn::BareValue(tag_type.wire_size_bytes()),
-                ),
+                    EnumTagStrategy::OrdinalIndex => (
+                        format!(
+                            "{}(wireTag: wire.readI32(at: {}))",
+                            pascal_case(id.as_str()),
+                            offset_expr
+                        ),
+                        ReadReturn::BareValue(PrimitiveType::I32.wire_size_bytes()),
+                    ),
+                },
                 EnumLayout::Data { .. } | EnumLayout::Recursive => (
                     format!(
                         "{}.decode(wireBuffer: wire, at: {})",
@@ -622,9 +636,18 @@ fn emit_write_data_op(op: &WriteOp) -> String {
         WriteOp::Enum { value, layout, .. } => {
             let v = render_value(value);
             match layout {
-                EnumLayout::CStyle { tag_type, .. } => {
-                    c_style_enum_write_data(*tag_type, &format!("{}.rawValue", v))
-                }
+                EnumLayout::CStyle {
+                    tag_type,
+                    tag_strategy,
+                    ..
+                } => match tag_strategy {
+                    EnumTagStrategy::Discriminant => {
+                        c_style_enum_write_data(*tag_type, &format!("{}.rawValue", v))
+                    }
+                    EnumTagStrategy::OrdinalIndex => {
+                        c_style_enum_write_data(PrimitiveType::I32, &format!("{}.wireTag", v))
+                    }
+                },
                 EnumLayout::Data { .. } | EnumLayout::Recursive => {
                     format!("{}.wireEncodeTo(&data)", v)
                 }
@@ -718,9 +741,18 @@ fn emit_write_bytes_op(op: &WriteOp) -> String {
         WriteOp::Enum { value, layout, .. } => {
             let v = render_value(value);
             match layout {
-                EnumLayout::CStyle { tag_type, .. } => {
-                    c_style_enum_write_bytes(*tag_type, &format!("{}.rawValue", v))
-                }
+                EnumLayout::CStyle {
+                    tag_type,
+                    tag_strategy,
+                    ..
+                } => match tag_strategy {
+                    EnumTagStrategy::Discriminant => {
+                        c_style_enum_write_bytes(*tag_type, &format!("{}.rawValue", v))
+                    }
+                    EnumTagStrategy::OrdinalIndex => {
+                        c_style_enum_write_bytes(PrimitiveType::I32, &format!("{}.wireTag", v))
+                    }
+                },
                 EnumLayout::Data { .. } | EnumLayout::Recursive => {
                     format!("{}.wireEncodeToBytes(&bytes)", v)
                 }
@@ -852,13 +884,22 @@ fn emit_reader_read_op(op: &ReadOp) -> String {
             format!("{}.decode(from: &reader)", pascal_case(id.as_str()))
         }
         ReadOp::Enum { id, layout, .. } => match layout {
-            EnumLayout::CStyle { tag_type, .. } => {
-                format!(
-                    "{}(fromC: {})",
-                    pascal_case(id.as_str()),
-                    c_style_enum_read(*tag_type)
-                )
-            }
+            EnumLayout::CStyle {
+                tag_type,
+                tag_strategy,
+                ..
+            } => match tag_strategy {
+                EnumTagStrategy::Discriminant => {
+                    format!(
+                        "{}(fromC: {})",
+                        pascal_case(id.as_str()),
+                        c_style_enum_read(*tag_type)
+                    )
+                }
+                EnumTagStrategy::OrdinalIndex => {
+                    format!("{}(wireTag: reader.readI32())", pascal_case(id.as_str()))
+                }
+            },
             EnumLayout::Data { .. } | EnumLayout::Recursive => {
                 format!("{}.decode(from: &reader)", pascal_case(id.as_str()))
             }
@@ -945,9 +986,18 @@ fn emit_writer_write_op(op: &WriteOp) -> String {
         WriteOp::Enum { value, layout, .. } => {
             let v = render_value(value);
             match layout {
-                EnumLayout::CStyle { tag_type, .. } => {
-                    c_style_enum_write_writer(*tag_type, &format!("{}.rawValue", v))
-                }
+                EnumLayout::CStyle {
+                    tag_type,
+                    tag_strategy,
+                    ..
+                } => match tag_strategy {
+                    EnumTagStrategy::Discriminant => {
+                        c_style_enum_write_writer(*tag_type, &format!("{}.rawValue", v))
+                    }
+                    EnumTagStrategy::OrdinalIndex => {
+                        c_style_enum_write_writer(PrimitiveType::I32, &format!("{}.wireTag", v))
+                    }
+                },
                 EnumLayout::Data { .. } | EnumLayout::Recursive => {
                     format!("{}.encode(to: &writer)", v)
                 }

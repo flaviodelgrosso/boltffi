@@ -12,8 +12,8 @@ use crate::ir::abi::{
 };
 use crate::ir::contract::FfiContract;
 use crate::ir::definitions::{
-    CallbackKind, CallbackTraitDef, ClassDef, ConstructorDef, EnumDef, EnumRepr, FunctionDef,
-    MethodDef, ParamDef, Receiver, RecordDef, ReturnDef,
+    CallbackKind, CallbackTraitDef, ClassDef, ConstructorDef, EnumDef, FunctionDef, MethodDef,
+    ParamDef, Receiver, RecordDef, ReturnDef,
 };
 use crate::ir::ids::{CallbackId, EnumId, FieldName, RecordId};
 use crate::ir::ops::{
@@ -333,10 +333,6 @@ impl<'a> TypeScriptLowerer<'a> {
             name,
             variants,
             kind,
-            c_style_tag_type: match &def.repr {
-                EnumRepr::CStyle { tag_type, .. } => Some(*tag_type),
-                _ => None,
-            },
             doc: def.doc.clone(),
         }
     }
@@ -1932,7 +1928,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_direct_i64_enum_vec_decode_coerces_to_number() {
+    fn sync_i64_enum_vec_uses_wire_decode() {
         let mut contract = empty_contract();
         contract.catalog.insert_enum(c_style_enum_i64("Mode"));
         contract.functions.push(function(
@@ -1950,17 +1946,17 @@ mod tests {
             .expect("sync modes function");
 
         assert_eq!(function.return_type.as_deref(), Some("Mode[]"));
-        assert!(function.return_route.is_void_slot());
+        assert!(function.return_route.is_packed());
         assert!(
             function
                 .return_route
                 .decode_expr()
-                .contains("Number(value)")
+                .contains("ModeCodec.decode(reader)")
         );
     }
 
     #[test]
-    fn async_direct_i64_enum_vec_decode_coerces_to_number() {
+    fn async_i64_enum_vec_uses_wire_decode() {
         let mut contract = empty_contract();
         contract.catalog.insert_enum(c_style_enum_i64("Mode"));
         contract.functions.push(function(
@@ -1983,7 +1979,7 @@ mod tests {
             function
                 .return_route
                 .decode_expr()
-                .contains("Number(value)")
+                .contains("ModeCodec.decode(reader)")
         );
     }
 
