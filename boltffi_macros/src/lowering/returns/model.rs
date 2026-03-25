@@ -1,6 +1,7 @@
 pub use boltffi_ffi_rules::transport::{
-    EncodedReturnStrategy, ErrorReturnStrategy, ReturnContract, ReturnInvocationContext,
-    ReturnPlatform, ScalarReturnStrategy, ValueReturnMethod, ValueReturnStrategy,
+    DirectBufferReturnMethod, EncodedReturnStrategy, ErrorReturnStrategy, ReturnContract,
+    ReturnInvocationContext, ReturnPlatform, ScalarReturnStrategy, ValueReturnMethod,
+    ValueReturnStrategy,
 };
 use syn::{ReturnType, Type};
 
@@ -67,6 +68,15 @@ impl ResolvedReturn {
         platform: ReturnPlatform,
     ) -> ValueReturnMethod {
         self.return_contract.value_return_method(context, platform)
+    }
+
+    pub fn direct_buffer_return_method(
+        &self,
+        context: ReturnInvocationContext,
+        platform: ReturnPlatform,
+    ) -> Option<DirectBufferReturnMethod> {
+        self.return_contract
+            .direct_buffer_return_method(context, platform)
     }
 }
 
