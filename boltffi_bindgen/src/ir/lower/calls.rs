@@ -135,7 +135,7 @@ impl<'c> Lowerer<'c> {
                 ParamPlan {
                     name: ParamName::new("self"),
                     contract: ParamContract::new(
-                        self_transport.param_value_strategy(),
+                        self.classify_param_value_strategy(&host.type_expr()),
                         if is_mut_receiver {
                             ParamPassingStrategy::MutableRef
                         } else {

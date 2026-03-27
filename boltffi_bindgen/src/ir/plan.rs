@@ -1,8 +1,6 @@
 use boltffi_ffi_rules::naming::{GlobalSymbol, Name, VtableField};
 use boltffi_ffi_rules::transport::{
-    CallbackParamStyle, DirectBufferParamStrategy, EncodedReturnStrategy, ParamContract,
-    ParamValueStrategy, ScalarParamStrategy, ScalarReturnStrategy, ValueReturnStrategy,
-    WireParamStrategy,
+    EncodedReturnStrategy, ParamContract, ScalarReturnStrategy, ValueReturnStrategy,
 };
 
 use crate::ir::codec::CodecPlan;
@@ -108,40 +106,6 @@ impl Transport {
             Self::Span(_) => ValueReturnStrategy::Buffer(EncodedReturnStrategy::WireEncoded),
             Self::Handle { .. } => ValueReturnStrategy::ObjectHandle,
             Self::Callback { .. } => ValueReturnStrategy::CallbackHandle,
-        }
-    }
-
-    pub fn param_value_strategy(&self) -> ParamValueStrategy {
-        match self {
-            Self::Scalar(ScalarOrigin::Primitive(_)) => {
-                ParamValueStrategy::Scalar(ScalarParamStrategy::PrimitiveValue)
-            }
-            Self::Scalar(ScalarOrigin::CStyleEnum { .. }) => {
-                ParamValueStrategy::Scalar(ScalarParamStrategy::CStyleEnumTag)
-            }
-            Self::Composite(_) => ParamValueStrategy::CompositeValue,
-            Self::Span(SpanContent::Utf8) => ParamValueStrategy::Utf8String,
-            Self::Span(SpanContent::Scalar(_)) => {
-                ParamValueStrategy::DirectBuffer(DirectBufferParamStrategy::ScalarElements)
-            }
-            Self::Span(SpanContent::Composite(_)) => {
-                ParamValueStrategy::DirectBuffer(DirectBufferParamStrategy::CompositeElements)
-            }
-            Self::Span(SpanContent::Encoded(_)) => {
-                ParamValueStrategy::WireEncoded(WireParamStrategy::SingleValue)
-            }
-            Self::Handle { nullable, .. } => ParamValueStrategy::ObjectHandle {
-                nullable: *nullable,
-            },
-            Self::Callback {
-                nullable, style, ..
-            } => ParamValueStrategy::CallbackHandle {
-                nullable: *nullable,
-                style: match style {
-                    CallbackStyle::ImplTrait => CallbackParamStyle::ImplTrait,
-                    CallbackStyle::BoxedDyn => CallbackParamStyle::BoxedDyn,
-                },
-            },
         }
     }
 }

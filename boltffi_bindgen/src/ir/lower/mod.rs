@@ -44,6 +44,7 @@ use self::calls::{AbiCallbackParamPlan, AbiCallbackParamStrategy};
 
 trait MethodHost {
     fn classify(&self, lowerer: &Lowerer) -> Transport;
+    fn type_expr(&self) -> TypeExpr;
     fn method_symbol(
         &self,
         method_id: &MethodId,
@@ -66,6 +67,10 @@ trait MethodHost {
 impl MethodHost for RecordDef {
     fn classify(&self, lowerer: &Lowerer) -> Transport {
         lowerer.classify_record(&self.id)
+    }
+
+    fn type_expr(&self) -> TypeExpr {
+        TypeExpr::Record(self.id.clone())
     }
 
     fn method_symbol(
@@ -113,6 +118,10 @@ impl MethodHost for RecordDef {
 impl MethodHost for EnumDef {
     fn classify(&self, lowerer: &Lowerer) -> Transport {
         lowerer.classify_enum(&self.id)
+    }
+
+    fn type_expr(&self) -> TypeExpr {
+        TypeExpr::Enum(self.id.clone())
     }
 
     fn method_symbol(
