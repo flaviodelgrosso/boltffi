@@ -36,6 +36,7 @@ public final class DemoTest {
         testResultFunctions();
         testResultClassMethods();
         testResultEnumErrors();
+        testStreams();
         System.out.println("All tests passed!");
     }
 
@@ -943,6 +944,90 @@ public final class DemoTest {
             assert e.getError() == ValidationError.INVALID_FORMAT : "validateUsername typed error";
         }
 
+        System.out.println("  PASS\n");
+    }
+
+    private static void testStreams() {
+        System.out.println("Testing streams (async mode)...");
+        try {
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(3);
+            java.util.concurrent.CopyOnWriteArrayList<Integer> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+            EventBus bus = new EventBus();
+            StreamSubscription<Integer> cancellable = bus.subscribeValues(value -> {
+                received.add(value);
+                latch.countDown();
+            });
+
+            bus.emitValue(10);
+            bus.emitValue(20);
+            bus.emitValue(30);
+
+            boolean done = latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            assert done : "async stream should deliver 3 items within 5 seconds";
+            assert received.size() >= 3 : "async stream received " + received.size() + " items, expected >= 3";
+            assert received.contains(10) : "async stream should contain 10";
+            assert received.contains(20) : "async stream should contain 20";
+            assert received.contains(30) : "async stream should contain 30";
+
+            cancellable.close();
+            bus.close();
+        } catch (Exception e) {
+            throw new RuntimeException("async stream test failed", e);
+        }
+        System.out.println("  PASS\n");
+
+        System.out.println("Testing streams (batch mode)...");
+        try {
+            EventBus bus = new EventBus();
+            StreamSubscription<Integer> sub = bus.subscribeValuesBatch();
+
+            bus.emitValue(100);
+            bus.emitValue(200);
+            bus.emitValue(300);
+
+            Thread.sleep(100);
+
+            java.util.List<Integer> batch = sub.popBatch(16);
+            assert batch.size() >= 3 : "batch stream should have at least 3 items, got " + batch.size();
+            assert batch.contains(100) : "batch should contain 100";
+            assert batch.contains(200) : "batch should contain 200";
+            assert batch.contains(300) : "batch should contain 300";
+
+            sub.close();
+            bus.close();
+        } catch (Exception e) {
+            throw new RuntimeException("batch stream test failed", e);
+        }
+        System.out.println("  PASS\n");
+
+        System.out.println("Testing streams (callback mode)...");
+        try {
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(3);
+            java.util.concurrent.CopyOnWriteArrayList<Integer> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+            EventBus bus = new EventBus();
+            StreamSubscription<Integer> cancellable = bus.subscribeValuesCallback(value -> {
+                received.add(value);
+                latch.countDown();
+            });
+
+            bus.emitValue(1000);
+            bus.emitValue(2000);
+            bus.emitValue(3000);
+
+            boolean done = latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            assert done : "callback stream should deliver 3 items within 5 seconds";
+            assert received.size() >= 3 : "callback stream received " + received.size() + " items, expected >= 3";
+            assert received.contains(1000) : "callback stream should contain 1000";
+            assert received.contains(2000) : "callback stream should contain 2000";
+            assert received.contains(3000) : "callback stream should contain 3000";
+
+            cancellable.close();
+            bus.close();
+        } catch (Exception e) {
+            throw new RuntimeException("callback stream test failed", e);
+        }
         System.out.println("  PASS\n");
     }
 }
