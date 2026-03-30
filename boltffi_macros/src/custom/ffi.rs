@@ -37,41 +37,41 @@ impl CustomFfiExpansion {
         Ok(quote! {
             #item_impl
 
-            impl ::boltffi::__private::wire::WireSize for #self_type {
-            #[inline]
-            fn is_fixed_size() -> bool {
-                <#ffi_repr as ::boltffi::__private::wire::WireSize>::is_fixed_size()
+            impl ::boltffi::__private::wire::WireEncode for #self_type {
+                #[inline]
+                fn is_fixed_size() -> bool {
+                    <#ffi_repr as ::boltffi::__private::wire::WireEncode>::is_fixed_size()
+                }
+
+                #[inline]
+                fn fixed_size() -> Option<usize> {
+                    <#ffi_repr as ::boltffi::__private::wire::WireEncode>::fixed_size()
+                }
+
+                #[inline]
+                fn wire_size(&self) -> usize {
+                    let repr = <#self_type as ::boltffi::CustomFfiConvertible>::into_ffi(self);
+                    <#ffi_repr as ::boltffi::__private::wire::WireEncode>::wire_size(&repr)
+                }
+
+                #[inline]
+                fn encode_to(&self, buf: &mut [u8]) -> usize {
+                    let repr = <#self_type as ::boltffi::CustomFfiConvertible>::into_ffi(self);
+                    <#ffi_repr as ::boltffi::__private::wire::WireEncode>::encode_to(&repr, buf)
+                }
             }
 
-            #[inline]
-            fn fixed_size() -> Option<usize> {
-                <#ffi_repr as ::boltffi::__private::wire::WireSize>::fixed_size()
+            impl ::boltffi::__private::wire::WireDecode for #self_type {
+                #[inline]
+                fn decode_from(buf: &[u8]) -> ::boltffi::__private::wire::DecodeResult<Self> {
+                    let (repr, used) = <#ffi_repr as ::boltffi::__private::wire::WireDecode>::decode_from(buf)?;
+                    let value = <#self_type as ::boltffi::CustomFfiConvertible>::try_from_ffi(repr)
+                        .map_err(|_| ::boltffi::__private::wire::DecodeError::InvalidValue(
+                            ::boltffi::__private::wire::InvalidWireValue::CustomConversion,
+                        ))?;
+                    Ok((value, used))
+                }
             }
-
-            #[inline]
-            fn wire_size(&self) -> usize {
-                let repr = <#self_type as ::boltffi::CustomFfiConvertible>::into_ffi(self);
-                <#ffi_repr as ::boltffi::__private::wire::WireSize>::wire_size(&repr)
-            }
-        }
-
-        impl ::boltffi::__private::wire::WireEncode for #self_type {
-            #[inline]
-            fn encode_to(&self, buf: &mut [u8]) -> usize {
-                let repr = <#self_type as ::boltffi::CustomFfiConvertible>::into_ffi(self);
-                <#ffi_repr as ::boltffi::__private::wire::WireEncode>::encode_to(&repr, buf)
-            }
-        }
-
-        impl ::boltffi::__private::wire::WireDecode for #self_type {
-            #[inline]
-            fn decode_from(buf: &[u8]) -> ::boltffi::__private::wire::DecodeResult<Self> {
-                let (repr, used) = <#ffi_repr as ::boltffi::__private::wire::WireDecode>::decode_from(buf)?;
-                let value = <#self_type as ::boltffi::CustomFfiConvertible>::try_from_ffi(repr)
-                    .map_err(|_| ::boltffi::__private::wire::DecodeError::InvalidValue)?;
-                Ok((value, used))
-            }
-        }
         })
     }
 

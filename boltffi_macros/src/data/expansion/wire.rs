@@ -71,7 +71,7 @@ impl<'a> WireTypePlan<'a> {
     fn wire_size_expr(&self, value_expr: TokenStream) -> TokenStream {
         if let Some(entry) = self.custom_types.lookup(self.rust_type) {
             let into_fn = entry.to_fn_path();
-            return quote! { ::boltffi::__private::wire::WireSize::wire_size(&#into_fn(#value_expr)) };
+            return quote! { ::boltffi::__private::wire::WireEncode::wire_size(&#into_fn(#value_expr)) };
         }
 
         match self.container_shape() {
@@ -115,9 +115,9 @@ impl<'a> WireTypePlan<'a> {
                 }
             }
             WireContainerShape::Other => {
-                quote! { ::boltffi::__private::wire::WireSize::wire_size(#value_expr) }
+                quote! { ::boltffi::__private::wire::WireEncode::wire_size(#value_expr) }
             }
-            _ => quote! { ::boltffi::__private::wire::WireSize::wire_size(#value_expr) },
+            _ => quote! { ::boltffi::__private::wire::WireEncode::wire_size(#value_expr) },
         }
     }
 
@@ -214,7 +214,9 @@ impl<'a> WireTypePlan<'a> {
                     match <#repr_type as ::boltffi::__private::wire::WireDecode>::decode_from(#buf_expr) {
                         Ok((repr_value, used)) => match #try_from_fn(repr_value) {
                             Ok(value) => Ok((value, used)),
-                            Err(_) => Err(::boltffi::__private::wire::DecodeError::InvalidValue),
+                            Err(_) => Err(::boltffi::__private::wire::DecodeError::InvalidValue(
+                                ::boltffi::__private::wire::InvalidWireValue::CustomConversion,
+                            )),
                         },
                         Err(error) => Err(error),
                     }
@@ -262,7 +264,9 @@ impl<'a> WireTypePlan<'a> {
                                     let (value, used) = #inner_decode?;
                                     Ok((Some(value), ::boltffi::__private::wire::OPTION_FLAG_SIZE + used))
                                 }
-                                _ => Err(::boltffi::__private::wire::DecodeError::InvalidBool),
+                                _ => Err(::boltffi::__private::wire::DecodeError::InvalidValue(
+                                    ::boltffi::__private::wire::InvalidWireValue::OptionTag,
+                                )),
                             }
                         }
                     }
@@ -293,7 +297,9 @@ impl<'a> WireTypePlan<'a> {
                                     let (value, used) = #err_decode?;
                                     Ok((Err(value), ::boltffi::__private::wire::RESULT_TAG_SIZE + used))
                                 }
-                                _ => Err(::boltffi::__private::wire::DecodeError::InvalidBool),
+                                _ => Err(::boltffi::__private::wire::DecodeError::InvalidValue(
+                                    ::boltffi::__private::wire::InvalidWireValue::ResultTag,
+                                )),
                             }
                         }
                     }
@@ -401,7 +407,6 @@ impl<'a> StructWireExpansion<'a> {
             field_types: &field_types,
             is_blittable: StructDataShape::new(self.item_struct).is_blittable(),
         };
-        let wire_size_impl = self.render_wire_size_impl(&render_context);
         let wire_encode_impl = self.render_wire_encode_impl(&render_context);
         let wire_decode_impl = self.render_wire_decode_impl(&render_context);
         let blittable_impl = if render_context.is_blittable {
@@ -413,7 +418,6 @@ impl<'a> StructWireExpansion<'a> {
         };
 
         quote! {
-            #wire_size_impl
             #wire_encode_impl
             #wire_decode_impl
             #blittable_impl
@@ -423,13 +427,11 @@ impl<'a> StructWireExpansion<'a> {
     fn render_empty_struct(&self) -> TokenStream {
         let struct_name = &self.item_struct.ident;
         quote! {
-            impl ::boltffi::__private::wire::WireSize for #struct_name {
+            impl ::boltffi::__private::wire::WireEncode for #struct_name {
                 fn is_fixed_size() -> bool { true }
                 fn fixed_size() -> Option<usize> { Some(2) }
                 fn wire_size(&self) -> usize { 2 }
-            }
 
-            impl ::boltffi::__private::wire::WireEncode for #struct_name {
                 fn encode_to(&self, buf: &mut [u8]) -> usize {
                     buf[0..2].copy_from_slice(&0u16.to_le_bytes());
                     2
@@ -449,33 +451,27 @@ impl<'a> StructWireExpansion<'a> {
 
     fn render_wire_size_impl(&self, render_context: &StructWireRenderContext<'_>) -> TokenStream {
         if render_context.is_blittable {
-            let struct_name = render_context.struct_name;
-            let impl_generics = render_context.impl_generics;
-            let ty_generics = render_context.ty_generics;
-            let where_clause = render_context.where_clause;
             return quote! {
-                impl #impl_generics ::boltffi::__private::wire::WireSize for #struct_name #ty_generics #where_clause {
-                    fn is_fixed_size() -> bool { true }
-                    fn fixed_size() -> Option<usize> { Some(::core::mem::size_of::<Self>()) }
-                    fn wire_size(&self) -> usize { ::core::mem::size_of::<Self>() }
-                }
+                fn is_fixed_size() -> bool { true }
+                fn fixed_size() -> Option<usize> { Some(::core::mem::size_of::<Self>()) }
+                fn wire_size(&self) -> usize { ::core::mem::size_of::<Self>() }
             };
         }
 
         let all_fixed_check = render_context.field_types.iter().map(|field_type| {
             if contains_custom_types(field_type, self.custom_types) {
                 let wire_type = WireTypePlan::new(field_type, self.custom_types).wire_type();
-                quote! { <#wire_type as ::boltffi::__private::wire::WireSize>::is_fixed_size() }
+                quote! { <#wire_type as ::boltffi::__private::wire::WireEncode>::is_fixed_size() }
             } else {
-                quote! { <#field_type as ::boltffi::__private::wire::WireSize>::is_fixed_size() }
+                quote! { <#field_type as ::boltffi::__private::wire::WireEncode>::is_fixed_size() }
             }
         });
         let fixed_size_sum = render_context.field_types.iter().map(|field_type| {
             if contains_custom_types(field_type, self.custom_types) {
                 let wire_type = WireTypePlan::new(field_type, self.custom_types).wire_type();
-                quote! { <#wire_type as ::boltffi::__private::wire::WireSize>::fixed_size().unwrap_or(0) }
+                quote! { <#wire_type as ::boltffi::__private::wire::WireEncode>::fixed_size().unwrap_or(0) }
             } else {
-                quote! { <#field_type as ::boltffi::__private::wire::WireSize>::fixed_size().unwrap_or(0) }
+                quote! { <#field_type as ::boltffi::__private::wire::WireEncode>::fixed_size().unwrap_or(0) }
             }
         });
         let field_wire_sizes = render_context
@@ -486,30 +482,23 @@ impl<'a> StructWireExpansion<'a> {
                 WireTypePlan::new(field_type, self.custom_types)
                     .wire_size_expr(quote! { &self.#field_name })
             });
-        let struct_name = render_context.struct_name;
-        let impl_generics = render_context.impl_generics;
-        let ty_generics = render_context.ty_generics;
-        let where_clause = render_context.where_clause;
-
         quote! {
-            impl #impl_generics ::boltffi::__private::wire::WireSize for #struct_name #ty_generics #where_clause {
-                fn is_fixed_size() -> bool {
-                    #(#all_fixed_check)&&*
-                }
+            fn is_fixed_size() -> bool {
+                #(#all_fixed_check)&&*
+            }
 
-                fn fixed_size() -> Option<usize> {
-                    if <Self as ::boltffi::__private::wire::WireSize>::is_fixed_size() {
-                        Some(#(#fixed_size_sum)+*)
-                    } else {
-                        None
-                    }
+            fn fixed_size() -> Option<usize> {
+                if <Self as ::boltffi::__private::wire::WireEncode>::is_fixed_size() {
+                    Some(#(#fixed_size_sum)+*)
+                } else {
+                    None
                 }
+            }
 
-                fn wire_size(&self) -> usize {
-                    <Self as ::boltffi::__private::wire::WireSize>::fixed_size().unwrap_or_else(|| {
-                        #(#field_wire_sizes)+*
-                    })
-                }
+            fn wire_size(&self) -> usize {
+                <Self as ::boltffi::__private::wire::WireEncode>::fixed_size().unwrap_or_else(|| {
+                    #(#field_wire_sizes)+*
+                })
             }
         }
     }
@@ -522,15 +511,14 @@ impl<'a> StructWireExpansion<'a> {
             let where_clause = render_context.where_clause;
             return quote! {
                 impl #impl_generics ::boltffi::__private::wire::WireEncode for #struct_name #ty_generics #where_clause {
-                    const IS_BLITTABLE: bool = true;
+                    const ENCODING_KIND: ::boltffi::__private::wire::WireEncodingKind =
+                        ::boltffi::__private::wire::WireEncodingKind::Blittable;
+                    fn is_fixed_size() -> bool { true }
+                    fn fixed_size() -> Option<usize> { Some(::core::mem::size_of::<Self>()) }
+                    fn wire_size(&self) -> usize { ::core::mem::size_of::<Self>() }
 
                     fn encode_to(&self, buf: &mut [u8]) -> usize {
-                        let size = ::core::mem::size_of::<Self>();
-                        let src = self as *const Self as *const u8;
-                        unsafe {
-                            ::core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), size);
-                        }
-                        size
+                        <Self as ::boltffi::__private::wire::Blittable>::encode_value(self, buf)
                     }
                 }
             };
@@ -554,9 +542,12 @@ impl<'a> StructWireExpansion<'a> {
         let impl_generics = render_context.impl_generics;
         let ty_generics = render_context.ty_generics;
         let where_clause = render_context.where_clause;
+        let wire_size_impl = self.render_wire_size_impl(render_context);
 
         quote! {
             impl #impl_generics ::boltffi::__private::wire::WireEncode for #struct_name #ty_generics #where_clause {
+                #wire_size_impl
+
                 fn encode_to(&self, buf: &mut [u8]) -> usize {
                     let mut written = 0usize;
                     #(#encode_fields)*
@@ -580,15 +571,11 @@ impl<'a> StructWireExpansion<'a> {
             let where_clause = render_context.where_clause;
             return quote! {
                 impl #impl_generics ::boltffi::__private::wire::WireDecode for #struct_name #ty_generics #where_clause {
-                    const IS_BLITTABLE: bool = true;
-
                     fn decode_from(buf: &[u8]) -> ::boltffi::__private::wire::DecodeResult<Self> {
                         let size = ::core::mem::size_of::<Self>();
-                        if buf.len() < size {
-                            return Err(::boltffi::__private::wire::DecodeError::BufferTooSmall);
-                        }
-                        let value = unsafe { ::core::ptr::read_unaligned(buf.as_ptr() as *const Self) };
-                        Ok((value, size))
+                        <Self as ::boltffi::__private::wire::Blittable>::decode_value(buf)
+                            .map(|value| (value, size))
+                            .ok_or(::boltffi::__private::wire::DecodeError::BufferTooSmall)
                     }
                 }
             };
@@ -619,8 +606,6 @@ impl<'a> StructWireExpansion<'a> {
 
         quote! {
             impl #impl_generics ::boltffi::__private::wire::WireDecode for #struct_name #ty_generics #where_clause {
-                const IS_BLITTABLE: bool = false;
-
                 fn decode_from(buf: &[u8]) -> ::boltffi::__private::wire::DecodeResult<Self> {
                     let mut position = 0usize;
                     #(#decode_fields)*
@@ -648,13 +633,6 @@ impl<'a> EnumWireExpansion<'a> {
             return quote! {};
         }
 
-        let wire_size_impl = self.render_wire_size_impl(
-            enum_name,
-            &impl_generics,
-            &ty_generics,
-            where_clause,
-            &variants,
-        );
         let wire_encode_impl = self.render_wire_encode_impl(
             enum_name,
             &impl_generics,
@@ -671,20 +649,12 @@ impl<'a> EnumWireExpansion<'a> {
         );
 
         quote! {
-            #wire_size_impl
             #wire_encode_impl
             #wire_decode_impl
         }
     }
 
-    fn render_wire_size_impl(
-        &self,
-        enum_name: &syn::Ident,
-        impl_generics: &syn::ImplGenerics,
-        ty_generics: &syn::TypeGenerics,
-        where_clause: Option<&syn::WhereClause>,
-        variants: &[&syn::Variant],
-    ) -> TokenStream {
+    fn render_wire_size_impl(&self, variants: &[&syn::Variant]) -> TokenStream {
         let all_unit = variants.iter().all(|variant| variant.fields.is_empty());
         let wire_size_arms =
             variants.iter().map(|variant| {
@@ -740,21 +710,17 @@ impl<'a> EnumWireExpansion<'a> {
 
         if all_unit {
             quote! {
-                impl #impl_generics ::boltffi::__private::wire::WireSize for #enum_name #ty_generics #where_clause {
-                    fn is_fixed_size() -> bool { true }
-                    fn fixed_size() -> Option<usize> { Some(4) }
-                    fn wire_size(&self) -> usize { 4 }
-                }
+                fn is_fixed_size() -> bool { true }
+                fn fixed_size() -> Option<usize> { Some(4) }
+                fn wire_size(&self) -> usize { 4 }
             }
         } else {
             quote! {
-                impl #impl_generics ::boltffi::__private::wire::WireSize for #enum_name #ty_generics #where_clause {
-                    fn is_fixed_size() -> bool { false }
-                    fn fixed_size() -> Option<usize> { None }
-                    fn wire_size(&self) -> usize {
-                        match self {
-                            #(#wire_size_arms),*
-                        }
+                fn is_fixed_size() -> bool { false }
+                fn fixed_size() -> Option<usize> { None }
+                fn wire_size(&self) -> usize {
+                    match self {
+                        #(#wire_size_arms),*
                     }
                 }
             }
@@ -769,6 +735,7 @@ impl<'a> EnumWireExpansion<'a> {
         where_clause: Option<&syn::WhereClause>,
         variants: &[&syn::Variant],
     ) -> TokenStream {
+        let wire_size_impl = self.render_wire_size_impl(variants);
         let encode_arms = variants.iter().enumerate().map(|(discriminant, variant)| {
             let variant_name = &variant.ident;
             let discriminant_i32 = discriminant as i32;
@@ -850,6 +817,8 @@ impl<'a> EnumWireExpansion<'a> {
 
         quote! {
             impl #impl_generics ::boltffi::__private::wire::WireEncode for #enum_name #ty_generics #where_clause {
+                #wire_size_impl
+
                 fn encode_to(&self, buf: &mut [u8]) -> usize {
                     match self {
                         #(#encode_arms),*

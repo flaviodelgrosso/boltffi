@@ -1,9 +1,11 @@
-use crate::wire::constants::*;
+use crate::wire::encode::{WireEncode, WireEncodingKind};
+use crate::wire::temporal::{DurationWireValue, EpochTimestampWireValue};
 
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, Utc};
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::mem::{ManuallyDrop, MaybeUninit};
+use std::time::{Duration, SystemTime};
 
 #[cfg(feature = "uuid")]
 use uuid::Uuid;
@@ -12,20 +14,41 @@ use uuid::Uuid;
 use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidWireValue {
+    Bool,
+    OptionTag,
+    ResultTag,
+    TemporalNanoseconds,
+    Url,
+    DateTimeUtc,
+    CustomConversion,
+}
+
+impl std::fmt::Display for InvalidWireValue {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bool => write!(formatter, "Bool"),
+            Self::OptionTag => write!(formatter, "OptionTag"),
+            Self::ResultTag => write!(formatter, "ResultTag"),
+            Self::TemporalNanoseconds => write!(formatter, "TemporalNanoseconds"),
+            Self::Url => write!(formatter, "Url"),
+            Self::DateTimeUtc => write!(formatter, "DateTimeUtc"),
+            Self::CustomConversion => write!(formatter, "CustomConversion"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
     BufferTooSmall,
-    InvalidUtf8,
-    InvalidBool,
-    InvalidValue,
+    InvalidValue(InvalidWireValue),
 }
 
 impl std::fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BufferTooSmall => write!(f, "BufferTooSmall"),
-            Self::InvalidUtf8 => write!(f, "InvalidUtf8"),
-            Self::InvalidBool => write!(f, "InvalidBool"),
-            Self::InvalidValue => write!(f, "InvalidValue"),
+            Self::BufferTooSmall => write!(formatter, "BufferTooSmall"),
+            Self::InvalidValue(invalid_value) => write!(formatter, "InvalidValue({invalid_value})"),
         }
     }
 }
@@ -33,8 +56,125 @@ impl std::fmt::Display for DecodeError {
 pub type DecodeResult<T> = Result<(T, usize), DecodeError>;
 
 pub trait WireDecode: Sized {
-    const IS_BLITTABLE: bool = false;
     fn decode_from(buf: &[u8]) -> DecodeResult<Self>;
+}
+
+struct WireReader<'buffer> {
+    buffer: &'buffer [u8],
+    offset: usize,
+}
+
+impl<'buffer> WireReader<'buffer> {
+    #[inline]
+    fn new(buffer: &'buffer [u8]) -> Self {
+        Self { buffer, offset: 0 }
+    }
+
+    #[inline]
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+        self.read_exact(N)?
+            .try_into()
+            .map_err(|_| DecodeError::BufferTooSmall)
+    }
+
+    #[inline]
+    fn read_byte(&mut self) -> Result<u8, DecodeError> {
+        Ok(self.read_exact(1)?[0])
+    }
+
+    #[inline]
+    fn read_exact(&mut self, byte_count: usize) -> Result<&'buffer [u8], DecodeError> {
+        let start = self.offset;
+        let end = start + byte_count;
+        let bytes = self
+            .buffer
+            .get(start..end)
+            .ok_or(DecodeError::BufferTooSmall)?;
+        self.offset = end;
+        Ok(bytes)
+    }
+
+    #[inline]
+    fn read_value<T: WireDecode>(&mut self) -> Result<T, DecodeError> {
+        let (value, used) = T::decode_from(
+            self.buffer
+                .get(self.offset..)
+                .ok_or(DecodeError::BufferTooSmall)?,
+        )?;
+        self.offset += used;
+        Ok(value)
+    }
+
+    #[inline]
+    fn read_length_prefixed_bytes(&mut self) -> Result<&'buffer [u8], DecodeError> {
+        let byte_count = self.read_value::<u32>()? as usize;
+        self.read_exact(byte_count)
+    }
+
+    #[inline]
+    fn finish<T>(self, value: T) -> DecodeResult<T> {
+        Ok((value, self.offset))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoolWireValue {
+    False,
+    True,
+}
+
+impl TryFrom<u8> for BoolWireValue {
+    type Error = DecodeError;
+
+    fn try_from(tag: u8) -> Result<Self, Self::Error> {
+        match tag {
+            0 => Ok(Self::False),
+            1 => Ok(Self::True),
+            _ => Err(DecodeError::InvalidValue(InvalidWireValue::Bool)),
+        }
+    }
+}
+
+impl BoolWireValue {
+    fn into_bool(self) -> bool {
+        matches!(self, Self::True)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptionWireTag {
+    None,
+    Some,
+}
+
+impl TryFrom<u8> for OptionWireTag {
+    type Error = DecodeError;
+
+    fn try_from(tag: u8) -> Result<Self, Self::Error> {
+        match tag {
+            0 => Ok(Self::None),
+            1 => Ok(Self::Some),
+            _ => Err(DecodeError::InvalidValue(InvalidWireValue::OptionTag)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResultWireTag {
+    Ok,
+    Err,
+}
+
+impl TryFrom<u8> for ResultWireTag {
+    type Error = DecodeError;
+
+    fn try_from(tag: u8) -> Result<Self, Self::Error> {
+        match tag {
+            0 => Ok(Self::Ok),
+            1 => Ok(Self::Err),
+            _ => Err(DecodeError::InvalidValue(InvalidWireValue::ResultTag)),
+        }
+    }
 }
 
 macro_rules! impl_wire_decode_primitive {
@@ -43,12 +183,9 @@ macro_rules! impl_wire_decode_primitive {
             impl WireDecode for $ty {
                 #[inline]
                 fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-                    const SIZE: usize = core::mem::size_of::<$ty>();
-                    let bytes: [u8; SIZE] = buf.get(..SIZE)
-                        .ok_or(DecodeError::BufferTooSmall)?
-                        .try_into()
-                        .map_err(|_| DecodeError::BufferTooSmall)?;
-                    Ok((<$ty>::from_le_bytes(bytes), SIZE))
+                    let mut reader = WireReader::new(buf);
+                    let bytes = reader.read_array::<{ core::mem::size_of::<$ty>() }>()?;
+                    reader.finish(<$ty>::from_le_bytes(bytes))
                 }
             }
         )*
@@ -60,99 +197,69 @@ impl_wire_decode_primitive!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 impl WireDecode for bool {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        if buf.is_empty() {
-            return Err(DecodeError::BufferTooSmall);
-        }
-        match buf[0] {
-            0 => Ok((false, 1)),
-            1 => Ok((true, 1)),
-            _ => Err(DecodeError::InvalidBool),
-        }
+        let mut reader = WireReader::new(buf);
+        let value = BoolWireValue::try_from(reader.read_byte()?)?.into_bool();
+        reader.finish(value)
     }
 }
 
 impl WireDecode for isize {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let bytes: [u8; 8] = buf
-            .get(..8)
-            .ok_or(DecodeError::BufferTooSmall)?
-            .try_into()
-            .map_err(|_| DecodeError::BufferTooSmall)?;
-        let value = i64::from_le_bytes(bytes) as isize;
-        Ok((value, 8))
+        let mut reader = WireReader::new(buf);
+        let value = i64::from_le_bytes(reader.read_array::<8>()?) as isize;
+        reader.finish(value)
     }
 }
 
 impl WireDecode for usize {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let bytes: [u8; 8] = buf
-            .get(..8)
-            .ok_or(DecodeError::BufferTooSmall)?
-            .try_into()
-            .map_err(|_| DecodeError::BufferTooSmall)?;
-        let value = u64::from_le_bytes(bytes) as usize;
-        Ok((value, 8))
+        let mut reader = WireReader::new(buf);
+        let value = u64::from_le_bytes(reader.read_array::<8>()?) as usize;
+        reader.finish(value)
     }
 }
 
 impl WireDecode for String {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let len = u32::from_le_bytes(
-            buf.get(..4)
-                .ok_or(DecodeError::BufferTooSmall)?
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        let total_size = 4 + len;
-        let string_bytes = buf.get(4..total_size).ok_or(DecodeError::BufferTooSmall)?;
+        let mut reader = WireReader::new(buf);
+        let string_bytes = reader.read_length_prefixed_bytes()?;
         let string = unsafe { core::str::from_utf8_unchecked(string_bytes) }.to_owned();
-        Ok((string, total_size))
+        reader.finish(string)
     }
 }
 
 impl WireDecode for Duration {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let (seconds, seconds_used) = u64::decode_from(buf)?;
-        let (nanos, nanos_used) =
-            u32::decode_from(buf.get(seconds_used..).ok_or(DecodeError::BufferTooSmall)?)?;
-        if nanos >= 1_000_000_000 {
-            return Err(DecodeError::InvalidValue);
-        }
-        Ok((Duration::new(seconds, nanos), seconds_used + nanos_used))
+        let mut reader = WireReader::new(buf);
+        let wire_value = DurationWireValue {
+            seconds: reader.read_value::<u64>()?,
+            nanos: reader.read_value::<u32>()?,
+        };
+        let duration = wire_value.into_duration().ok_or(DecodeError::InvalidValue(
+            InvalidWireValue::TemporalNanoseconds,
+        ))?;
+        reader.finish(duration)
     }
 }
 
 impl WireDecode for SystemTime {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let (seconds, seconds_used) = i64::decode_from(buf)?;
-        let (nanos, nanos_used) =
-            u32::decode_from(buf.get(seconds_used..).ok_or(DecodeError::BufferTooSmall)?)?;
-        if nanos >= 1_000_000_000 {
-            return Err(DecodeError::InvalidValue);
-        }
-
-        let nanos_per_second = 1_000_000_000i128;
-        let total_nanos = (seconds as i128) * nanos_per_second + (nanos as i128);
-
-        let system_time = if total_nanos >= 0 {
-            let duration = Duration::new(
-                (total_nanos / nanos_per_second) as u64,
-                (total_nanos % nanos_per_second) as u32,
-            );
-            UNIX_EPOCH + duration
-        } else {
-            let abs_total_nanos = (-total_nanos) as u128;
-            let abs_seconds = (abs_total_nanos / (nanos_per_second as u128)) as u64;
-            let abs_nanos = (abs_total_nanos % (nanos_per_second as u128)) as u32;
-            UNIX_EPOCH - Duration::new(abs_seconds, abs_nanos)
+        let mut reader = WireReader::new(buf);
+        let wire_value = EpochTimestampWireValue {
+            seconds: reader.read_value::<i64>()?,
+            nanos: reader.read_value::<u32>()?,
         };
-
-        Ok((system_time, seconds_used + nanos_used))
+        let system_time = wire_value
+            .into_system_time()
+            .ok_or(DecodeError::InvalidValue(
+                InvalidWireValue::TemporalNanoseconds,
+            ))?;
+        reader.finish(system_time)
     }
 }
 
@@ -160,13 +267,13 @@ impl WireDecode for SystemTime {
 impl WireDecode for Uuid {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let (hi, hi_used) = u64::decode_from(buf)?;
-        let (lo, lo_used) =
-            u64::decode_from(buf.get(hi_used..).ok_or(DecodeError::BufferTooSmall)?)?;
+        let mut reader = WireReader::new(buf);
+        let hi = reader.read_value::<u64>()?;
+        let lo = reader.read_value::<u64>()?;
         let mut bytes = [0u8; 16];
         bytes[..8].copy_from_slice(&hi.to_be_bytes());
         bytes[8..].copy_from_slice(&lo.to_be_bytes());
-        Ok((Uuid::from_bytes(bytes), hi_used + lo_used))
+        reader.finish(Uuid::from_bytes(bytes))
     }
 }
 
@@ -174,9 +281,11 @@ impl WireDecode for Uuid {
 impl WireDecode for Url {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let (string, used) = String::decode_from(buf)?;
-        let url = Url::parse(&string).map_err(|_| DecodeError::InvalidValue)?;
-        Ok((url, used))
+        let mut reader = WireReader::new(buf);
+        let string = reader.read_value::<String>()?;
+        let url =
+            Url::parse(&string).map_err(|_| DecodeError::InvalidValue(InvalidWireValue::Url))?;
+        reader.finish(url)
     }
 }
 
@@ -184,163 +293,84 @@ impl WireDecode for Url {
 impl WireDecode for DateTime<Utc> {
     #[inline]
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let (seconds, seconds_used) = i64::decode_from(buf)?;
-        let (nanos, nanos_used) =
-            u32::decode_from(buf.get(seconds_used..).ok_or(DecodeError::BufferTooSmall)?)?;
-        let date_time =
-            DateTime::from_timestamp(seconds, nanos).ok_or(DecodeError::InvalidValue)?;
-        Ok((date_time, seconds_used + nanos_used))
+        let mut reader = WireReader::new(buf);
+        let wire_value = EpochTimestampWireValue {
+            seconds: reader.read_value::<i64>()?,
+            nanos: reader.read_value::<u32>()?,
+        };
+        let date_time = wire_value
+            .into_date_time_utc()
+            .ok_or(DecodeError::InvalidValue(InvalidWireValue::DateTimeUtc))?;
+        reader.finish(date_time)
     }
 }
 
 impl<T: WireDecode> WireDecode for Option<T> {
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        if buf.is_empty() {
-            return Err(DecodeError::BufferTooSmall);
-        }
-
-        match buf[0] {
-            0 => Ok((None, OPTION_FLAG_SIZE)),
-            1 => {
-                let (value, value_size) = T::decode_from(&buf[OPTION_FLAG_SIZE..])?;
-                Ok((Some(value), OPTION_FLAG_SIZE + value_size))
+        let mut reader = WireReader::new(buf);
+        match OptionWireTag::try_from(reader.read_byte()?)? {
+            OptionWireTag::None => reader.finish(None),
+            OptionWireTag::Some => {
+                let value = reader.read_value::<T>()?;
+                reader.finish(Some(value))
             }
-            _ => Err(DecodeError::InvalidBool),
         }
     }
 }
 
 impl<T: WireDecode, E: WireDecode> WireDecode for Result<T, E> {
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        if buf.is_empty() {
-            return Err(DecodeError::BufferTooSmall);
-        }
-
-        match buf[0] {
-            0 => {
-                let (value, value_size) = T::decode_from(&buf[RESULT_TAG_SIZE..])?;
-                Ok((Ok(value), RESULT_TAG_SIZE + value_size))
+        let mut reader = WireReader::new(buf);
+        match ResultWireTag::try_from(reader.read_byte()?)? {
+            ResultWireTag::Ok => {
+                let value = reader.read_value::<T>()?;
+                reader.finish(Ok(value))
             }
-            1 => {
-                let (err, err_size) = E::decode_from(&buf[RESULT_TAG_SIZE..])?;
-                Ok((Err(err), RESULT_TAG_SIZE + err_size))
+            ResultWireTag::Err => {
+                let value = reader.read_value::<E>()?;
+                reader.finish(Err(value))
             }
-            _ => Err(DecodeError::InvalidBool),
         }
     }
 }
 
-pub trait FixedSizeWireDecode: Sized {
-    const WIRE_SIZE: usize;
-    fn decode_fixed(buf: &[u8]) -> Result<Self, DecodeError>;
-}
-
-macro_rules! impl_fixed_size_decode {
-    ($($ty:ty),*) => {
-        $(
-            impl FixedSizeWireDecode for $ty {
-                const WIRE_SIZE: usize = core::mem::size_of::<$ty>();
-
-                #[inline]
-                fn decode_fixed(buf: &[u8]) -> Result<Self, DecodeError> {
-                    let bytes: [u8; Self::WIRE_SIZE] = buf.get(..Self::WIRE_SIZE)
-                        .ok_or(DecodeError::BufferTooSmall)?
-                        .try_into()
-                        .map_err(|_| DecodeError::BufferTooSmall)?;
-                    Ok(<$ty>::from_le_bytes(bytes))
-                }
-            }
-        )*
-    };
-}
-
-impl_fixed_size_decode!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
-
-impl FixedSizeWireDecode for bool {
-    const WIRE_SIZE: usize = 1;
-
-    #[inline]
-    fn decode_fixed(buf: &[u8]) -> Result<Self, DecodeError> {
-        if buf.is_empty() {
-            return Err(DecodeError::BufferTooSmall);
-        }
-        match buf[0] {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(DecodeError::InvalidBool),
-        }
-    }
-}
-
-impl FixedSizeWireDecode for isize {
-    const WIRE_SIZE: usize = 8;
-
-    #[inline]
-    fn decode_fixed(buf: &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 8] = buf
-            .get(..8)
-            .ok_or(DecodeError::BufferTooSmall)?
-            .try_into()
-            .map_err(|_| DecodeError::BufferTooSmall)?;
-        Ok(i64::from_le_bytes(bytes) as isize)
-    }
-}
-
-impl FixedSizeWireDecode for usize {
-    const WIRE_SIZE: usize = 8;
-
-    #[inline]
-    fn decode_fixed(buf: &[u8]) -> Result<Self, DecodeError> {
-        let bytes: [u8; 8] = buf
-            .get(..8)
-            .ok_or(DecodeError::BufferTooSmall)?
-            .try_into()
-            .map_err(|_| DecodeError::BufferTooSmall)?;
-        Ok(u64::from_le_bytes(bytes) as usize)
-    }
-}
-
-impl<T: WireDecode> WireDecode for Vec<T> {
+impl<T: WireDecode + WireEncode> WireDecode for Vec<T> {
     fn decode_from(buf: &[u8]) -> DecodeResult<Self> {
-        let count_bytes: [u8; 4] = buf
-            .get(..VEC_COUNT_SIZE)
-            .ok_or(DecodeError::BufferTooSmall)?
-            .try_into()
-            .map_err(|_| DecodeError::BufferTooSmall)?;
-        let count = u32::from_le_bytes(count_bytes) as usize;
+        let mut reader = WireReader::new(buf);
+        let count = reader.read_value::<u32>()? as usize;
 
         if count == 0 {
-            return Ok((Vec::new(), VEC_COUNT_SIZE));
+            return reader.finish(Vec::new());
         }
 
-        if T::IS_BLITTABLE {
-            let element_size = core::mem::size_of::<T>();
-            let data_size = count * element_size;
-            let total_size = VEC_COUNT_SIZE + data_size;
-
-            if buf.len() < total_size {
-                return Err(DecodeError::BufferTooSmall);
+        match T::ENCODING_KIND {
+            WireEncodingKind::Blittable => {
+                let element_size = core::mem::size_of::<T>();
+                let data_size = count * element_size;
+                let element_bytes = reader.read_exact(data_size)?;
+                let mut result = Vec::<MaybeUninit<T>>::with_capacity(count);
+                unsafe {
+                    result.set_len(count);
+                    core::ptr::copy_nonoverlapping(
+                        element_bytes.as_ptr(),
+                        result.as_mut_ptr() as *mut u8,
+                        data_size,
+                    );
+                    let result = ManuallyDrop::new(result);
+                    let initialized_values =
+                        Vec::from_raw_parts(result.as_ptr() as *mut T, count, result.capacity());
+                    return reader.finish(initialized_values);
+                }
             }
-
-            let mut result = Vec::with_capacity(count);
-            let src_ptr = buf[VEC_COUNT_SIZE..].as_ptr();
-            unsafe {
-                result.set_len(count);
-                core::ptr::copy_nonoverlapping(src_ptr, result.as_mut_ptr() as *mut u8, data_size);
-            }
-            return Ok((result, total_size));
+            WireEncodingKind::General => {}
         }
 
-        let mut result = Vec::with_capacity(count);
-        let mut offset = VEC_COUNT_SIZE;
+        let values = (0..count).try_fold(Vec::with_capacity(count), |mut values, _| {
+            values.push(reader.read_value::<T>()?);
+            Ok(values)
+        })?;
 
-        for _ in 0..count {
-            let (element, size) = T::decode_from(&buf[offset..])?;
-            result.push(element);
-            offset += size;
-        }
-
-        Ok((result, offset))
+        reader.finish(values)
     }
 }
 
@@ -432,7 +462,6 @@ mod tests {
 
     mod large_payload_roundtrip {
         use super::*;
-        use crate::wire::encode::WireSize;
 
         #[test]
         fn string_1mb_roundtrip() {
@@ -503,7 +532,6 @@ mod tests {
 
     mod unicode_roundtrip {
         use super::*;
-        use crate::wire::encode::WireSize;
 
         #[test]
         fn emoji_roundtrip() {

@@ -1,4 +1,4 @@
-use boltffi_core::wire::{DecodeError, WireDecode, WireEncode, WireSize};
+use boltffi_core::wire::{DecodeError, InvalidWireValue, WireDecode, WireEncode};
 use boltffi_macros::data;
 
 extern crate self as boltffi;
@@ -188,7 +188,10 @@ mod primitives {
     fn bool_invalid_value_is_error() {
         let buf = [2u8];
         let result = bool::decode_from(&buf);
-        assert!(matches!(result, Err(DecodeError::InvalidBool)));
+        assert!(matches!(
+            result,
+            Err(DecodeError::InvalidValue(InvalidWireValue::Bool))
+        ));
     }
 
     #[test]

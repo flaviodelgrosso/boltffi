@@ -1,9 +1,11 @@
 use crate::wire::constants::*;
+use crate::wire::shape::WireShape;
+use crate::wire::temporal::{DurationWireValue, EpochTimestampWireValue};
 
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, Utc};
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 #[cfg(feature = "uuid")]
 use uuid::Uuid;
@@ -11,43 +13,101 @@ use uuid::Uuid;
 #[cfg(feature = "url")]
 use url::Url;
 
-pub trait WireSize {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireEncodingKind {
+    General,
+    Blittable,
+}
+
+pub trait WireEncode {
+    const ENCODING_KIND: WireEncodingKind = WireEncodingKind::General;
+
     fn is_fixed_size() -> bool
     where
         Self: Sized,
     {
         false
     }
+
     fn fixed_size() -> Option<usize>
     where
         Self: Sized,
     {
         None
     }
+
     fn wire_size(&self) -> usize;
+
+    fn encode_to(&self, buf: &mut [u8]) -> usize;
 }
 
-pub trait WireEncode: WireSize {
-    const IS_BLITTABLE: bool = false;
-    fn encode_to(&self, buf: &mut [u8]) -> usize;
+struct WireWriter<'buffer> {
+    buffer: &'buffer mut [u8],
+    offset: usize,
+}
+
+impl<'buffer> WireWriter<'buffer> {
+    #[inline]
+    fn new(buffer: &'buffer mut [u8]) -> Self {
+        Self { buffer, offset: 0 }
+    }
+
+    #[inline]
+    fn write_byte(&mut self, value: u8) {
+        self.buffer[self.offset] = value;
+        self.offset += 1;
+    }
+
+    #[inline]
+    fn write_bytes(&mut self, value: &[u8]) {
+        let end = self.offset + value.len();
+        self.buffer[self.offset..end].copy_from_slice(value);
+        self.offset = end;
+    }
+
+    #[inline]
+    fn write_value<T: WireEncode + ?Sized>(&mut self, value: &T) {
+        let written = value.encode_to(&mut self.buffer[self.offset..]);
+        self.offset += written;
+    }
+
+    #[inline]
+    fn write_length_prefixed_bytes(&mut self, value: &[u8]) {
+        self.write_bytes(&(value.len() as u32).to_le_bytes());
+        self.write_bytes(value);
+    }
+
+    #[inline]
+    fn write_count(&mut self, count: usize) {
+        self.write_bytes(&(count as u32).to_le_bytes());
+    }
+
+    #[inline]
+    fn finish(self) -> usize {
+        self.offset
+    }
 }
 
 macro_rules! impl_wire_primitive {
     ($($ty:ty),*) => {
         $(
-            impl WireSize for $ty {
-                #[inline]
-                fn is_fixed_size() -> bool { true }
-
-                #[inline]
-                fn fixed_size() -> Option<usize> { Some(core::mem::size_of::<$ty>()) }
-
-                #[inline]
-                fn wire_size(&self) -> usize { core::mem::size_of::<$ty>() }
-            }
-
             impl WireEncode for $ty {
-                const IS_BLITTABLE: bool = true;
+                const ENCODING_KIND: WireEncodingKind = WireEncodingKind::Blittable;
+
+                #[inline]
+                fn is_fixed_size() -> bool {
+                    <$ty as WireShape>::LAYOUT.is_fixed_size()
+                }
+
+                #[inline]
+                fn fixed_size() -> Option<usize> {
+                    <$ty as WireShape>::LAYOUT.fixed_size()
+                }
+
+                #[inline]
+                fn wire_size(&self) -> usize {
+                    core::mem::size_of::<$ty>()
+                }
 
                 #[inline]
                 fn encode_to(&self, buf: &mut [u8]) -> usize {
@@ -62,24 +122,58 @@ macro_rules! impl_wire_primitive {
 
 impl_wire_primitive!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 
-impl WireSize for bool {
+macro_rules! impl_casted_wire_encode {
+    ($($ty:ty => $repr:ty),* $(,)?) => {
+        $(
+            impl WireEncode for $ty {
+                const ENCODING_KIND: WireEncodingKind = WireEncodingKind::Blittable;
+
+                #[inline]
+                fn is_fixed_size() -> bool {
+                    <$ty as WireShape>::LAYOUT.is_fixed_size()
+                }
+
+                #[inline]
+                fn fixed_size() -> Option<usize> {
+                    <$ty as WireShape>::LAYOUT.fixed_size()
+                }
+
+                #[inline]
+                fn wire_size(&self) -> usize {
+                    <$ty as WireShape>::LAYOUT.fixed_size().unwrap_or(0)
+                }
+
+                #[inline]
+                fn encode_to(&self, buffer: &mut [u8]) -> usize {
+                    let bytes = (*self as $repr).to_le_bytes();
+                    buffer[..bytes.len()].copy_from_slice(&bytes);
+                    bytes.len()
+                }
+            }
+        )*
+    };
+}
+
+impl_casted_wire_encode!(isize => i64, usize => u64);
+
+impl WireEncode for bool {
+    const ENCODING_KIND: WireEncodingKind = WireEncodingKind::Blittable;
+
     #[inline]
     fn is_fixed_size() -> bool {
-        true
+        <bool as WireShape>::LAYOUT.is_fixed_size()
     }
 
     #[inline]
     fn fixed_size() -> Option<usize> {
-        Some(1)
+        <bool as WireShape>::LAYOUT.fixed_size()
     }
 
     #[inline]
     fn wire_size(&self) -> usize {
         1
     }
-}
 
-impl WireEncode for bool {
     #[inline]
     fn encode_to(&self, buf: &mut [u8]) -> usize {
         buf[0] = if *self { 1 } else { 0 };
@@ -87,190 +181,93 @@ impl WireEncode for bool {
     }
 }
 
-impl WireSize for isize {
-    #[inline]
-    fn is_fixed_size() -> bool {
-        true
-    }
-
-    #[inline]
-    fn fixed_size() -> Option<usize> {
-        Some(8)
-    }
-
-    #[inline]
-    fn wire_size(&self) -> usize {
-        8
-    }
-}
-
-impl WireEncode for isize {
-    #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
-        let value = *self as i64;
-        let bytes = value.to_le_bytes();
-        buf[..8].copy_from_slice(&bytes);
-        8
-    }
-}
-
-impl WireSize for usize {
-    #[inline]
-    fn is_fixed_size() -> bool {
-        true
-    }
-
-    #[inline]
-    fn fixed_size() -> Option<usize> {
-        Some(8)
-    }
-
-    #[inline]
-    fn wire_size(&self) -> usize {
-        8
-    }
-}
-
-impl WireEncode for usize {
-    #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
-        let value = *self as u64;
-        let bytes = value.to_le_bytes();
-        buf[..8].copy_from_slice(&bytes);
-        8
-    }
-}
-
-impl WireSize for str {
-    #[inline]
-    fn wire_size(&self) -> usize {
-        STRING_LEN_SIZE + self.len()
-    }
-}
-
 impl WireEncode for str {
     #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
-        let len = self.len() as u32;
-        buf[..STRING_LEN_SIZE].copy_from_slice(&len.to_le_bytes());
-        buf[STRING_LEN_SIZE..STRING_LEN_SIZE + self.len()].copy_from_slice(self.as_bytes());
+    fn wire_size(&self) -> usize {
         STRING_LEN_SIZE + self.len()
     }
-}
-
-impl WireSize for String {
-    #[inline]
-    fn is_fixed_size() -> bool {
-        false
-    }
 
     #[inline]
-    fn fixed_size() -> Option<usize> {
-        None
-    }
-
-    #[inline]
-    fn wire_size(&self) -> usize {
-        self.as_str().wire_size()
+    fn encode_to(&self, buffer: &mut [u8]) -> usize {
+        let mut writer = WireWriter::new(buffer);
+        writer.write_length_prefixed_bytes(self.as_bytes());
+        writer.finish()
     }
 }
 
 impl WireEncode for String {
+    #[inline]
+    fn wire_size(&self) -> usize {
+        self.as_str().wire_size()
+    }
+
     #[inline]
     fn encode_to(&self, buf: &mut [u8]) -> usize {
         self.as_str().encode_to(buf)
     }
 }
 
-impl WireSize for Duration {
-    #[inline]
-    fn is_fixed_size() -> bool {
-        true
-    }
-
-    #[inline]
-    fn fixed_size() -> Option<usize> {
-        Some(12)
-    }
-
-    #[inline]
-    fn wire_size(&self) -> usize {
-        12
-    }
-}
-
 impl WireEncode for Duration {
     #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
-        let seconds = self.as_secs();
-        let nanos = self.subsec_nanos();
-        seconds.encode_to(&mut buf[..8]);
-        nanos.encode_to(&mut buf[8..12]);
-        12
-    }
-}
-
-impl WireSize for SystemTime {
-    #[inline]
     fn is_fixed_size() -> bool {
-        true
+        <Duration as WireShape>::LAYOUT.is_fixed_size()
     }
 
     #[inline]
     fn fixed_size() -> Option<usize> {
-        Some(12)
+        <Duration as WireShape>::LAYOUT.fixed_size()
     }
 
     #[inline]
     fn wire_size(&self) -> usize {
         12
+    }
+
+    #[inline]
+    fn encode_to(&self, buffer: &mut [u8]) -> usize {
+        DurationWireValue::from(*self).write_to(buffer)
     }
 }
 
 impl WireEncode for SystemTime {
     #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
-        let nanos_per_second = 1_000_000_000i128;
-        let total_nanos: i128 = match self.duration_since(UNIX_EPOCH) {
-            Ok(duration) => {
-                (duration.as_secs() as i128) * nanos_per_second + (duration.subsec_nanos() as i128)
-            }
-            Err(error) => {
-                let duration = error.duration();
-                -((duration.as_secs() as i128) * nanos_per_second
-                    + (duration.subsec_nanos() as i128))
-            }
-        };
-
-        let seconds = total_nanos.div_euclid(nanos_per_second) as i64;
-        let nanos = total_nanos.rem_euclid(nanos_per_second) as u32;
-
-        seconds.encode_to(&mut buf[..8]);
-        nanos.encode_to(&mut buf[8..12]);
-        12
-    }
-}
-
-#[cfg(feature = "uuid")]
-impl WireSize for Uuid {
-    #[inline]
     fn is_fixed_size() -> bool {
-        true
+        <SystemTime as WireShape>::LAYOUT.is_fixed_size()
     }
 
     #[inline]
     fn fixed_size() -> Option<usize> {
-        Some(16)
+        <SystemTime as WireShape>::LAYOUT.fixed_size()
+    }
+
+    #[inline]
+    fn wire_size(&self) -> usize {
+        12
+    }
+
+    #[inline]
+    fn encode_to(&self, buffer: &mut [u8]) -> usize {
+        EpochTimestampWireValue::from(*self).write_to(buffer)
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl WireEncode for Uuid {
+    #[inline]
+    fn is_fixed_size() -> bool {
+        <Uuid as WireShape>::LAYOUT.is_fixed_size()
+    }
+
+    #[inline]
+    fn fixed_size() -> Option<usize> {
+        <Uuid as WireShape>::LAYOUT.fixed_size()
     }
 
     #[inline]
     fn wire_size(&self) -> usize {
         16
     }
-}
 
-#[cfg(feature = "uuid")]
-impl WireEncode for Uuid {
     #[inline]
     fn encode_to(&self, buf: &mut [u8]) -> usize {
         let bytes = self.as_bytes();
@@ -283,15 +280,12 @@ impl WireEncode for Uuid {
 }
 
 #[cfg(feature = "url")]
-impl WireSize for Url {
+impl WireEncode for Url {
     #[inline]
     fn wire_size(&self) -> usize {
         self.as_str().wire_size()
     }
-}
 
-#[cfg(feature = "url")]
-impl WireEncode for Url {
     #[inline]
     fn encode_to(&self, buf: &mut [u8]) -> usize {
         self.as_str().encode_to(buf)
@@ -299,46 +293,29 @@ impl WireEncode for Url {
 }
 
 #[cfg(feature = "chrono")]
-impl WireSize for DateTime<Utc> {
+impl WireEncode for DateTime<Utc> {
     #[inline]
     fn is_fixed_size() -> bool {
-        true
+        <DateTime<Utc> as WireShape>::LAYOUT.is_fixed_size()
     }
 
     #[inline]
     fn fixed_size() -> Option<usize> {
-        Some(12)
+        <DateTime<Utc> as WireShape>::LAYOUT.fixed_size()
     }
 
     #[inline]
     fn wire_size(&self) -> usize {
         12
     }
-}
 
-#[cfg(feature = "chrono")]
-impl WireEncode for DateTime<Utc> {
     #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
-        let seconds = self.timestamp();
-        let nanos = self.timestamp_subsec_nanos();
-        seconds.encode_to(&mut buf[..8]);
-        nanos.encode_to(&mut buf[8..12]);
-        12
+    fn encode_to(&self, buffer: &mut [u8]) -> usize {
+        EpochTimestampWireValue::from(*self).write_to(buffer)
     }
 }
 
-impl<T: WireSize> WireSize for Option<T> {
-    #[inline]
-    fn is_fixed_size() -> bool {
-        false
-    }
-
-    #[inline]
-    fn fixed_size() -> Option<usize> {
-        None
-    }
-
+impl<T: WireEncode> WireEncode for Option<T> {
     #[inline]
     fn wire_size(&self) -> usize {
         match self {
@@ -346,202 +323,157 @@ impl<T: WireSize> WireSize for Option<T> {
             None => OPTION_FLAG_SIZE,
         }
     }
-}
 
-impl<T: WireEncode> WireEncode for Option<T> {
     #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
+    fn encode_to(&self, buffer: &mut [u8]) -> usize {
+        let mut writer = WireWriter::new(buffer);
         match self {
             Some(value) => {
-                buf[0] = 1;
-                OPTION_FLAG_SIZE + value.encode_to(&mut buf[OPTION_FLAG_SIZE..])
+                writer.write_byte(1);
+                writer.write_value(value);
             }
-            None => {
-                buf[0] = 0;
-                OPTION_FLAG_SIZE
-            }
+            None => writer.write_byte(0),
         }
-    }
-}
-
-impl<T: WireEncode> WireSize for Vec<T> {
-    #[inline]
-    fn is_fixed_size() -> bool {
-        false
-    }
-
-    #[inline]
-    fn fixed_size() -> Option<usize> {
-        None
-    }
-
-    #[inline]
-    fn wire_size(&self) -> usize {
-        if T::IS_BLITTABLE {
-            VEC_COUNT_SIZE + self.len() * core::mem::size_of::<T>()
-        } else {
-            VEC_COUNT_SIZE
-                + self
-                    .iter()
-                    .map(|element| element.wire_size())
-                    .sum::<usize>()
-        }
+        writer.finish()
     }
 }
 
 impl<T: WireEncode> WireEncode for Vec<T> {
     #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
-        let count = self.len() as u32;
-        buf[..VEC_COUNT_SIZE].copy_from_slice(&count.to_le_bytes());
-
-        if self.is_empty() {
-            return VEC_COUNT_SIZE;
-        }
-
-        if T::IS_BLITTABLE {
-            let byte_count = self.len() * core::mem::size_of::<T>();
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.as_ptr() as *const u8,
-                    buf.as_mut_ptr().add(VEC_COUNT_SIZE),
-                    byte_count,
-                );
+    fn wire_size(&self) -> usize {
+        match T::ENCODING_KIND {
+            WireEncodingKind::Blittable => VEC_COUNT_SIZE + self.len() * core::mem::size_of::<T>(),
+            WireEncodingKind::General => {
+                VEC_COUNT_SIZE + self.iter().map(WireEncode::wire_size).sum::<usize>()
             }
-            VEC_COUNT_SIZE + byte_count
-        } else {
-            let mut offset = VEC_COUNT_SIZE;
-            self.iter().for_each(|element| {
-                offset += element.encode_to(&mut buf[offset..]);
-            });
-            offset
         }
     }
-}
 
-impl<T: WireEncode> WireSize for [T] {
     #[inline]
-    fn wire_size(&self) -> usize {
-        if T::IS_BLITTABLE {
-            VEC_COUNT_SIZE + core::mem::size_of_val(self)
-        } else {
-            VEC_COUNT_SIZE
-                + self
-                    .iter()
-                    .map(|element| element.wire_size())
-                    .sum::<usize>()
+    fn encode_to(&self, buffer: &mut [u8]) -> usize {
+        let mut writer = WireWriter::new(buffer);
+        writer.write_count(self.len());
+
+        if self.is_empty() {
+            return writer.finish();
+        }
+
+        match T::ENCODING_KIND {
+            WireEncodingKind::Blittable => {
+                let byte_count = self.len() * core::mem::size_of::<T>();
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        self.as_ptr() as *const u8,
+                        writer.buffer.as_mut_ptr().add(writer.offset),
+                        byte_count,
+                    );
+                }
+                writer.offset += byte_count;
+                writer.finish()
+            }
+            WireEncodingKind::General => {
+                self.iter().for_each(|element| writer.write_value(element));
+                writer.finish()
+            }
         }
     }
 }
 
 impl<T: WireEncode> WireEncode for [T] {
     #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
-        let count = self.len() as u32;
-        buf[..VEC_COUNT_SIZE].copy_from_slice(&count.to_le_bytes());
+    fn wire_size(&self) -> usize {
+        match T::ENCODING_KIND {
+            WireEncodingKind::Blittable => VEC_COUNT_SIZE + core::mem::size_of_val(self),
+            WireEncodingKind::General => {
+                VEC_COUNT_SIZE + self.iter().map(WireEncode::wire_size).sum::<usize>()
+            }
+        }
+    }
+
+    #[inline]
+    fn encode_to(&self, buffer: &mut [u8]) -> usize {
+        let mut writer = WireWriter::new(buffer);
+        writer.write_count(self.len());
 
         if self.is_empty() {
-            return VEC_COUNT_SIZE;
+            return writer.finish();
         }
 
-        if T::IS_BLITTABLE {
-            let byte_count = core::mem::size_of_val(self);
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.as_ptr() as *const u8,
-                    buf.as_mut_ptr().add(VEC_COUNT_SIZE),
-                    byte_count,
-                );
+        match T::ENCODING_KIND {
+            WireEncodingKind::Blittable => {
+                let byte_count = core::mem::size_of_val(self);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        self.as_ptr() as *const u8,
+                        writer.buffer.as_mut_ptr().add(writer.offset),
+                        byte_count,
+                    );
+                }
+                writer.offset += byte_count;
+                writer.finish()
             }
-            VEC_COUNT_SIZE + byte_count
-        } else {
-            let mut offset = VEC_COUNT_SIZE;
-            self.iter().for_each(|element| {
-                offset += element.encode_to(&mut buf[offset..]);
-            });
-            offset
-        }
-    }
-}
-
-impl<T: WireSize, E: WireSize> WireSize for Result<T, E> {
-    #[inline]
-    fn is_fixed_size() -> bool {
-        false
-    }
-
-    #[inline]
-    fn fixed_size() -> Option<usize> {
-        None
-    }
-
-    #[inline]
-    fn wire_size(&self) -> usize {
-        match self {
-            Ok(value) => RESULT_TAG_SIZE + value.wire_size(),
-            Err(err) => RESULT_TAG_SIZE + err.wire_size(),
+            WireEncodingKind::General => {
+                self.iter().for_each(|element| writer.write_value(element));
+                writer.finish()
+            }
         }
     }
 }
 
 impl<T: WireEncode, E: WireEncode> WireEncode for Result<T, E> {
     #[inline]
-    fn encode_to(&self, buf: &mut [u8]) -> usize {
+    fn wire_size(&self) -> usize {
+        match self {
+            Ok(value) => RESULT_TAG_SIZE + value.wire_size(),
+            Err(error) => RESULT_TAG_SIZE + error.wire_size(),
+        }
+    }
+
+    #[inline]
+    fn encode_to(&self, buffer: &mut [u8]) -> usize {
+        let mut writer = WireWriter::new(buffer);
         match self {
             Ok(value) => {
-                buf[0] = 0;
-                RESULT_TAG_SIZE + value.encode_to(&mut buf[RESULT_TAG_SIZE..])
+                writer.write_byte(0);
+                writer.write_value(value);
             }
             Err(err) => {
-                buf[0] = 1;
-                RESULT_TAG_SIZE + err.encode_to(&mut buf[RESULT_TAG_SIZE..])
+                writer.write_byte(1);
+                writer.write_value(err);
             }
         }
+        writer.finish()
     }
 }
 
-impl WireSize for () {
+impl WireEncode for () {
     #[inline]
     fn is_fixed_size() -> bool {
-        true
+        <() as WireShape>::LAYOUT.is_fixed_size()
     }
 
     #[inline]
     fn fixed_size() -> Option<usize> {
-        Some(0)
+        <() as WireShape>::LAYOUT.fixed_size()
     }
 
     #[inline]
     fn wire_size(&self) -> usize {
         0
     }
-}
 
-impl WireEncode for () {
     #[inline]
     fn encode_to(&self, _buf: &mut [u8]) -> usize {
         0
     }
 }
 
-impl<T: WireSize + ?Sized> WireSize for &T {
-    #[inline]
-    fn is_fixed_size() -> bool {
-        false
-    }
-
-    #[inline]
-    fn fixed_size() -> Option<usize> {
-        None
-    }
-
+impl<T: WireEncode + ?Sized> WireEncode for &T {
     #[inline]
     fn wire_size(&self) -> usize {
         (*self).wire_size()
     }
-}
 
-impl<T: WireEncode + ?Sized> WireEncode for &T {
     #[inline]
     fn encode_to(&self, buf: &mut [u8]) -> usize {
         (*self).encode_to(buf)
@@ -887,14 +819,14 @@ mod tests {
 
         #[test]
         fn primitive_is_blittable() {
-            assert!(i32::IS_BLITTABLE);
-            assert!(f64::IS_BLITTABLE);
-            assert!(u8::IS_BLITTABLE);
+            assert_eq!(i32::ENCODING_KIND, WireEncodingKind::Blittable);
+            assert_eq!(f64::ENCODING_KIND, WireEncodingKind::Blittable);
+            assert_eq!(u8::ENCODING_KIND, WireEncodingKind::Blittable);
         }
 
         #[test]
         fn string_is_not_blittable() {
-            assert!(!String::IS_BLITTABLE);
+            assert_eq!(String::ENCODING_KIND, WireEncodingKind::General);
         }
 
         #[test]

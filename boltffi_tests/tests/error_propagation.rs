@@ -1,4 +1,4 @@
-use boltffi::__private::wire::{WireDecode, WireEncode, WireSize};
+use boltffi::__private::wire::{WireDecode, WireEncode};
 
 mod result_wire_encoding {
     use super::*;

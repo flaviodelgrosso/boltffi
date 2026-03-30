@@ -17,7 +17,7 @@ fn decode_i32_vec(buf: FfiBuf) -> Vec<i32> {
     }
 }
 
-fn encode<T: WireEncode + boltffi_core::wire::WireSize>(value: &T) -> Vec<u8> {
+fn encode<T: WireEncode>(value: &T) -> Vec<u8> {
     let size = value.wire_size();
     let mut buf = vec![0u8; size];
     value.encode_to(&mut buf);
