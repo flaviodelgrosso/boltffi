@@ -937,6 +937,44 @@ mod tests {
         insta::assert_snapshot!(template.render().unwrap());
     }
 
+    #[test]
+    fn async_function_param_cleanup_runs_after_await() {
+        let doc: Option<String> = None;
+        let params = vec![TsParam {
+            name: "message".to_string(),
+            ts_type: "Message".to_string(),
+            input_route: TsInputRoute::CodecEncoded {
+                codec_name: "MessageCodec".to_string(),
+            },
+        }];
+        let rendered = AsyncFunctionTemplate {
+            name: "sendMessage",
+            params: &params,
+            return_type_str: "Response",
+            entry_ffi_name: "boltffi_send_message",
+            poll_sync_ffi_name: "boltffi_send_message_poll_sync",
+            complete_ffi_name: "boltffi_send_message_complete",
+            panic_message_ffi_name: "boltffi_send_message_panic_message",
+            free_ffi_name: "boltffi_send_message_free",
+            call_args: "message_writer.ptr, message_writer.len",
+            wrapper_code: "const message_writer = _module.allocWriter(MessageCodec.size(message));\n  MessageCodec.encode(message_writer, message);",
+            cleanup_code: "_module.freeWriter(message_writer);",
+            return_route: &TsOutputRoute::packed("ResponseCodec.decode(reader)".to_string()),
+            return_callback: &None,
+            doc: &doc,
+        }
+        .render()
+        .unwrap();
+
+        let cleanup_index = rendered
+            .find("_module.freeWriter(message_writer);")
+            .unwrap();
+        let await_index = rendered
+            .find("const awaitedHandle = await _module.asyncManager.pollAsync(")
+            .unwrap();
+        assert!(cleanup_index > await_index);
+    }
+
     fn sync_callback_fixture() -> TsCallback {
         TsCallback {
             interface_name: "ValueHandler".to_string(),
@@ -1188,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn class_async_param_cleanup_runs_before_await() {
+    fn class_async_param_cleanup_runs_after_await() {
         let class = TsClass {
             class_name: "Database".to_string(),
             ffi_free: "boltffi_database_free".to_string(),
@@ -1225,7 +1263,7 @@ mod tests {
         let await_index = rendered
             .find("const awaitedHandle = await _module.asyncManager.pollAsync(")
             .unwrap();
-        assert!(cleanup_index < await_index);
+        assert!(cleanup_index > await_index);
     }
 
     #[test]
