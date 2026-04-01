@@ -946,6 +946,7 @@ impl<'a> KotlinLowerer<'a> {
             class_name,
             fields,
             is_blittable: record.is_blittable(),
+            is_error: record.is_error,
             struct_size: self.record_struct_size(record.id.as_str()),
             constructors,
             methods,
@@ -2151,6 +2152,12 @@ impl<'a> KotlinLowerer<'a> {
                         .resolve_enum(id)
                         .map(|e| e.is_error)
                         .unwrap_or(false),
+                    TypeExpr::Record(id) => self
+                        .contract
+                        .catalog
+                        .resolve_record(id)
+                        .map(|record| record.is_error)
+                        .unwrap_or(false),
                     _ => false,
                 };
                 (Some(err_type), throwable)
@@ -3128,6 +3135,9 @@ impl<'a> KotlinLowerer<'a> {
                 TypeExpr::Enum(id) if self.is_error_enum(id) => {
                     NamingConvention::class_name(id.as_str())
                 }
+                TypeExpr::Record(id) if self.is_error_record(id) => {
+                    NamingConvention::class_name(id.as_str())
+                }
                 _ => "FfiException".to_string(),
             },
             _ => "FfiException".to_string(),
@@ -3138,6 +3148,7 @@ impl<'a> KotlinLowerer<'a> {
         match err {
             TypeExpr::String => "FfiException(-1, err)".to_string(),
             TypeExpr::Enum(id) if self.is_error_enum(id) => "err".to_string(),
+            TypeExpr::Record(id) if self.is_error_record(id) => "err".to_string(),
             _ => "FfiException(-1, \"Error: $err\")".to_string(),
         }
     }
@@ -3147,6 +3158,14 @@ impl<'a> KotlinLowerer<'a> {
             .catalog
             .resolve_enum(id)
             .map(|enumeration| enumeration.is_error)
+            .unwrap_or(false)
+    }
+
+    fn is_error_record(&self, id: &RecordId) -> bool {
+        self.contract
+            .catalog
+            .resolve_record(id)
+            .map(|record| record.is_error)
             .unwrap_or(false)
     }
 

@@ -286,7 +286,9 @@ final class {{ callback.callbacks_class_name() }} {
         }
         WireReader reader = new WireReader(value);
         if (reader.readI8() != 0) {
-{%- if method.proxy.return_plan.result_has_typed_exception() %}
+{%- if method.proxy.return_plan.result_err_throws_directly() %}
+            BoltFFICallbackFutureMap.completeFailure(callbackData, {{ method.proxy.return_plan.result_err_decode() }});
+{%- elif method.proxy.return_plan.result_has_typed_exception() %}
             BoltFFICallbackFutureMap.completeFailure(callbackData, new {{ method.proxy.return_plan.result_err_exception_class() }}({{ method.proxy.return_plan.result_err_decode() }}));
 {%- elif method.proxy.return_plan.result_err_is_string() %}
             BoltFFICallbackFutureMap.completeFailure(callbackData, new RuntimeException({{ method.proxy.return_plan.result_err_decode() }}));

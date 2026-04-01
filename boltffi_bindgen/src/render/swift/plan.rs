@@ -290,6 +290,7 @@ pub struct SwiftRecord {
     pub class_name: String,
     pub fields: Vec<SwiftField>,
     pub is_blittable: bool,
+    pub is_error: bool,
     pub blittable_size: Option<usize>,
     pub constructors: Vec<SwiftConstructor>,
     pub methods: Vec<SwiftMethod>,

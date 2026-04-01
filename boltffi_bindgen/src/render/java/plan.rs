@@ -94,7 +94,9 @@ impl JavaModule {
     }
 
     pub fn has_data_enums(&self) -> bool {
-        self.enums.iter().any(|e| !e.is_c_style() && !e.is_error())
+        self.enums
+            .iter()
+            .any(|enumeration| enumeration.is_sealed() || enumeration.is_abstract())
     }
 
     pub fn has_closures(&self) -> bool {
@@ -142,7 +144,10 @@ impl JavaEnum {
     }
 
     pub fn is_error(&self) -> bool {
-        matches!(self.kind, JavaEnumKind::Error)
+        matches!(
+            self.kind,
+            JavaEnumKind::Error | JavaEnumKind::ErrorAbstractClass
+        )
     }
 
     pub fn is_sealed(&self) -> bool {
@@ -150,7 +155,10 @@ impl JavaEnum {
     }
 
     pub fn is_abstract(&self) -> bool {
-        matches!(self.kind, JavaEnumKind::AbstractClass)
+        matches!(
+            self.kind,
+            JavaEnumKind::AbstractClass | JavaEnumKind::ErrorAbstractClass
+        )
     }
 
     pub fn has_constructors(&self) -> bool {
@@ -182,6 +190,7 @@ pub enum JavaEnumKind {
     Error,
     SealedInterface,
     AbstractClass,
+    ErrorAbstractClass,
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +204,13 @@ pub struct JavaEnumVariant {
 impl JavaEnumVariant {
     pub fn is_unit(&self) -> bool {
         self.fields.is_empty()
+    }
+
+    pub fn message_field_name(&self) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|field| field.name == "message" && field.java_type == "String")
+            .map(|field| field.name.as_str())
     }
 }
 
@@ -214,6 +230,7 @@ pub struct JavaEnumField {
 pub struct JavaRecord {
     pub doc: Option<String>,
     pub shape: JavaRecordShape,
+    pub is_error: bool,
     pub class_name: String,
     pub fields: Vec<JavaRecordField>,
     pub default_constructors: Vec<JavaRecordDefaultConstructor>,
@@ -223,6 +240,12 @@ pub struct JavaRecord {
 }
 
 impl JavaRecord {
+    pub fn message_field(&self) -> Option<&JavaRecordField> {
+        self.fields
+            .iter()
+            .find(|field| field.name == "message" && field.java_type == "String")
+    }
+
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
@@ -232,7 +255,7 @@ impl JavaRecord {
     }
 
     pub fn uses_native_record_syntax(&self) -> bool {
-        matches!(self.shape, JavaRecordShape::NativeRecord)
+        matches!(self.shape, JavaRecordShape::NativeRecord) && !self.is_error
     }
 
     pub fn has_constructors(&self) -> bool {
@@ -337,6 +360,7 @@ pub enum JavaReturnRender {
         err_decode_expr: String,
         err_is_string: bool,
         err_exception_class: Option<String>,
+        err_throw_direct: bool,
     },
 }
 
@@ -410,6 +434,22 @@ impl JavaReturnPlan {
             self.render,
             JavaReturnRender::Result {
                 err_exception_class: Some(_),
+                ..
+            }
+        ) || matches!(
+            self.render,
+            JavaReturnRender::Result {
+                err_throw_direct: true,
+                ..
+            }
+        )
+    }
+
+    pub fn result_err_throws_directly(&self) -> bool {
+        matches!(
+            self.render,
+            JavaReturnRender::Result {
+                err_throw_direct: true,
                 ..
             }
         )

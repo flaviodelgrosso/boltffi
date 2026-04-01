@@ -74,7 +74,9 @@ public final class {{ module.class_name }} {
                     if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
                     WireReader reader = new WireReader(_buf);
                     if (reader.readI8() != 0) {
-{%- if ac.complete_return_plan.result_has_typed_exception() %}
+{%- if ac.complete_return_plan.result_err_throws_directly() %}
+                        throw {{ ac.complete_return_plan.result_err_decode() }};
+{%- elif ac.complete_return_plan.result_has_typed_exception() %}
                         throw new {{ ac.complete_return_plan.result_err_exception_class() }}({{ ac.complete_return_plan.result_err_decode() }});
 {%- elif ac.complete_return_plan.result_err_is_string() %}
                         throw new RuntimeException({{ ac.complete_return_plan.result_err_decode() }});
@@ -124,7 +126,9 @@ public final class {{ module.class_name }} {
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if func.return_plan.result_has_typed_exception() %}
+{%- if func.return_plan.result_err_throws_directly() %}
+            throw {{ func.return_plan.result_err_decode() }};
+{%- elif func.return_plan.result_has_typed_exception() %}
             throw new {{ func.return_plan.result_err_exception_class() }}({{ func.return_plan.result_err_decode() }});
 {%- elif func.return_plan.result_err_is_string() %}
             throw new RuntimeException({{ func.return_plan.result_err_decode() }});
@@ -168,7 +172,9 @@ public final class {{ module.class_name }} {
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if func.return_plan.result_has_typed_exception() %}
+{%- if func.return_plan.result_err_throws_directly() %}
+                throw {{ func.return_plan.result_err_decode() }};
+{%- elif func.return_plan.result_has_typed_exception() %}
                 throw new {{ func.return_plan.result_err_exception_class() }}({{ func.return_plan.result_err_decode() }});
 {%- elif func.return_plan.result_err_is_string() %}
                 throw new RuntimeException({{ func.return_plan.result_err_decode() }});

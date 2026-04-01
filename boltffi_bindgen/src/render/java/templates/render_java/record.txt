@@ -10,12 +10,20 @@ package {{ package_name }};
     }
 {% endfor %}{%- endif %}
 {% else -%}
-{{ self::javadoc_block(record.doc, "") }}public final class {{ record.class_name }} {
+{{ self::javadoc_block(record.doc, "") }}public final class {{ record.class_name }}{% if record.is_error %} extends RuntimeException{% endif %} {
 {%- for field in record.fields %}
     public final {{ field.java_type }} {{ field.name }};
 {%- endfor %}
 
 {{ self::javadoc_block(record.doc, "    ") }}    public {{ record.class_name }}({% for field in record.fields %}{{ field.java_type }} {{ field.name }}{% if !loop.last %}, {% endif %}{% endfor %}) {
+{%- if record.is_error %}
+{%- match record.message_field() %}
+{%- when Some with (message_field) %}
+        super({{ message_field.name }});
+{%- when None %}
+        super();
+{%- endmatch %}
+{%- endif %}
 {%- for field in record.fields %}
         this.{{ field.name }} = {{ field.name }};
 {%- endfor %}
@@ -34,6 +42,12 @@ package {{ package_name }};
     }{% if !loop.last %}
 
 {% endif %}{%- endfor %}{%- endif %}
+{% if record.is_error %}
+
+    public {{ record.class_name }} getError() {
+        return this;
+    }
+{% endif %}
 {% endif -%}
 {%- if !record.constructors.is_empty() %}{% for ctor in record.constructors -%}
 

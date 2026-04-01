@@ -65,6 +65,7 @@ pub struct RecordTemplate<'a> {
     pub class_name: &'a str,
     pub fields: &'a [SwiftField],
     pub is_blittable: bool,
+    pub is_error: bool,
     pub blittable_size: Option<usize>,
     pub constructors: &'a [SwiftConstructor],
     pub methods: &'a [SwiftMethod],
@@ -78,6 +79,7 @@ impl<'a> RecordTemplate<'a> {
             class_name: &record.class_name,
             fields: &record.fields,
             is_blittable: record.is_blittable,
+            is_error: record.is_error,
             blittable_size: record.blittable_size,
             constructors: &record.constructors,
             methods: &record.methods,
@@ -531,6 +533,7 @@ mod tests {
                 ),
             ],
             is_blittable: true,
+            is_error: false,
             blittable_size: Some(16),
             constructors: vec![],
             methods: vec![],
@@ -570,6 +573,7 @@ mod tests {
                 ),
             ],
             is_blittable: true,
+            is_error: false,
             blittable_size: Some(12),
             constructors: vec![],
             methods: vec![],
@@ -601,6 +605,7 @@ mod tests {
                 ),
             ],
             is_blittable: false,
+            is_error: false,
             blittable_size: None,
             constructors: vec![],
             methods: vec![],
@@ -632,6 +637,7 @@ mod tests {
                 ),
             ],
             is_blittable: true,
+            is_error: false,
             blittable_size: Some(12),
             constructors: vec![],
             methods: vec![],
@@ -671,6 +677,7 @@ mod tests {
                 },
             ],
             is_blittable: true,
+            is_error: false,
             blittable_size: Some(16),
             constructors: vec![],
             methods: vec![],
@@ -1386,6 +1393,7 @@ mod tests {
                 ),
             ],
             is_blittable: false,
+            is_error: false,
             blittable_size: None,
             constructors: vec![],
             methods: vec![],
@@ -1427,12 +1435,47 @@ mod tests {
                 ),
             ],
             is_blittable: false,
+            is_error: false,
             blittable_size: None,
             constructors: vec![],
             methods: vec![],
             doc: None,
         };
         insta::assert_snapshot!(render_record(&record, ""));
+    }
+
+    #[test]
+    fn error_record_renders_swift_error_conformance() {
+        let record = SwiftRecord {
+            class_name: "AppError".to_string(),
+            fields: vec![
+                field(
+                    "code",
+                    "Int32",
+                    read_primitive(PrimitiveType::I32, offset("pos")),
+                    write_primitive(PrimitiveType::I32, "code"),
+                    None,
+                    None,
+                ),
+                field(
+                    "message",
+                    "String",
+                    read_string(offset("pos")),
+                    write_string("message"),
+                    None,
+                    None,
+                ),
+            ],
+            is_blittable: false,
+            is_error: true,
+            blittable_size: None,
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+        };
+
+        let rendered = render_record(&record, "");
+        assert!(rendered.contains("public struct AppError: Hashable, Equatable, Sendable, Error"));
     }
 
     #[test]

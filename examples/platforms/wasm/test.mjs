@@ -31,6 +31,7 @@ import { run as runStringRecords } from "./tests/records/with_strings.test.mjs";
 import { run as runAsyncResults } from "./tests/results/async_results.test.mjs";
 import { run as runBasicResults } from "./tests/results/basic.test.mjs";
 import { run as runErrorEnumResults } from "./tests/results/error_enums.test.mjs";
+import { run as runErrorStructResults } from "./tests/results/error_structs.test.mjs";
 import { run as runNestedResults } from "./tests/results/nested_results.test.mjs";
 
 const suites = [
@@ -67,6 +68,7 @@ const suites = [
   runAsyncResults,
   runBasicResults,
   runErrorEnumResults,
+  runErrorStructResults,
   runNestedResults,
 ];
 

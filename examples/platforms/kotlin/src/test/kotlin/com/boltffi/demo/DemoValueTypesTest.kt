@@ -151,6 +151,16 @@ class DemoValueTypesTest {
         assertTrue(assertFailsWith<MathError> { checkedSqrt(-1.0) } is MathError.NegativeInput)
         assertTrue(assertFailsWith<MathError> { checkedAdd(Int.MAX_VALUE, 1) } is MathError.Overflow)
 
+        assertEquals("Success!", mayFail(true))
+        val invalidInputError = assertFailsWith<AppError> { mayFail(false) }
+        assertEquals(400, invalidInputError.code)
+        assertEquals("Invalid input", invalidInputError.message)
+
+        assertEquals(5, divideApp(10, 2))
+        val divideByZeroError = assertFailsWith<AppError> { divideApp(10, 0) }
+        assertEquals(500, divideByZeroError.code)
+        assertEquals("Division by zero", divideByZeroError.message)
+
         assertEquals("valid_name", validateUsername("valid_name"))
         assertTrue(assertFailsWith<ValidationError> { validateUsername("ab") } is ValidationError.TooShort)
         assertTrue(

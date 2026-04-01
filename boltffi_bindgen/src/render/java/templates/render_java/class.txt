@@ -130,7 +130,9 @@ import java.util.concurrent.CompletableFuture;
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+            throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
             throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
             throw new RuntimeException({{ method.return_plan.result_err_decode() }});
@@ -180,7 +182,9 @@ import java.util.concurrent.CompletableFuture;
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+                throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
                 throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
                 throw new RuntimeException({{ method.return_plan.result_err_decode() }});
@@ -269,7 +273,9 @@ import java.util.concurrent.CompletableFuture;
                     if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
                     WireReader reader = new WireReader(_buf);
                     if (reader.readI8() != 0) {
-{%- if ac.complete_return_plan.result_has_typed_exception() %}
+{%- if ac.complete_return_plan.result_err_throws_directly() %}
+                        throw {{ ac.complete_return_plan.result_err_decode() }};
+{%- elif ac.complete_return_plan.result_has_typed_exception() %}
                         throw new {{ ac.complete_return_plan.result_err_exception_class() }}({{ ac.complete_return_plan.result_err_decode() }});
 {%- elif ac.complete_return_plan.result_err_is_string() %}
                         throw new RuntimeException({{ ac.complete_return_plan.result_err_decode() }});
@@ -325,7 +331,9 @@ import java.util.concurrent.CompletableFuture;
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+            throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
             throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
             throw new RuntimeException({{ method.return_plan.result_err_decode() }});
@@ -375,7 +383,9 @@ import java.util.concurrent.CompletableFuture;
             if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
             WireReader reader = new WireReader(_buf);
             if (reader.readI8() != 0) {
-{%- if method.return_plan.result_has_typed_exception() %}
+{%- if method.return_plan.result_err_throws_directly() %}
+                throw {{ method.return_plan.result_err_decode() }};
+{%- elif method.return_plan.result_has_typed_exception() %}
                 throw new {{ method.return_plan.result_err_exception_class() }}({{ method.return_plan.result_err_decode() }});
 {%- elif method.return_plan.result_err_is_string() %}
                 throw new RuntimeException({{ method.return_plan.result_err_decode() }});

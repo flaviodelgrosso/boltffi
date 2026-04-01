@@ -3006,6 +3006,7 @@ mod tests {
         catalog.insert_record(RecordDef {
             id: RecordId::new("Point"),
             is_repr_c: true,
+            is_error: false,
             fields: vec![
                 FieldDef {
                     name: FieldName::new("x"),
@@ -3075,6 +3076,7 @@ mod tests {
         catalog.insert_record(RecordDef {
             id: RecordId::new("Message"),
             is_repr_c: false,
+            is_error: false,
             fields: vec![FieldDef {
                 name: FieldName::new("text"),
                 type_expr: TypeExpr::String,
@@ -3353,6 +3355,7 @@ mod tests {
         contract.catalog.insert_record(RecordDef {
             id: RecordId::new("Point"),
             is_repr_c: true,
+            is_error: false,
             fields: vec![
                 FieldDef {
                     name: FieldName::new("x"),

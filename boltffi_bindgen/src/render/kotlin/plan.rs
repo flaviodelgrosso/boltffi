@@ -118,10 +118,17 @@ pub struct KotlinRecord {
     pub class_name: String,
     pub fields: Vec<KotlinRecordField>,
     pub is_blittable: bool,
+    pub is_error: bool,
     pub struct_size: usize,
     pub constructors: Vec<KotlinConstructor>,
     pub methods: Vec<KotlinMethod>,
     pub doc: Option<String>,
+}
+
+impl KotlinRecord {
+    pub fn message_field(&self) -> Option<&KotlinRecordField> {
+        self.fields.iter().find(|field| field.name == "message")
+    }
 }
 
 #[derive(Clone)]

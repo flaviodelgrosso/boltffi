@@ -2845,6 +2845,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Point"),
             fields: vec![
                 FieldDef {
@@ -3091,6 +3092,7 @@ mod tests {
         contract.catalog.insert_record(RecordDef {
             id: RecordId::new("Point"),
             is_repr_c: true,
+            is_error: false,
             fields: vec![],
             constructors: vec![
                 ConstructorDef::Default {
@@ -3131,6 +3133,7 @@ mod tests {
         contract.catalog.insert_record(RecordDef {
             id: RecordId::new("Point"),
             is_repr_c: true,
+            is_error: false,
             fields: vec![],
             constructors: vec![ConstructorDef::Default {
                 params: vec![],
@@ -3552,6 +3555,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Point"),
             fields: vec![
                 FieldDef {
@@ -3617,6 +3621,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Point"),
             fields: vec![
                 FieldDef {

@@ -141,9 +141,10 @@ mod tests {
     use crate::render::java::JavaVersion;
     use crate::render::java::plan::{
         JavaAsyncMode, JavaClassMethod, JavaConstructor, JavaConstructorKind, JavaEnum,
-        JavaEnumKind, JavaEnumVariant, JavaFunction, JavaInputBindings, JavaParam, JavaRecord,
-        JavaRecordDefaultConstructor, JavaRecordDefaultConstructorParam, JavaRecordField,
-        JavaReturnPlan, JavaReturnRender, JavaStream, JavaStreamMode, JavaWireWriter,
+        JavaEnumField, JavaEnumKind, JavaEnumVariant, JavaFunction, JavaInputBindings, JavaParam,
+        JavaRecord, JavaRecordDefaultConstructor, JavaRecordDefaultConstructorParam,
+        JavaRecordField, JavaReturnPlan, JavaReturnRender, JavaStream, JavaStreamMode,
+        JavaWireWriter,
     };
 
     fn java_param(name: &str, java_type: &str, native_type: &str, native_expr: &str) -> JavaParam {
@@ -555,6 +556,7 @@ mod tests {
             doc: Some("A physical point.".to_string()),
             shape: crate::render::java::plan::JavaRecordShape::ClassicClass,
             class_name: "Point".to_string(),
+            is_error: false,
             fields: vec![JavaRecordField {
                 doc: Some("Horizontal coordinate.".to_string()),
                 name: "x".to_string(),
@@ -619,6 +621,7 @@ mod tests {
         let record = JavaRecord {
             doc: None,
             shape: crate::render::java::plan::JavaRecordShape::NativeRecord,
+            is_error: false,
             class_name: "Config".to_string(),
             fields: vec![
                 JavaRecordField {
@@ -744,5 +747,55 @@ mod tests {
         assert!(source.contains(
             "public Config(String name) {\n        this(name, 3, java.util.Optional.empty(), java.util.Optional.of(\"primary\"));\n    }"
         ));
+    }
+
+    #[test]
+    fn abstract_error_enum_template_preserves_payloads() {
+        let enumeration = JavaEnum {
+            doc: None,
+            class_name: "ApiError".to_string(),
+            kind: JavaEnumKind::ErrorAbstractClass,
+            value_type: "int".to_string(),
+            variants: vec![
+                JavaEnumVariant {
+                    doc: None,
+                    name: "Network".to_string(),
+                    tag: 0,
+                    fields: vec![JavaEnumField {
+                        doc: None,
+                        name: "message".to_string(),
+                        java_type: "String".to_string(),
+                        wire_decode_expr: "reader.readString()".to_string(),
+                        wire_size_expr: "WireWriter.sizeString(_v.message)".to_string(),
+                        wire_encode_expr: "wire.writeString(_v.message)".to_string(),
+                        equals_expr: "java.util.Objects.equals(this.message, other.message)"
+                            .to_string(),
+                        hash_expr: "java.util.Objects.hashCode(message)".to_string(),
+                    }],
+                },
+                JavaEnumVariant {
+                    doc: None,
+                    name: "Timeout".to_string(),
+                    tag: 1,
+                    fields: vec![],
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+        };
+
+        let source = DataEnumAbstractTemplate {
+            enumeration: &enumeration,
+            package_name: "com.test",
+        }
+        .render()
+        .expect("abstract error enum template should render");
+
+        assert!(source.contains("public abstract class ApiError extends RuntimeException"));
+        assert!(source.contains("protected ApiError(String message)"));
+        assert!(source.contains("public final String message;"));
+        assert!(source.contains("super(message);"));
+        assert!(source.contains("private Timeout() {"));
+        assert!(source.contains("super(\"ApiError.Timeout\");"));
     }
 }

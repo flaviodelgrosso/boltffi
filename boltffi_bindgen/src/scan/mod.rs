@@ -30,6 +30,7 @@ pub enum TypeShape {
     Record {
         fields: Vec<RecordField>,
         is_repr_c: bool,
+        is_error: bool,
         constructors: Vec<Constructor>,
         methods: Vec<Method>,
     },
@@ -89,7 +90,13 @@ impl TypeRegistry {
         }
     }
 
-    pub fn fill_record_fields(&mut self, name: &str, fields: Vec<RecordField>, is_repr_c: bool) {
+    pub fn fill_record_fields(
+        &mut self,
+        name: &str,
+        fields: Vec<RecordField>,
+        is_repr_c: bool,
+        is_error: bool,
+    ) {
         let Some(meta) = self.types.get_mut(name) else {
             return;
         };
@@ -97,15 +104,18 @@ impl TypeRegistry {
             TypeShape::Record {
                 fields: existing_fields,
                 is_repr_c: existing_repr_c,
+                is_error: existing_is_error,
                 ..
             } => {
                 *existing_fields = fields;
                 *existing_repr_c = is_repr_c;
+                *existing_is_error = is_error;
             }
             _ => {
                 meta.shape = TypeShape::Record {
                     fields,
                     is_repr_c,
+                    is_error,
                     constructors: Vec::new(),
                     methods: Vec::new(),
                 };
@@ -150,6 +160,7 @@ impl TypeRegistry {
                 meta.shape = TypeShape::Record {
                     fields: Vec::new(),
                     is_repr_c: true,
+                    is_error: false,
                     constructors,
                     methods,
                 };
@@ -536,6 +547,7 @@ impl SourceScanner {
             Item::Struct(item_struct) => {
                 let is_record = has_attribute(&item_struct.attrs, "ffi_record")
                     || has_attribute(&item_struct.attrs, "data")
+                    || has_attribute(&item_struct.attrs, "error")
                     || has_repr_c(&item_struct.attrs)
                     || (has_attribute(&item_struct.attrs, "derive")
                         && has_ffi_type_derive(&item_struct.attrs));
@@ -963,6 +975,7 @@ impl SourceScanner {
                 Item::Struct(item_struct) => {
                     if has_attribute(&item_struct.attrs, "ffi_record")
                         || has_attribute(&item_struct.attrs, "data")
+                        || has_attribute(&item_struct.attrs, "error")
                         || has_repr_c(&item_struct.attrs)
                         || (has_attribute(&item_struct.attrs, "derive")
                             && has_ffi_type_derive(&item_struct.attrs))
@@ -1045,6 +1058,7 @@ impl SourceScanner {
                 }
                 if has_attribute(&item_struct.attrs, "ffi_record")
                     || has_attribute(&item_struct.attrs, "data")
+                    || has_attribute(&item_struct.attrs, "error")
                     || has_repr_c(&item_struct.attrs)
                     || (has_attribute(&item_struct.attrs, "derive")
                         && has_ffi_type_derive(&item_struct.attrs))
@@ -1179,14 +1193,15 @@ impl SourceScanner {
         };
 
         let has_data = has_attribute(&item_struct.attrs, "data");
+        let is_error = has_attribute(&item_struct.attrs, "error");
         let has_any_repr = item_struct.attrs.iter().any(|a| a.path().is_ident("repr"));
-        let is_repr_c = if has_data && !has_any_repr {
+        let is_repr_c = if (has_data || is_error) && !has_any_repr {
             true
         } else {
             has_repr_c(&item_struct.attrs)
         };
         self.type_registry
-            .fill_record_fields(&name, fields, is_repr_c);
+            .fill_record_fields(&name, fields, is_repr_c, is_error);
     }
 
     fn process_enum(
@@ -1530,6 +1545,7 @@ impl SourceScanner {
                 TypeShape::Record {
                     fields,
                     is_repr_c,
+                    is_error,
                     constructors,
                     methods,
                 } => {
@@ -1542,6 +1558,7 @@ impl SourceScanner {
                         .into_iter()
                         .fold(record, |r, ctor| r.with_constructor(ctor));
                     let record = methods.into_iter().fold(record, |r, m| r.with_method(m));
+                    let record = if is_error { record.as_error() } else { record };
                     module = module.with_record(record);
                 }
                 TypeShape::Enum {
@@ -3041,6 +3058,7 @@ mod tests {
             TypeShape::Record {
                 fields: vec![RecordField::new("x", MType::Primitive(Primitive::F64))],
                 is_repr_c: true,
+                is_error: false,
                 constructors: Vec::new(),
                 methods: Vec::new(),
             },
@@ -3113,6 +3131,7 @@ mod tests {
             "Point",
             vec![RecordField::new("x", MType::Primitive(Primitive::F64))],
             true,
+            false,
         );
 
         match &reg.types.get("Point").unwrap().shape {
@@ -3121,6 +3140,7 @@ mod tests {
                 is_repr_c,
                 constructors,
                 methods,
+                ..
             } => {
                 assert_eq!(fields.len(), 1);
                 assert_eq!(fields[0].name, "x");
@@ -3141,6 +3161,7 @@ mod tests {
             "Point",
             vec![RecordField::new("x", MType::Primitive(Primitive::F64))],
             false,
+            false,
         );
 
         match &reg.types.get("Point").unwrap().shape {
@@ -3149,6 +3170,7 @@ mod tests {
                 is_repr_c,
                 constructors,
                 methods,
+                ..
             } => {
                 assert_eq!(fields.len(), 1);
                 assert!(!*is_repr_c);
@@ -3469,6 +3491,42 @@ mod tests {
             scan_crate_with_options(&temp_root, "testlib", None, features).expect("scan failed");
         fs::remove_dir_all(&temp_root).expect("cleanup");
         module
+    }
+
+    #[test]
+    fn error_structs_are_scanned_as_records() {
+        let source = r#"
+            use boltffi::*;
+
+            #[error]
+            pub struct AppError {
+                pub code: i32,
+                pub message: String,
+            }
+
+            #[export]
+            pub fn may_fail(valid: bool) -> Result<String, AppError> {
+                if valid {
+                    Ok("ok".to_string())
+                } else {
+                    Err(AppError {
+                        code: 400,
+                        message: "bad".to_string(),
+                    })
+                }
+            }
+        "#;
+
+        let module = scan_temp_crate(source, ScanFeatures::default());
+        let error_record = module
+            .records
+            .iter()
+            .find(|record| record.name == "AppError")
+            .expect("AppError should be scanned as a record");
+
+        assert!(error_record.is_error);
+        assert_eq!(error_record.fields.len(), 2);
+        assert_eq!(module.functions.len(), 1);
     }
 
     #[test]

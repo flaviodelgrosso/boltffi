@@ -359,6 +359,7 @@ impl<'a> SwiftLowerer<'a> {
                     class_name: self.swift_name_for_record(&def.id),
                     fields,
                     is_blittable: abi_record.is_blittable,
+                    is_error: def.is_error,
                     blittable_size: abi_record.size,
                     constructors,
                     methods,
@@ -2356,6 +2357,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Point"),
             fields: vec![
                 FieldDef {
@@ -2393,6 +2395,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("User"),
             fields: vec![
                 FieldDef {
@@ -2430,6 +2433,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Scores"),
             fields: vec![FieldDef {
                 name: FieldName::new("values"),
@@ -2458,6 +2462,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Config"),
             fields: vec![
                 FieldDef {
@@ -2491,6 +2496,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("AllPrimitives"),
             fields: vec![
                 FieldDef {
@@ -2671,6 +2677,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Aligned"),
             fields: vec![
                 FieldDef {
@@ -2712,6 +2719,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("MaybeValue"),
             fields: vec![FieldDef {
                 name: FieldName::new("value"),
@@ -2736,6 +2744,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Numbers"),
             fields: vec![FieldDef {
                 name: FieldName::new("items"),
@@ -2760,6 +2769,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Inner"),
             fields: vec![FieldDef {
                 name: FieldName::new("value"),
@@ -2774,6 +2784,7 @@ mod tests {
         });
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Outer"),
             fields: vec![FieldDef {
                 name: FieldName::new("inner"),
@@ -3057,6 +3068,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Config"),
             fields: vec![
                 FieldDef {
@@ -3096,6 +3108,7 @@ mod tests {
         let mut contract = empty_contract();
         contract.catalog.insert_record(RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Point"),
             fields: vec![
                 FieldDef {
@@ -3199,6 +3212,7 @@ mod tests {
     fn blittable_point_with_methods() -> RecordDef {
         RecordDef {
             is_repr_c: true,
+            is_error: false,
             id: RecordId::new("Point"),
             fields: vec![
                 FieldDef {

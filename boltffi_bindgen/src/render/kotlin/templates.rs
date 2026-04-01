@@ -74,6 +74,8 @@ pub struct RecordTemplate<'a> {
     pub class_name: &'a str,
     pub fields: &'a [super::plan::KotlinRecordField],
     pub is_blittable: bool,
+    pub is_error: bool,
+    pub message_field_name: Option<&'a str>,
     pub struct_size: usize,
     pub constructors: &'a [KotlinConstructor],
     pub methods: &'a [KotlinMethod],
@@ -324,6 +326,8 @@ impl KotlinEmitter {
                 class_name: &record.class_name,
                 fields: &record.fields,
                 is_blittable: record.is_blittable,
+                is_error: record.is_error,
+                message_field_name: record.message_field().map(|field| field.name.as_str()),
                 struct_size: record.struct_size,
                 constructors: &record.constructors,
                 methods: &record.methods,
@@ -548,6 +552,8 @@ mod tests {
                 },
             ],
             is_blittable: true,
+            is_error: false,
+            message_field_name: None,
             struct_size: 16,
             doc: &Some("A physical location with coordinates.".to_string()),
         };
@@ -583,6 +589,8 @@ mod tests {
                 },
             ],
             is_blittable: false,
+            is_error: false,
+            message_field_name: None,
             struct_size: 0,
             doc: &None,
         };
@@ -618,6 +626,8 @@ mod tests {
                 },
             ],
             is_blittable: true,
+            is_error: false,
+            message_field_name: None,
             struct_size: 8,
             doc: &None,
         };
@@ -1273,6 +1283,8 @@ mod tests {
                 },
             ],
             is_blittable: true,
+            is_error: false,
+            message_field_name: None,
             struct_size: 16,
             doc: &None,
         };
@@ -1308,6 +1320,8 @@ mod tests {
                 },
             ],
             is_blittable: false,
+            is_error: false,
+            message_field_name: None,
             struct_size: 0,
             doc: &None,
         };
@@ -1344,10 +1358,53 @@ mod tests {
                 },
             ],
             is_blittable: false,
+            is_error: false,
+            message_field_name: None,
             struct_size: 0,
             doc: &None,
         };
         insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    #[test]
+    fn error_record_renders_as_exception() {
+        let template = RecordTemplate {
+            constructors: &[],
+            methods: &[],
+            class_name: "AppError",
+            fields: &[
+                KotlinRecordField {
+                    name: "code".to_string(),
+                    kotlin_type: "Int".to_string(),
+                    default_value: None,
+                    wire_decode_expr: "reader.readI32()".to_string(),
+                    wire_size_expr: "4".to_string(),
+                    wire_encode: "wire.writeI32(code)".to_string(),
+                    padding_after: 0,
+                    doc: None,
+                },
+                KotlinRecordField {
+                    name: "message".to_string(),
+                    kotlin_type: "String".to_string(),
+                    default_value: None,
+                    wire_decode_expr: "reader.readString()".to_string(),
+                    wire_size_expr: "wire.sizeString(message)".to_string(),
+                    wire_encode: "wire.writeString(message)".to_string(),
+                    padding_after: 0,
+                    doc: None,
+                },
+            ],
+            is_blittable: false,
+            is_error: true,
+            message_field_name: Some("message"),
+            struct_size: 0,
+            doc: &None,
+        };
+
+        let rendered = template.render().unwrap();
+        assert!(rendered.contains("data class AppError("));
+        assert!(rendered.contains("override val message: String"));
+        assert!(rendered.contains(": Exception(message)"));
     }
 
     #[test]
