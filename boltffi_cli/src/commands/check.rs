@@ -67,11 +67,29 @@ pub fn run_check(options: CheckOptions) -> Result<bool> {
         println!("Done!");
     }
 
+    let apple_tools_ready = !options.apple
+        || (check.tools.xcode_cli
+            && check.tools.xcodebuild
+            && (!apple_targets_require_lipo(&options.apple_targets) || check.tools.lipo));
+
     let all_good = !check.has_missing_targets()
-        && (!options.apple || check.is_ready_for_apple())
+        && apple_tools_ready
         && (!options.android || check.is_ready_for_android());
 
     Ok(all_good)
+}
+
+pub(crate) fn apple_targets_require_lipo(apple_targets: &[RustTarget]) -> bool {
+    let simulator_slices = apple_targets
+        .iter()
+        .filter(|target| target.platform() == crate::target::Platform::IosSimulator)
+        .count();
+    let macos_slices = apple_targets
+        .iter()
+        .filter(|target| target.platform() == crate::target::Platform::MacOs)
+        .count();
+
+    simulator_slices > 1 || macos_slices > 1
 }
 
 fn print_environment_status(check: &EnvironmentCheck, options: &CheckOptions) {
@@ -85,12 +103,17 @@ fn print_environment_status(check: &EnvironmentCheck, options: &CheckOptions) {
     println!();
 
     if options.apple {
+        let requires_lipo = apple_targets_require_lipo(&options.apple_targets);
         print_apple_targets(check, &options.apple_targets);
         println!();
 
         println!("Apple Tools");
         println!("  {} Xcode CLI tools", status_icon(check.tools.xcode_cli));
-        println!("  {} lipo", status_icon(check.tools.lipo));
+        if requires_lipo {
+            println!("  {} lipo", status_icon(check.tools.lipo));
+        } else {
+            println!("  [ok] lipo (not required for configured slices)");
+        }
         println!("  {} xcodebuild", status_icon(check.tools.xcodebuild));
         println!();
     }
@@ -181,4 +204,35 @@ fn print_apple_target_group(
         println!("  {} {}", status_icon(installed), target.triple());
     });
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apple_targets_require_lipo;
+    use crate::target::RustTarget;
+
+    #[test]
+    fn requires_lipo_for_multi_slice_simulator_targets() {
+        assert!(apple_targets_require_lipo(&[
+            RustTarget::IOS_SIM_ARM64,
+            RustTarget::IOS_SIM_X86_64,
+        ]));
+    }
+
+    #[test]
+    fn requires_lipo_for_multi_slice_macos_targets() {
+        assert!(apple_targets_require_lipo(&[
+            RustTarget::MACOS_ARM64,
+            RustTarget::MACOS_X86_64,
+        ]));
+    }
+
+    #[test]
+    fn skips_lipo_for_single_slice_apple_configuration() {
+        assert!(!apple_targets_require_lipo(&[
+            RustTarget::IOS_ARM64,
+            RustTarget::IOS_SIM_ARM64,
+            RustTarget::MACOS_ARM64,
+        ]));
+    }
 }

@@ -108,6 +108,130 @@ impl AndroidArchitecture {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum JavaHostTarget {
+    #[serde(rename = "current")]
+    Current,
+    #[serde(rename = "darwin-arm64", alias = "darwin-aarch64")]
+    DarwinArm64,
+    #[serde(rename = "darwin-x86_64", alias = "darwin-x86-64")]
+    DarwinX86_64,
+    #[serde(rename = "linux-x86_64", alias = "linux-x86-64")]
+    LinuxX86_64,
+    #[serde(rename = "linux-aarch64", alias = "linux-arm64")]
+    LinuxAarch64,
+    #[serde(rename = "windows-x86_64", alias = "windows-x86-64")]
+    WindowsX86_64,
+}
+
+impl JavaHostTarget {
+    pub const DEFAULTS: &'static [Self] = &[Self::Current];
+
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::DarwinArm64 => "darwin-arm64",
+            Self::DarwinX86_64 => "darwin-x86_64",
+            Self::LinuxX86_64 => "linux-x86_64",
+            Self::LinuxAarch64 => "linux-aarch64",
+            Self::WindowsX86_64 => "windows-x86_64",
+        }
+    }
+
+    pub fn current() -> Option<Self> {
+        match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => Some(Self::DarwinArm64),
+            ("macos", "x86_64") => Some(Self::DarwinX86_64),
+            ("linux", "x86_64") => Some(Self::LinuxX86_64),
+            ("linux", "aarch64") => Some(Self::LinuxAarch64),
+            ("windows", "x86_64") => Some(Self::WindowsX86_64),
+            _ => None,
+        }
+    }
+
+    pub fn resolve_requested(targets: &[Self]) -> Result<Vec<Self>, String> {
+        let current_host = Self::current().ok_or_else(Self::unsupported_host_message)?;
+        let mut resolved = Vec::new();
+
+        targets.iter().copied().for_each(|target| {
+            let target = match target {
+                Self::Current => current_host,
+                explicit => explicit,
+            };
+
+            if !resolved.contains(&target) {
+                resolved.push(target);
+            }
+        });
+
+        if let Some(invalid_target) = resolved.iter().find(|target| **target != current_host) {
+            return Err(format!(
+                "targets.java.jvm.host_targets may only resolve to the current host in Phase 3; '{}' does not match '{}'",
+                invalid_target.canonical_name(),
+                current_host.canonical_name()
+            ));
+        }
+
+        Ok(resolved)
+    }
+
+    pub fn shared_library_filename(self, artifact_name: &str) -> String {
+        match self {
+            Self::DarwinArm64 | Self::DarwinX86_64 => format!("lib{artifact_name}.dylib"),
+            Self::LinuxX86_64 | Self::LinuxAarch64 => format!("lib{artifact_name}.so"),
+            Self::WindowsX86_64 => format!("{artifact_name}.dll"),
+            Self::Current => unreachable!("resolved host target required"),
+        }
+    }
+
+    pub fn static_library_filename(self, artifact_name: &str) -> String {
+        match self {
+            Self::DarwinArm64 | Self::DarwinX86_64 | Self::LinuxX86_64 | Self::LinuxAarch64 => {
+                format!("lib{artifact_name}.a")
+            }
+            Self::WindowsX86_64 => {
+                if cfg!(all(target_os = "windows", target_env = "gnu")) {
+                    format!("lib{artifact_name}.a")
+                } else {
+                    format!("{artifact_name}.lib")
+                }
+            }
+            Self::Current => unreachable!("resolved host target required"),
+        }
+    }
+
+    pub fn jni_library_filename(self, artifact_name: &str) -> String {
+        match self {
+            Self::DarwinArm64 | Self::DarwinX86_64 => format!("lib{artifact_name}_jni.dylib"),
+            Self::LinuxX86_64 | Self::LinuxAarch64 => format!("lib{artifact_name}_jni.so"),
+            Self::WindowsX86_64 => format!("{artifact_name}_jni.dll"),
+            Self::Current => unreachable!("resolved host target required"),
+        }
+    }
+
+    pub fn jni_platform(self) -> &'static str {
+        match self {
+            Self::DarwinArm64 | Self::DarwinX86_64 => "darwin",
+            Self::LinuxX86_64 | Self::LinuxAarch64 => "linux",
+            Self::WindowsX86_64 => "win32",
+            Self::Current => unreachable!("resolved host target required"),
+        }
+    }
+
+    pub fn rpath_flag(self) -> Option<&'static str> {
+        match self {
+            Self::DarwinArm64 | Self::DarwinX86_64 => Some("-Wl,-rpath,@loader_path"),
+            Self::LinuxX86_64 | Self::LinuxAarch64 => Some("-Wl,-rpath,$ORIGIN"),
+            Self::WindowsX86_64 => None,
+            Self::Current => unreachable!("resolved host target required"),
+        }
+    }
+
+    fn unsupported_host_message() -> String {
+        "current-host JVM packaging is only supported on darwin-arm64, darwin-x86_64, linux-x86_64, linux-aarch64, and windows-x86_64".to_string()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RustTarget {
     triple: &'static str,
@@ -260,6 +384,12 @@ pub fn resolve_apple_macos_targets(architectures: &[AppleArchitecture]) -> Vec<R
         .collect()
 }
 
+pub fn resolve_java_host_targets(
+    targets: &[JavaHostTarget],
+) -> Result<Vec<JavaHostTarget>, String> {
+    JavaHostTarget::resolve_requested(targets)
+}
+
 impl Platform {
     pub fn is_apple(&self) -> bool {
         matches!(
@@ -311,9 +441,9 @@ impl BuiltLibrary {
 #[cfg(test)]
 mod tests {
     use super::{
-        AndroidArchitecture, AppleArchitecture, AppleIosArchitecture, BuiltLibrary, Platform,
-        RustTarget, resolve_android_targets, resolve_apple_ios_targets,
-        resolve_apple_macos_targets, resolve_apple_simulator_targets,
+        AndroidArchitecture, AppleArchitecture, AppleIosArchitecture, BuiltLibrary, JavaHostTarget,
+        Platform, RustTarget, resolve_android_targets, resolve_apple_ios_targets,
+        resolve_apple_macos_targets, resolve_apple_simulator_targets, resolve_java_host_targets,
     };
     use std::fs;
     use std::path::Path;
@@ -400,6 +530,46 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["aarch64-apple-darwin", "x86_64-apple-darwin"]
         );
+    }
+
+    #[test]
+    fn resolves_current_java_host_target() {
+        let current_host = JavaHostTarget::current().expect("supported test host");
+        let resolved = resolve_java_host_targets(&[JavaHostTarget::Current])
+            .expect("expected current host resolution");
+
+        assert_eq!(resolved, vec![current_host]);
+    }
+
+    #[test]
+    fn dedupes_current_against_explicit_java_host_target() {
+        let current_host = JavaHostTarget::current().expect("supported test host");
+        let resolved = resolve_java_host_targets(&[JavaHostTarget::Current, current_host])
+            .expect("expected deduped host targets");
+
+        assert_eq!(resolved, vec![current_host]);
+    }
+
+    #[test]
+    fn rejects_cross_host_java_packaging_in_phase_3() {
+        let current_host = JavaHostTarget::current().expect("supported test host");
+        let explicit_other_host = [
+            JavaHostTarget::DarwinArm64,
+            JavaHostTarget::DarwinX86_64,
+            JavaHostTarget::LinuxX86_64,
+            JavaHostTarget::LinuxAarch64,
+            JavaHostTarget::WindowsX86_64,
+        ]
+        .into_iter()
+        .find(|target| *target != current_host)
+        .expect("alternate host target");
+
+        let error =
+            resolve_java_host_targets(&[explicit_other_host]).expect_err("cross-host error");
+
+        assert!(error.contains(
+            "targets.java.jvm.host_targets may only resolve to the current host in Phase 3"
+        ));
     }
 
     #[test]

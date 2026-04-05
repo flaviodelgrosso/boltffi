@@ -433,9 +433,10 @@ Enable JVM packaging to produce a standalone JNI library for desktop or server u
 [targets.java.jvm]
 enabled = true
 output = "dist/java"
+host_targets = ["current"]
 ```
 
-The default output is `dist/java`. This produces Java sources, a C header, JNI glue, and a compiled shared library. Requires `JAVA_HOME` and `clang`.
+The default output is `dist/java`. This produces Java sources, a C header, JNI glue, a structured native output under `dist/java/native/<host-target>/`, and a flat current-host `_jni` compatibility copy in `dist/java/`. `host_targets` defaults to `["current"]`; in Phase 3 it may only resolve to the current machine. Requires `JAVA_HOME` and `clang`.
 
 ### Android Target
 

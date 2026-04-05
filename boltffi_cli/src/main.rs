@@ -548,9 +548,7 @@ fn configured_android_targets_for_diagnostics(
 }
 
 fn configured_wasm_target_triple_for_diagnostics(config: Option<&Config>) -> Option<String> {
-    config
-        .filter(|config| config.is_wasm_enabled())
-        .map(|config| config.wasm_triple().to_string())
+    config.map(|config| config.wasm_triple().to_string())
 }
 
 struct DoctorConfig {
@@ -784,7 +782,7 @@ architectures = ["arm64"]
     }
 
     #[test]
-    fn diagnostics_ignore_disabled_wasm_target_configuration() {
+    fn diagnostics_preserve_wasm_triple_when_target_is_disabled() {
         let config = parse_config(
             r#"
 [package]
@@ -798,7 +796,7 @@ triple = "wasm32-wasip1"
 
         assert_eq!(
             configured_wasm_target_triple_for_diagnostics(Some(&config)),
-            None
+            Some("wasm32-wasip1".to_string())
         );
     }
 

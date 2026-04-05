@@ -146,7 +146,7 @@ Add to your `Cargo.toml`:
 boltffi = "0.1"
 
 [lib]
-crate-type = ["staticlib", "cdylib"]
+crate-type = ["cdylib", "staticlib"]
 ```
 
 ## Documentation

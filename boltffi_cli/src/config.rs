@@ -1,7 +1,7 @@
 use crate::target::{
-    AndroidArchitecture, AppleArchitecture, AppleIosArchitecture, RustTarget,
+    AndroidArchitecture, AppleArchitecture, AppleIosArchitecture, JavaHostTarget, RustTarget,
     resolve_android_targets, resolve_apple_ios_targets, resolve_apple_macos_targets,
-    resolve_apple_simulator_targets,
+    resolve_apple_simulator_targets, resolve_java_host_targets,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -276,6 +276,7 @@ pub struct JavaJvmConfig {
     pub enabled: bool,
     #[serde(default = "default_java_jvm_output")]
     pub output: PathBuf,
+    pub host_targets: Option<Vec<JavaHostTarget>>,
 }
 
 impl Default for JavaJvmConfig {
@@ -283,6 +284,7 @@ impl Default for JavaJvmConfig {
         Self {
             enabled: false,
             output: default_java_jvm_output(),
+            host_targets: None,
         }
     }
 }
@@ -602,6 +604,15 @@ impl Config {
                     AppleArchitecture::canonical_name,
                 )?;
             }
+        }
+
+        if self.is_java_jvm_enabled()
+            && let Some(host_targets) = self.targets.java.jvm.host_targets.as_ref()
+            && host_targets.is_empty()
+        {
+            return Err(ConfigError::Validation(
+                "targets.java.jvm.host_targets must be non-empty when provided".to_string(),
+            ));
         }
 
         Ok(())
@@ -960,6 +971,19 @@ impl Config {
 
     pub fn java_jvm_output(&self) -> PathBuf {
         self.targets.java.jvm.output.clone()
+    }
+
+    pub fn java_jvm_requested_host_targets(&self) -> &[JavaHostTarget] {
+        self.targets
+            .java
+            .jvm
+            .host_targets
+            .as_deref()
+            .unwrap_or(JavaHostTarget::DEFAULTS)
+    }
+
+    pub fn java_jvm_host_targets(&self) -> std::result::Result<Vec<JavaHostTarget>, String> {
+        resolve_java_host_targets(self.java_jvm_requested_host_targets())
     }
 
     pub fn java_android_output(&self) -> PathBuf {
@@ -1523,6 +1547,102 @@ architectures = ["armv7", "armv7"]
                 if message
                     == "targets.android.architectures contains duplicate architecture 'armv7'"
         ));
+    }
+
+    #[test]
+    fn defaults_java_jvm_host_targets_to_current() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.java.jvm]
+enabled = true
+"#,
+        );
+
+        assert_eq!(
+            config
+                .java_jvm_requested_host_targets()
+                .iter()
+                .map(|target| target.canonical_name())
+                .collect::<Vec<_>>(),
+            vec!["current"]
+        );
+        assert_eq!(
+            config
+                .java_jvm_host_targets()
+                .expect("resolved current host")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_java_jvm_host_target_aliases() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.java.jvm]
+enabled = true
+host_targets = ["current", "darwin-aarch64", "linux-x86-64", "windows-x86-64"]
+"#,
+        );
+
+        assert_eq!(
+            config
+                .java_jvm_requested_host_targets()
+                .iter()
+                .map(|target| target.canonical_name())
+                .collect::<Vec<_>>(),
+            vec!["current", "darwin-arm64", "linux-x86_64", "windows-x86_64"]
+        );
+    }
+
+    #[test]
+    fn rejects_empty_java_jvm_host_targets() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "mylib"
+
+[targets.java.jvm]
+enabled = true
+host_targets = []
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert!(matches!(
+            parsed.validate(),
+            Err(ConfigError::Validation(message))
+                if message == "targets.java.jvm.host_targets must be non-empty when provided"
+        ));
+    }
+
+    #[test]
+    fn resolves_current_java_host_targets_with_deduping() {
+        let current_host = JavaHostTarget::current().expect("supported test host");
+        let current_host_value = current_host.canonical_name();
+        let config = parse_config(&format!(
+            r#"
+[package]
+name = "mylib"
+
+[targets.java.jvm]
+enabled = true
+host_targets = ["current", "{current_host_value}"]
+"#
+        ));
+
+        assert_eq!(
+            config
+                .java_jvm_host_targets()
+                .expect("resolved current host"),
+            vec![current_host]
+        );
     }
 
     #[test]

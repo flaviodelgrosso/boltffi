@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::check::EnvironmentCheck;
+use crate::commands::check::apple_targets_require_lipo;
 use crate::config::Config;
 use crate::error::Result;
 use crate::target::RustTarget;
@@ -64,6 +65,11 @@ fn required_target_triples(options: &DoctorOptions) -> Vec<String> {
 }
 
 fn print_environment(check: &EnvironmentCheck, options: &DoctorOptions) {
+    let apple_tooling_ready = !options.apple
+        || (check.tools.xcode_cli
+            && check.tools.xcodebuild
+            && (!apple_targets_require_lipo(&options.apple_targets) || check.tools.lipo));
+
     match &check.rust_version {
         Some(version) => println!("Rust: {}", version),
         None => println!("Rust: missing"),
@@ -77,8 +83,9 @@ fn print_environment(check: &EnvironmentCheck, options: &DoctorOptions) {
         .for_each(|triple| println!("  - {}", triple));
 
     println!();
-    println!("Apple tooling: {}", readiness(check.is_ready_for_apple()));
+    println!("Apple tooling: {}", readiness(apple_tooling_ready));
     if options.apple {
+        let requires_lipo = apple_targets_require_lipo(&options.apple_targets);
         options.apple_targets.iter().for_each(|target| {
             let installed = check
                 .installed_targets
@@ -88,7 +95,11 @@ fn print_environment(check: &EnvironmentCheck, options: &DoctorOptions) {
         });
         println!("  xcode-select: {}", readiness(check.tools.xcode_cli));
         println!("  xcodebuild: {}", readiness(check.tools.xcodebuild));
-        println!("  lipo: {}", readiness(check.tools.lipo));
+        if requires_lipo {
+            println!("  lipo: {}", readiness(check.tools.lipo));
+        } else {
+            println!("  lipo: ok (not required for configured slices)");
+        }
     }
 
     println!();

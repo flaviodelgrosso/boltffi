@@ -36,7 +36,7 @@ Your `Cargo.toml` needs the right crate types:
 
 ```toml
 [lib]
-crate-type = ["staticlib", "cdylib"]
+crate-type = ["staticlib"]
 ```
 
 ## Packaging All Platforms
@@ -339,7 +339,7 @@ Package for JVM:
 boltffi pack java --release
 ```
 
-This compiles a cdylib for the host platform, generates Java bindings and a C header, compiles the JNI glue into a shared library, and writes everything to `dist/java/`.
+This builds the host Rust library, generates Java bindings and a C header, links the JNI glue against the Rust `staticlib` when available, and writes the native output to `dist/java/native/<host-target>/`. A flat current-host `_jni` copy is kept in `dist/java/` for compatibility during the transition.
 
 ### Prerequisites
 
@@ -357,7 +357,10 @@ min_version = 8  # or 16, 17, 21
 
 [targets.java.jvm]
 enabled = true
+host_targets = ["current"]
 ```
+
+`host_targets` defaults to `["current"]`. In Phase 3, `boltffi pack java` only supports packaging the current host target. `boltffi pack java --no-build` is intentionally unsupported; rerun without `--no-build`.
 
 The `min_version` controls which language features the generated code uses:
 
@@ -381,13 +384,16 @@ dist/java/
 ├── jni/
 │   ├── jni_glue.c          # JNI bridge implementation
 │   └── mylib.h             # C header
-└── libmylib_jni.dylib      # Compiled JNI library (.so on Linux)
+├── libmylib_jni.dylib      # Flat compatibility copy for the current host (.so/.dll elsewhere)
+└── native/
+    └── darwin-arm64/
+        └── libmylib_jni.dylib
 ```
 
 ### Using in a Project
 
 1. Copy the Java sources from `dist/java/com/...` into your source tree
-2. Place the JNI shared library where `System.loadLibrary` can find it (or set `java.library.path`)
+2. Place the JNI shared library where `System.loadLibrary` can find it, either from the flat compatibility copy or from `dist/java/native/<host-target>/`
 
 ```java
 import com.example.mylib.*;
@@ -613,4 +619,3 @@ Or build everything at once:
 ```bash
 boltffi release all
 ```
-

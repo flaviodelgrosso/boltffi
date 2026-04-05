@@ -49,10 +49,6 @@ impl EnvironmentCheck {
         }
     }
 
-    pub fn is_ready_for_apple(&self) -> bool {
-        self.tools.xcode_cli && self.tools.lipo && self.tools.xcodebuild
-    }
-
     pub fn is_ready_for_android(&self) -> bool {
         self.tools.android_ndk.is_some()
     }

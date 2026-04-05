@@ -208,8 +208,15 @@ Desktop JVM target configuration.
 
 - `enabled` (bool): Whether JVM target is active.
   - Default: `false`
-- `output` (path): Output directory for Java sources and JNI glue.
+- `output` (path): Output directory for Java sources, JNI glue, and host native outputs.
   - Default: `dist/java`
+- `host_targets` (array of strings, optional): Desired desktop native outputs.
+  - Supported canonical values: `current`, `darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, `linux-aarch64`, `windows-x86_64`
+  - Supported aliases: `darwin-aarch64`, `darwin-x86-64`, `linux-x86-64`, `linux-arm64`, `windows-x86-64`
+  - Default: `["current"]`
+  - Phase 3 behavior: all configured values must resolve to the current host target after `current` expansion and deduping
+  - Packaging layout: `boltffi pack java` writes the JNI library to `dist/java/native/<host-target>/` and also keeps a flat current-host `_jni` copy in `dist/java/`
+  - `boltffi pack java --no-build` is unsupported in Phase 3; rerun without `--no-build`
 
 ### `[targets.java.android]` (optional)
 
