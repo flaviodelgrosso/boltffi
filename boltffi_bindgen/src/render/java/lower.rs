@@ -337,11 +337,11 @@ impl<'a> JavaLowerer<'a> {
         }
     }
 
-    fn normalize_custom_size_expr(&self, size: &SizeExpr) -> SizeExpr {
+    fn normalize_custom_size_expr(size: &SizeExpr) -> SizeExpr {
         match size {
             SizeExpr::OptionSize { value, inner } => SizeExpr::OptionSize {
                 value: value.clone(),
-                inner: Box::new(self.normalize_custom_size_expr(inner)),
+                inner: Box::new(Self::normalize_custom_size_expr(inner)),
             },
             SizeExpr::VecSize {
                 value,
@@ -349,20 +349,17 @@ impl<'a> JavaLowerer<'a> {
                 layout,
             } => SizeExpr::VecSize {
                 value: value.clone(),
-                inner: Box::new(self.normalize_custom_size_expr(inner)),
+                inner: Box::new(Self::normalize_custom_size_expr(inner)),
                 layout: layout.clone(),
             },
             SizeExpr::ResultSize { value, ok, err } => SizeExpr::ResultSize {
                 value: value.clone(),
-                ok: Box::new(self.normalize_custom_size_expr(ok)),
-                err: Box::new(self.normalize_custom_size_expr(err)),
+                ok: Box::new(Self::normalize_custom_size_expr(ok)),
+                err: Box::new(Self::normalize_custom_size_expr(err)),
             },
-            SizeExpr::Sum(parts) => SizeExpr::Sum(
-                parts
-                    .iter()
-                    .map(|part| self.normalize_custom_size_expr(part))
-                    .collect(),
-            ),
+            SizeExpr::Sum(parts) => {
+                SizeExpr::Sum(parts.iter().map(Self::normalize_custom_size_expr).collect())
+            }
             _ => size.clone(),
         }
     }
@@ -373,7 +370,7 @@ impl<'a> JavaLowerer<'a> {
         }
 
         ReadSeq {
-            size: self.normalize_custom_size_expr(&seq.size),
+            size: Self::normalize_custom_size_expr(&seq.size),
             ops: seq
                 .ops
                 .iter()
@@ -436,7 +433,7 @@ impl<'a> JavaLowerer<'a> {
         }
 
         WriteSeq {
-            size: self.normalize_custom_size_expr(&seq.size),
+            size: Self::normalize_custom_size_expr(&seq.size),
             ops: seq
                 .ops
                 .iter()
@@ -501,7 +498,7 @@ impl<'a> JavaLowerer<'a> {
     }
 
     fn emit_size_expr(&self, size: &SizeExpr) -> String {
-        let normalized = self.normalize_custom_size_expr(size);
+        let normalized = Self::normalize_custom_size_expr(size);
         super::emit::emit_size_expr(&normalized)
     }
 

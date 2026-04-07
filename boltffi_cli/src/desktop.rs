@@ -295,10 +295,10 @@ fn resolve_windows_rust_target_triple(
     toolchain_selector: Option<&str>,
     cargo_args: &[String],
 ) -> Result<String> {
-    if current_host != target {
-        if let Some(target_triple) = configured_windows_build_target(cargo_args)? {
-            return Ok(target_triple);
-        }
+    if current_host != target
+        && let Some(target_triple) = configured_windows_build_target(cargo_args)?
+    {
+        return Ok(target_triple);
     }
 
     if let Some(target_triple) = current_host_windows_build_target(cargo_args) {
@@ -622,7 +622,7 @@ fn resolve_target_linker_from_values<I>(
 where
     I: IntoIterator<Item = ConfiguredValue>,
 {
-    for value in configured_values {
+    if let Some(value) = configured_values.into_iter().next() {
         match resolve_target_compiler_value(&value.value) {
             Some(resolved) => return Ok(Some(resolved)),
             None => {
@@ -766,9 +766,11 @@ fn linux_host_linker_args(
     rust_target_triple: &str,
     host_triple: &str,
 ) -> Vec<String> {
-    (rust_target_triple != host_triple)
-        .then(|| linux_cross_linker_args(linker_program, rust_target_triple))
-        .unwrap_or_default()
+    if rust_target_triple != host_triple {
+        linux_cross_linker_args(linker_program, rust_target_triple)
+    } else {
+        Vec::new()
+    }
 }
 
 fn windows_host_linker_args(
@@ -776,9 +778,11 @@ fn windows_host_linker_args(
     rust_target_triple: &str,
     host_triple: &str,
 ) -> Vec<String> {
-    (rust_target_triple != host_triple)
-        .then(|| clang_driver_target_args(linker_program, rust_target_triple))
-        .unwrap_or_default()
+    if rust_target_triple != host_triple {
+        clang_driver_target_args(linker_program, rust_target_triple)
+    } else {
+        Vec::new()
+    }
 }
 
 fn clang_driver_target_args(linker_program: &Path, rust_target_triple: &str) -> Vec<String> {
@@ -943,6 +947,7 @@ fn configured_linux_x86_64_cross_linker_values_with_sources(
         .collect()
 }
 
+#[cfg(test)]
 fn resolve_linux_x86_64_cross_linker_from_values<I>(configured_values: I) -> Result<Option<PathBuf>>
 where
     I: IntoIterator<Item = ConfiguredValue>,

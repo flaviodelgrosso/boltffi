@@ -249,6 +249,10 @@ fn print_config_summary() {
     }
 }
 
+fn readiness(is_ready: bool) -> &'static str {
+    if is_ready { "ok" } else { "missing" }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DoctorOptions, required_target_triples};
@@ -289,8 +293,4 @@ mod tests {
             vec![RustTarget::WASM32_UNKNOWN_UNKNOWN.triple().to_string()]
         );
     }
-}
-
-fn readiness(is_ready: bool) -> &'static str {
-    if is_ready { "ok" } else { "missing" }
 }

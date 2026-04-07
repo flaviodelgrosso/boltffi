@@ -78,6 +78,18 @@ struct JvmBuildArtifacts {
     static_library_filename: Option<String>,
 }
 
+struct JniLinkerArgs<'a> {
+    output_lib: &'a Path,
+    jni_glue: &'a Path,
+    link_input: &'a Path,
+    jni_dir: &'a Path,
+    jni_include_directories: &'a JniIncludeDirectories,
+    rustflag_linker_args: &'a [String],
+    native_link_search_paths: &'a [String],
+    native_static_libraries: &'a [String],
+    rpath_flag: Option<&'a str>,
+}
+
 struct NativeLinkMetadata {
     native_static_libraries: Vec<String>,
     native_link_search_paths: Vec<String>,
@@ -813,9 +825,7 @@ fn selected_jvm_package_source_directory(
         })
 }
 
-fn selected_jvm_package_artifact_name<'a>(
-    packaging_targets: &'a [JvmPackagingTarget],
-) -> Result<&'a str> {
+fn selected_jvm_package_artifact_name(packaging_targets: &[JvmPackagingTarget]) -> Result<&str> {
     packaging_targets
         .first()
         .map(|target| target.cargo_context.artifact_name.as_str())
@@ -877,28 +887,29 @@ fn compile_jni_library(
 
     let mut cmd = packaging_target.toolchain.linker_command();
     let jni_linker_args = if packaging_target.toolchain.uses_msvc_compiler() {
-        clang_cl_jni_linker_args(
-            &output_lib,
-            &jni_glue,
-            link_input.path(),
-            &jni_dir,
-            &jni_include_directories,
-            packaging_target.toolchain.jni_rustflag_linker_args(),
-            &build_artifacts.native_link_search_paths,
-            &build_artifacts.native_static_libraries,
-        )?
+        clang_cl_jni_linker_args(&JniLinkerArgs {
+            output_lib: &output_lib,
+            jni_glue: &jni_glue,
+            link_input: link_input.path(),
+            jni_dir: &jni_dir,
+            jni_include_directories: &jni_include_directories,
+            rustflag_linker_args: packaging_target.toolchain.jni_rustflag_linker_args(),
+            native_link_search_paths: &build_artifacts.native_link_search_paths,
+            native_static_libraries: &build_artifacts.native_static_libraries,
+            rpath_flag: None,
+        })?
     } else {
-        clang_style_jni_linker_args(
-            &output_lib,
-            &jni_glue,
-            link_input.path(),
-            &jni_dir,
-            &jni_include_directories,
-            packaging_target.toolchain.jni_rustflag_linker_args(),
-            &build_artifacts.native_link_search_paths,
-            &build_artifacts.native_static_libraries,
-            host_target.rpath_flag(),
-        )
+        clang_style_jni_linker_args(&JniLinkerArgs {
+            output_lib: &output_lib,
+            jni_glue: &jni_glue,
+            link_input: link_input.path(),
+            jni_dir: &jni_dir,
+            jni_include_directories: &jni_include_directories,
+            rustflag_linker_args: packaging_target.toolchain.jni_rustflag_linker_args(),
+            native_link_search_paths: &build_artifacts.native_link_search_paths,
+            native_static_libraries: &build_artifacts.native_static_libraries,
+            rpath_flag: host_target.rpath_flag(),
+        })
     };
     cmd.args(jni_linker_args);
 
@@ -1515,7 +1526,7 @@ fn extract_native_static_libraries(output: &str) -> Option<Vec<String>> {
     output
         .lines()
         .filter_map(parse_native_static_libraries)
-        .last()
+        .next_back()
 }
 
 fn extract_link_search_paths(output: &str) -> Vec<String> {
@@ -1577,60 +1588,45 @@ fn link_search_path_flags(link_search_paths: &[String]) -> Vec<String> {
     flags
 }
 
-fn clang_style_jni_linker_args(
-    output_lib: &Path,
-    jni_glue: &Path,
-    link_input: &Path,
-    jni_dir: &Path,
-    jni_include_directories: &JniIncludeDirectories,
-    rustflag_linker_args: &[String],
-    native_link_search_paths: &[String],
-    native_static_libraries: &[String],
-    rpath_flag: Option<&str>,
-) -> Vec<String> {
+fn clang_style_jni_linker_args(args_in: &JniLinkerArgs<'_>) -> Vec<String> {
     let mut args = vec![
         "-shared".to_string(),
         "-fPIC".to_string(),
         "-o".to_string(),
-        output_lib.display().to_string(),
-        jni_glue.display().to_string(),
-        link_input.display().to_string(),
-        format!("-I{}", jni_dir.display()),
-        format!("-I{}", jni_include_directories.shared.display()),
-        format!("-I{}", jni_include_directories.platform.display()),
+        args_in.output_lib.display().to_string(),
+        args_in.jni_glue.display().to_string(),
+        args_in.link_input.display().to_string(),
+        format!("-I{}", args_in.jni_dir.display()),
+        format!("-I{}", args_in.jni_include_directories.shared.display()),
+        format!("-I{}", args_in.jni_include_directories.platform.display()),
     ];
-    args.extend(rustflag_linker_args.iter().cloned());
-    args.extend(link_search_path_flags(native_link_search_paths));
-    args.extend(native_static_libraries.iter().cloned());
-    if let Some(rpath_flag) = rpath_flag {
+    args.extend(args_in.rustflag_linker_args.iter().cloned());
+    args.extend(link_search_path_flags(args_in.native_link_search_paths));
+    args.extend(args_in.native_static_libraries.iter().cloned());
+    if let Some(rpath_flag) = args_in.rpath_flag {
         args.push(rpath_flag.to_string());
     }
     args
 }
 
-fn clang_cl_jni_linker_args(
-    output_lib: &Path,
-    jni_glue: &Path,
-    link_input: &Path,
-    jni_dir: &Path,
-    jni_include_directories: &JniIncludeDirectories,
-    rustflag_linker_args: &[String],
-    native_link_search_paths: &[String],
-    native_static_libraries: &[String],
-) -> Result<Vec<String>> {
+fn clang_cl_jni_linker_args(args_in: &JniLinkerArgs<'_>) -> Result<Vec<String>> {
     let mut args = vec![
         "/LD".to_string(),
-        jni_glue.display().to_string(),
-        link_input.display().to_string(),
-        format!("/I{}", jni_dir.display()),
-        format!("/I{}", jni_include_directories.shared.display()),
-        format!("/I{}", jni_include_directories.platform.display()),
+        args_in.jni_glue.display().to_string(),
+        args_in.link_input.display().to_string(),
+        format!("/I{}", args_in.jni_dir.display()),
+        format!("/I{}", args_in.jni_include_directories.shared.display()),
+        format!("/I{}", args_in.jni_include_directories.platform.display()),
         "/link".to_string(),
-        format!("/OUT:{}", output_lib.display()),
+        format!("/OUT:{}", args_in.output_lib.display()),
     ];
-    args.extend(msvc_rustflag_linker_args(rustflag_linker_args)?);
-    args.extend(msvc_link_search_path_flags(native_link_search_paths));
-    args.extend(msvc_native_static_library_flags(native_static_libraries));
+    args.extend(msvc_rustflag_linker_args(args_in.rustflag_linker_args)?);
+    args.extend(msvc_link_search_path_flags(
+        args_in.native_link_search_paths,
+    ));
+    args.extend(msvc_native_static_library_flags(
+        args_in.native_static_libraries,
+    ));
     Ok(args)
 }
 
@@ -2700,6 +2696,7 @@ fn current_manifest_path_with_args(cargo_args: &[String]) -> Result<PathBuf> {
         })
 }
 
+#[cfg(test)]
 fn parse_cargo_target_directory(metadata: &[u8]) -> Result<PathBuf> {
     Ok(parse_cargo_metadata(metadata)?.target_directory)
 }
@@ -2868,9 +2865,9 @@ fn detect_version() -> Option<String> {
 mod tests {
     use super::{
         CargoMetadata, CargoMetadataPackage, CargoMetadataPackageTarget, JniIncludeDirectories,
-        JvmCargoContext, JvmCrateOutputs, JvmPackagedNativeOutput, JvmPackagingTarget,
-        bundled_jvm_shared_library_path, cargo_metadata_args, clang_cl_jni_linker_args,
-        current_cargo_package_selector, current_cargo_target_selector,
+        JniLinkerArgs, JvmCargoContext, JvmCrateOutputs, JvmPackagedNativeOutput,
+        JvmPackagingTarget, bundled_jvm_shared_library_path, cargo_metadata_args,
+        clang_cl_jni_linker_args, current_cargo_package_selector, current_cargo_target_selector,
         current_manifest_path_with_args, effective_cargo_package_selector,
         ensure_java_no_build_supported, ensure_java_pack_cargo_args_supported,
         ensure_java_pack_experimental_supported, existing_jvm_shared_library_path,
@@ -3088,16 +3085,17 @@ mod tests {
             platform: PathBuf::from("/tmp/jdk/include/win32"),
         };
 
-        let args = clang_cl_jni_linker_args(
-            Path::new("/tmp/out/demo_jni.dll"),
-            Path::new("/tmp/jni/jni_glue.c"),
-            Path::new("/tmp/target/demo.lib"),
-            Path::new("/tmp/jni"),
-            &include_directories,
-            &["-L/tmp/rustflag-native".to_string(), "-luser32".to_string()],
-            &["native=/tmp/native".to_string()],
-            &["-lws2_32".to_string(), "userenv.lib".to_string()],
-        )
+        let args = clang_cl_jni_linker_args(&JniLinkerArgs {
+            output_lib: Path::new("/tmp/out/demo_jni.dll"),
+            jni_glue: Path::new("/tmp/jni/jni_glue.c"),
+            link_input: Path::new("/tmp/target/demo.lib"),
+            jni_dir: Path::new("/tmp/jni"),
+            jni_include_directories: &include_directories,
+            rustflag_linker_args: &["-L/tmp/rustflag-native".to_string(), "-luser32".to_string()],
+            native_link_search_paths: &["native=/tmp/native".to_string()],
+            native_static_libraries: &["-lws2_32".to_string(), "userenv.lib".to_string()],
+            rpath_flag: None,
+        })
         .expect("msvc jni args");
 
         assert_eq!(

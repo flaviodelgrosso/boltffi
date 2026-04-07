@@ -599,11 +599,11 @@ fn run_release(
         return Ok(());
     }
 
-    if release_requires_java_environment_validation(config, platform) {
-        if let Err(error) = check_java_packaging_prereqs(config, true, &cargo_args) {
-            println!("JVM packaging preflight failed: {error}");
-            return Err(error);
-        }
+    if release_requires_java_environment_validation(config, platform)
+        && let Err(error) = check_java_packaging_prereqs(config, true, &cargo_args)
+    {
+        println!("JVM packaging preflight failed: {error}");
+        return Err(error);
     }
     println!();
 
