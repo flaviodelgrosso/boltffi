@@ -7,6 +7,21 @@ description: "Configure boltffi.toml package names, target outputs, and platform
 
 BoltFFI reads its configuration from a file called `boltffi.toml` in your project's root directory. This file tells BoltFFI how to name your modules, where to put generated files, and how to structure the output packages. Run `boltffi init` to create one with sensible defaults, then customize it for your needs.
 
+## Overlay Configs
+
+BoltFFI always starts from `./boltffi.toml`. For one-off builds, you can merge an additional TOML
+file on top with the global `--overlay` flag:
+
+```bash
+boltffi --overlay boltffi.ci.toml pack android
+boltffi --overlay boltffi.release.toml pack all --release
+```
+
+This is useful when you want CI or release-specific settings without changing the tracked base
+config. The base `boltffi.toml` must still exist; the overlay only augments or overrides values in
+that file for the current command. `boltffi init` is the one command that intentionally rejects
+`--overlay`.
+
 ## Package Identity
 
 Every `boltffi.toml` starts with a `[package]` section that identifies your library:

@@ -95,6 +95,17 @@ When `architectures` is omitted, BoltFFI keeps the existing default Android matr
 configured ABI already has a built Rust static library and ignores stale artifacts for
 unconfigured ABIs.
 
+You can also apply per-invocation overlays without mutating the tracked base config.
+BoltFFI still requires a base `boltffi.toml`, then merges the overlay on top for that one command:
+
+```bash
+boltffi --overlay boltffi.ci.toml pack android
+boltffi --overlay boltffi.release.toml pack all --release
+```
+
+This is useful for CI, release builds, or machine-local overrides. `boltffi init` does not accept
+`--overlay`.
+
 Use it from Swift, Kotlin, or TypeScript:
 
 ```swift

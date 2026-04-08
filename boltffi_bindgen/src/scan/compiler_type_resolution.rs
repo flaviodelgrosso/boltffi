@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use proc_macro2::Span;
 use quote::quote;
@@ -126,6 +127,23 @@ fn cargo_manifest_dir(manifest_path: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("invalid manifest path: {}", manifest_path))
 }
 
+fn runner_lock(crate_path: &Path) -> Result<Arc<Mutex<()>>, String> {
+    static RUNNER_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
+    let key = crate_path
+        .canonicalize()
+        .map_err(|e| format!("canonicalize {}: {}", crate_path.display(), e))?;
+    let locks = RUNNER_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks
+        .lock()
+        .map_err(|_| "runner lock registry poisoned".to_string())?;
+
+    Ok(locks
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
+}
+
 pub fn resolve(
     crate_path: &Path,
     package_hint: &str,
@@ -160,6 +178,10 @@ pub fn resolve(
     let metadata = load_cargo_metadata(crate_path)?;
     let target_package = select_target_package(crate_path, package_hint, &metadata)?;
     let target_manifest_dir = cargo_manifest_dir(&target_package.manifest_path)?;
+    let lock = runner_lock(crate_path)?;
+    let _guard = lock
+        .lock()
+        .map_err(|_| "type resolution runner lock poisoned".to_string())?;
 
     let dir = runner_dir(crate_path);
     let src_dir = dir.join("src");
