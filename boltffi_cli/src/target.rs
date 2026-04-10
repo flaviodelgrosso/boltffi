@@ -197,6 +197,32 @@ impl NativeHostPlatform {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LinuxArchitecture {
+    #[serde(rename = "arm64")]
+    Arm64,
+    #[serde(rename = "x86_64")]
+    X86_64,
+}
+
+impl LinuxArchitecture {
+    pub const ALL: &'static [Self] = &[Self::Arm64, Self::X86_64];
+
+    pub const fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Arm64 => "arm64",
+            Self::X86_64 => "x86_64",
+        }
+    }
+
+    pub const fn rust_target(self) -> RustTarget {
+        match self {
+            Self::Arm64 => RustTarget::LINUX_ARM64,
+            Self::X86_64 => RustTarget::LINUX_X86_64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum JavaHostTarget {
     #[serde(rename = "current")]
     Current,
@@ -464,6 +490,14 @@ pub fn resolve_java_host_targets(
     targets: &[JavaHostTarget],
 ) -> Result<Vec<JavaHostTarget>, String> {
     JavaHostTarget::resolve_requested(targets)
+}
+
+pub fn resolve_linux_targets(architectures: &[LinuxArchitecture]) -> Vec<RustTarget> {
+    architectures
+        .iter()
+        .copied()
+        .map(LinuxArchitecture::rust_target)
+        .collect()
 }
 
 impl Platform {
