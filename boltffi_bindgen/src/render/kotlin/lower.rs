@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use boltffi_ffi_rules::callable::{CallableForm, ExecutionKind};
-use boltffi_ffi_rules::transport::{EnumTagStrategy, ScalarReturnStrategy, ValueReturnStrategy};
+use boltffi_ffi_rules::transport::{
+    EncodedReturnStrategy, EnumTagStrategy, ScalarReturnStrategy, ValueReturnStrategy,
+};
 
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiEnum, AbiEnumField,
@@ -1113,7 +1115,7 @@ impl<'a> KotlinLowerer<'a> {
             .collect();
         let native_args = self.native_args_for_params(call, &func.params, &wire_writers);
         let return_type = self.kotlin_return_type_from_def(&func.returns, output_route);
-        let return_meta = self.kotlin_return_meta(output_route);
+        let return_meta = self.kotlin_host_return_meta(output_route, &func.returns);
         let decode_expr = self.decode_expr_for_call_return(output_route, &func.returns);
         let is_blittable_return = self.is_blittable_return(output_route, &func.returns);
         let async_call = match &call.mode {
@@ -1245,7 +1247,7 @@ impl<'a> KotlinLowerer<'a> {
         };
         let output_route = &call.returns;
         let return_type = self.kotlin_return_type_from_def(&returns, output_route);
-        let return_meta = self.kotlin_return_meta(output_route);
+        let return_meta = self.kotlin_host_return_meta(output_route, &returns);
         let decode_expr = self.decode_expr_for_call_return(output_route, &returns);
         let is_blittable_return = self.is_blittable_return(output_route, &returns);
         let err_type = self.error_type_name(&returns);
@@ -1346,7 +1348,7 @@ impl<'a> KotlinLowerer<'a> {
             })
             .collect::<Vec<_>>();
         let return_type = self.kotlin_return_type_from_def(&method.returns, output_route);
-        let return_meta = self.kotlin_return_meta(output_route);
+        let return_meta = self.kotlin_host_return_meta(output_route, &method.returns);
         let decode_expr = self.decode_expr_for_call_return(output_route, &method.returns);
         let is_blittable_return = self.is_blittable_return(output_route, &method.returns);
         let ffi_name = call.symbol.as_str().to_string();
@@ -1440,7 +1442,7 @@ impl<'a> KotlinLowerer<'a> {
         } else {
             self.kotlin_return_type_from_def(&method.returns, output_route)
         };
-        let return_meta = self.kotlin_return_meta(output_route);
+        let return_meta = self.kotlin_host_return_meta(output_route, &method.returns);
         let decode_expr = self.decode_expr_for_call_return(output_route, &method.returns);
         let is_blittable_return = self.is_blittable_return(output_route, &method.returns);
         let ffi_name = call.symbol.as_str().to_string();
@@ -2671,6 +2673,9 @@ impl<'a> KotlinLowerer<'a> {
             ValueReturnStrategy::ObjectHandle | ValueReturnStrategy::CallbackHandle => {
                 "Long".to_string()
             }
+            ValueReturnStrategy::Buffer(EncodedReturnStrategy::Utf8String) => {
+                "String".to_string()
+            }
             ValueReturnStrategy::CompositeValue | ValueReturnStrategy::Buffer(_) => {
                 "ByteArray?".to_string()
             }
@@ -3110,6 +3115,30 @@ impl<'a> KotlinLowerer<'a> {
                 }
             }
         }
+    }
+
+    fn kotlin_host_return_meta(
+        &self,
+        ret_shape: &ReturnShape,
+        returns_def: &ReturnDef,
+    ) -> KotlinReturnMeta {
+        if matches!(returns_def, ReturnDef::Value(TypeExpr::String))
+            && Self::is_utf8_string_return(ret_shape)
+        {
+            return KotlinReturnMeta {
+                is_unit: false,
+                is_direct: true,
+                cast: String::new(),
+            };
+        }
+        self.kotlin_return_meta(ret_shape)
+    }
+
+    fn is_utf8_string_return(ret_shape: &ReturnShape) -> bool {
+        matches!(
+            ret_shape.value_return_strategy(),
+            ValueReturnStrategy::Buffer(EncodedReturnStrategy::Utf8String)
+        )
     }
 
     fn kotlin_handle_return_cast(&self, class_id: &ClassId, nullable: bool) -> String {
@@ -3599,7 +3628,7 @@ impl<'a> KotlinLowerer<'a> {
             CallMode::Sync => unreachable!("async method missing async call"),
         };
         let result_route = &async_call.result;
-        let return_meta = self.kotlin_return_meta(result_route);
+        let return_meta = self.kotlin_host_return_meta(result_route, &method.returns);
         let decode_expr = self.decode_expr_for_call_return(result_route, &method.returns);
         let is_blittable_return = self.is_blittable_return(result_route, &method.returns);
         KotlinAsyncCall {
@@ -3641,7 +3670,7 @@ impl<'a> KotlinLowerer<'a> {
             CallMode::Sync => unreachable!("async function missing async call"),
         };
         let result_route = &async_call.result;
-        let return_meta = self.kotlin_return_meta(result_route);
+        let return_meta = self.kotlin_host_return_meta(result_route, &func.returns);
         let decode_expr = self.decode_expr_for_call_return(result_route, &func.returns);
         let is_blittable_return = self.is_blittable_return(result_route, &func.returns);
         KotlinAsyncCall {

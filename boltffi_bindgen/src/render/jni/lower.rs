@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use boltffi_ffi_rules::naming;
-use boltffi_ffi_rules::transport::{ScalarReturnStrategy, ValueReturnStrategy};
+use boltffi_ffi_rules::transport::{
+    EncodedReturnStrategy, ScalarReturnStrategy, ValueReturnStrategy,
+};
 
 use crate::ir::abi::{
     AbiCall, AbiCallbackInvocation, AbiCallbackMethod, AbiContract, AbiParam, AbiStream, AsyncCall,
@@ -355,7 +357,7 @@ impl<'a> JniLowerer<'a> {
             .collect();
 
         let jni_params = self.format_jni_params(&params);
-        let return_meta = self.return_meta_for_shape(&func.returns, Some(&abi_call.returns));
+        let return_meta = self.host_return_meta_for_shape(&func.returns, &abi_call.returns);
         let return_composite_c_type = if matches!(func.returns, ReturnDef::Result { .. }) {
             None
         } else {
@@ -457,6 +459,9 @@ impl<'a> JniLowerer<'a> {
     }
 
     fn value_type_return_meta(&self, abi_call: &AbiCall) -> JniReturnMeta {
+        if Self::is_utf8_string_return(&abi_call.returns) {
+            return Self::utf8_string_return_meta();
+        }
         match &abi_call.returns.transport {
             None => JniReturnMeta {
                 is_unit: true,
@@ -608,7 +613,7 @@ impl<'a> JniLowerer<'a> {
             .collect();
 
         let jni_params = self.format_jni_params(&params);
-        let return_meta = self.return_meta_for_shape(&method.returns, Some(&abi_call.returns));
+        let return_meta = self.host_return_meta_for_shape(&method.returns, &abi_call.returns);
         let return_composite_c_type = if matches!(method.returns, ReturnDef::Result { .. }) {
             None
         } else {
@@ -1252,6 +1257,15 @@ impl<'a> JniLowerer<'a> {
         self.return_meta_for_shape(returns, None)
     }
 
+    fn host_return_meta_for_shape(&self, returns: &ReturnDef, ret_shape: &ReturnShape) -> JniReturnMeta {
+        if matches!(returns, ReturnDef::Value(TypeExpr::String))
+            && Self::is_utf8_string_return(ret_shape)
+        {
+            return Self::utf8_string_return_meta();
+        }
+        self.return_meta_for_shape(returns, Some(ret_shape))
+    }
+
     fn return_meta_for_shape(
         &self,
         returns: &ReturnDef,
@@ -1340,6 +1354,23 @@ impl<'a> JniLowerer<'a> {
         }
     }
 
+    fn is_utf8_string_return(ret_shape: &ReturnShape) -> bool {
+        matches!(
+            ret_shape.value_return_strategy(),
+            ValueReturnStrategy::Buffer(EncodedReturnStrategy::Utf8String)
+        )
+    }
+
+    fn utf8_string_return_meta() -> JniReturnMeta {
+        JniReturnMeta {
+            is_unit: false,
+            is_direct: true,
+            jni_return_type: "jstring".to_string(),
+            jni_c_return_type: "FfiBuf_u8".to_string(),
+            jni_return_expr: "boltffi_utf8_buf_to_jstring(env, _result)".to_string(),
+        }
+    }
+
     fn callback_handle_return_meta(ret_shape: &ReturnShape) -> Option<JniReturnMeta> {
         matches!(
             ret_shape.value_return_strategy(),
@@ -1380,7 +1411,7 @@ impl<'a> JniLowerer<'a> {
                 }
             }
             _ => {
-                let return_meta = self.return_meta_for_shape(returns, Some(ret_shape));
+                let return_meta = self.host_return_meta_for_shape(returns, ret_shape);
                 self.async_complete_kind(&return_meta)
             }
         }
