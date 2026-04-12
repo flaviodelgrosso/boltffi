@@ -64,16 +64,29 @@ mod tests {
             ValueReturnMethod::WriteToReturnSlot
         ));
 
-        let statement = resolved_return
+        let combined = resolved_return
             .invalid_arg_early_return_statement()
             .to_string();
         assert!(
-            statement.contains("return ;"),
-            "wasm branch should use void return"
+            combined.contains("return ;"),
+            "combined: wasm branch should use void return"
         );
         assert!(
-            statement.contains("return :: boltffi :: __private :: FfiBuf :: default ()"),
-            "native branch should return FfiBuf::default()"
+            combined.contains("return :: boltffi :: __private :: FfiBuf :: default ()"),
+            "combined: native branch should return FfiBuf::default()"
+        );
+
+        assert_eq!(
+            resolved_return
+                .wasm_invalid_arg_early_return_statement()
+                .to_string(),
+            "return ;",
+        );
+        assert_eq!(
+            resolved_return
+                .native_invalid_arg_early_return_statement()
+                .to_string(),
+            "return :: boltffi :: __private :: FfiBuf :: default () ;",
         );
     }
 }
