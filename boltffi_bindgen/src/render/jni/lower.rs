@@ -461,7 +461,9 @@ impl<'a> JniLowerer<'a> {
     }
 
     fn value_type_return_meta(&self, abi_call: &AbiCall) -> JniReturnMeta {
-        if Self::is_utf8_string_return(&abi_call.returns) {
+        if self.supports_direct_utf8_string_return()
+            && Self::is_utf8_string_return(&abi_call.returns)
+        {
             return Self::utf8_string_return_meta();
         }
         match &abi_call.returns.transport {
@@ -1261,8 +1263,13 @@ impl<'a> JniLowerer<'a> {
         self.return_meta_for_shape(returns, None)
     }
 
-    fn host_return_meta_for_shape(&self, returns: &ReturnDef, ret_shape: &ReturnShape) -> JniReturnMeta {
-        if matches!(returns, ReturnDef::Value(TypeExpr::String))
+    fn host_return_meta_for_shape(
+        &self,
+        returns: &ReturnDef,
+        ret_shape: &ReturnShape,
+    ) -> JniReturnMeta {
+        if self.supports_direct_utf8_string_return()
+            && matches!(returns, ReturnDef::Value(TypeExpr::String))
             && Self::is_utf8_string_return(ret_shape)
         {
             return Self::utf8_string_return_meta();
@@ -1363,6 +1370,10 @@ impl<'a> JniLowerer<'a> {
             ret_shape.value_return_strategy(),
             ValueReturnStrategy::Buffer(EncodedReturnStrategy::Utf8String)
         )
+    }
+
+    fn supports_direct_utf8_string_return(&self) -> bool {
+        matches!(self.jvm_binding_style, JvmBindingStyle::Kotlin)
     }
 
     fn utf8_string_return_meta() -> JniReturnMeta {
@@ -2804,8 +2815,8 @@ mod tests {
     use crate::ir::types::PrimitiveType;
     use crate::ir::{
         CStyleVariant, CallbackId, CallbackKind, CallbackMethodDef, CallbackTraitDef, EnumDef,
-        FieldDef, FieldName, MethodDef, MethodId, ParamDef, ParamName, ParamPassing, Receiver,
-        RecordDef, RecordId, ReturnDef, VariantName,
+        FieldDef, FieldName, FunctionDef, FunctionId, MethodDef, MethodId, ParamDef, ParamName,
+        ParamPassing, Receiver, RecordDef, RecordId, ReturnDef, VariantName,
     };
     use boltffi_ffi_rules::callable::ExecutionKind;
 
@@ -3235,6 +3246,59 @@ mod tests {
         contract
     }
 
+    fn contract_with_string_function() -> FfiContract {
+        FfiContract {
+            package: PackageInfo {
+                name: "test".to_string(),
+                version: None,
+            },
+            catalog: TypeCatalog::default(),
+            functions: vec![FunctionDef {
+                id: FunctionId::new("get_name"),
+                params: vec![],
+                returns: ReturnDef::Value(TypeExpr::String),
+                execution_kind: ExecutionKind::Sync,
+                doc: None,
+                deprecated: None,
+            }],
+        }
+    }
+
+    fn contract_with_string_value_method() -> FfiContract {
+        let mut catalog = TypeCatalog::default();
+        catalog.insert_record(RecordDef {
+            id: RecordId::new("Named"),
+            is_repr_c: false,
+            is_error: false,
+            fields: vec![FieldDef {
+                name: FieldName::new("id"),
+                type_expr: TypeExpr::Primitive(PrimitiveType::I32),
+                doc: None,
+                default: None,
+            }],
+            constructors: vec![],
+            methods: vec![MethodDef {
+                id: MethodId::new("label"),
+                receiver: Receiver::RefSelf,
+                params: vec![],
+                returns: ReturnDef::Value(TypeExpr::String),
+                execution_kind: ExecutionKind::Sync,
+                doc: None,
+                deprecated: None,
+            }],
+            doc: None,
+            deprecated: None,
+        });
+        FfiContract {
+            package: PackageInfo {
+                name: "test".to_string(),
+                version: None,
+            },
+            catalog,
+            functions: vec![],
+        }
+    }
+
     fn lowerer_from_contract(contract: &FfiContract) -> JniLowerer<'_> {
         let abi = IrLowerer::new(contract).to_abi_contract();
         let abi_leaked: &'static AbiContract = Box::leak(Box::new(abi));
@@ -3418,6 +3482,68 @@ mod tests {
 
         assert!(async_callback.proxy_sync_methods.is_empty());
         assert!(async_callback.proxy_async_methods.is_empty());
+    }
+
+    #[test]
+    fn java_binding_style_host_string_return_uses_wire_buffer_path() {
+        let contract = contract_with_string_function();
+        let lowerer = lowerer_from_contract_with_binding_style(&contract, JvmBindingStyle::Java);
+        let module = lowerer.lower();
+        let wire_fn = module
+            .wire_functions
+            .iter()
+            .find(|function| function.ffi_name == "boltffi_get_name")
+            .expect("expected get_name wire function");
+
+        assert!(!wire_fn.return_is_direct);
+        assert_eq!(wire_fn.jni_return_type, "jbyteArray");
+    }
+
+    #[test]
+    fn kotlin_binding_style_host_string_return_uses_direct_jstring_path() {
+        let contract = contract_with_string_function();
+        let lowerer = lowerer_from_contract_with_binding_style(&contract, JvmBindingStyle::Kotlin);
+        let module = lowerer.lower();
+        let wire_fn = module
+            .wire_functions
+            .iter()
+            .find(|function| function.ffi_name == "boltffi_get_name")
+            .expect("expected get_name wire function");
+
+        assert!(wire_fn.return_is_direct);
+        assert_eq!(wire_fn.jni_return_type, "jstring");
+        assert_eq!(wire_fn.jni_c_return_type, "FfiBuf_u8");
+    }
+
+    #[test]
+    fn java_binding_style_value_type_string_return_uses_wire_buffer_path() {
+        let contract = contract_with_string_value_method();
+        let lowerer = lowerer_from_contract_with_binding_style(&contract, JvmBindingStyle::Java);
+        let module = lowerer.lower();
+        let wire_fn = module
+            .wire_functions
+            .iter()
+            .find(|function| function.ffi_name.contains("label"))
+            .expect("expected value method wire function");
+
+        assert!(!wire_fn.return_is_direct);
+        assert_eq!(wire_fn.jni_return_type, "jbyteArray");
+    }
+
+    #[test]
+    fn kotlin_binding_style_value_type_string_return_uses_direct_jstring_path() {
+        let contract = contract_with_string_value_method();
+        let lowerer = lowerer_from_contract_with_binding_style(&contract, JvmBindingStyle::Kotlin);
+        let module = lowerer.lower();
+        let wire_fn = module
+            .wire_functions
+            .iter()
+            .find(|function| function.ffi_name.contains("label"))
+            .expect("expected value method wire function");
+
+        assert!(wire_fn.return_is_direct);
+        assert_eq!(wire_fn.jni_return_type, "jstring");
+        assert_eq!(wire_fn.jni_c_return_type, "FfiBuf_u8");
     }
 
     #[test]
