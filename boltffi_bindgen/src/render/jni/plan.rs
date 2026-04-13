@@ -291,6 +291,7 @@ pub enum JniParamKind {
         c_type: String,
         elements_kind: JniPrimitiveArrayElementsKind,
         release_mode: JniArrayReleaseMode,
+        stack_copy_max_len: Option<usize>,
     },
     Buffer,
     Composite {
@@ -361,6 +362,18 @@ impl JniPrimitiveArrayElementsKind {
             Self::Double => "jdouble*",
         }
     }
+
+    pub fn value_type(&self) -> &'static str {
+        match self {
+            Self::Boolean => "jboolean",
+            Self::Byte => "jbyte",
+            Self::Short => "jshort",
+            Self::Int => "jint",
+            Self::Long => "jlong",
+            Self::Float => "jfloat",
+            Self::Double => "jdouble",
+        }
+    }
 }
 
 impl JniParam {
@@ -413,6 +426,24 @@ impl JniParam {
         }
     }
 
+    pub fn array_has_stack_copy_fast_path(&self) -> bool {
+        match &self.kind {
+            JniParamKind::PrimitiveArray {
+                stack_copy_max_len, ..
+            } => stack_copy_max_len.is_some(),
+            _ => false,
+        }
+    }
+
+    pub fn array_stack_copy_max_len(&self) -> usize {
+        match &self.kind {
+            JniParamKind::PrimitiveArray {
+                stack_copy_max_len, ..
+            } => stack_copy_max_len.unwrap_or(0),
+            _ => 0,
+        }
+    }
+
     pub fn array_get_elements_fn(&self) -> &str {
         match &self.kind {
             JniParamKind::PrimitiveArray { elements_kind, .. } => elements_kind.get_fn(),
@@ -430,6 +461,13 @@ impl JniParam {
     pub fn array_elements_ptr_type(&self) -> &str {
         match &self.kind {
             JniParamKind::PrimitiveArray { elements_kind, .. } => elements_kind.ptr_type(),
+            _ => "",
+        }
+    }
+
+    pub fn array_elements_value_type(&self) -> &str {
+        match &self.kind {
+            JniParamKind::PrimitiveArray { elements_kind, .. } => elements_kind.value_type(),
             _ => "",
         }
     }

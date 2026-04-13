@@ -74,6 +74,8 @@ pub enum JvmBindingStyle {
     Kotlin,
 }
 
+const UTF8_STACK_COPY_MAX_LEN: usize = 128;
+
 pub struct JniLowerer<'a> {
     contract: &'a FfiContract,
     abi: &'a AbiContract,
@@ -782,6 +784,7 @@ impl<'a> JniLowerer<'a> {
                         c_type: "uint8_t".to_string(),
                         elements_kind: JniPrimitiveArrayElementsKind::Byte,
                         release_mode: JniArrayReleaseMode::Abort,
+                        stack_copy_max_len: Some(UTF8_STACK_COPY_MAX_LEN),
                     };
                     (jni_type, ffi_arg, kind)
                 } else {
@@ -814,6 +817,7 @@ impl<'a> JniLowerer<'a> {
                     c_type,
                     elements_kind,
                     release_mode,
+                    stack_copy_max_len: None,
                 };
                 (jni_type, ffi_arg, kind)
             }
