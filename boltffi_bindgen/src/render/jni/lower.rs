@@ -74,7 +74,7 @@ pub enum JvmBindingStyle {
     Kotlin,
 }
 
-const UTF8_STACK_COPY_MAX_LEN: usize = 128;
+const UTF8_STACK_COPY_MAX_LEN: usize = 8;
 
 pub struct JniLowerer<'a> {
     contract: &'a FfiContract,
