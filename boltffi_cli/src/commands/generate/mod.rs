@@ -1,13 +1,14 @@
-mod backend;
+mod generator;
 mod header;
 mod languages;
 
 use std::path::{Path, PathBuf};
 
-use backend::{GenerateRequest, run_backend};
-use header::HeaderBackend;
+use generator::{GenerateRequest, run_generator};
+use header::HeaderGenerator;
 use languages::{
-    DartBackend, JavaBackend, KotlinBackend, PythonBackend, SwiftBackend, TypeScriptBackend,
+    DartGenerator, JavaGenerator, KotlinGenerator, PythonGenerator, SwiftGenerator,
+    TypeScriptGenerator,
 };
 
 use crate::config::{Config, Target};
@@ -34,42 +35,42 @@ pub fn run_generate_with_output(config: &Config, options: GenerateOptions) -> Re
     let request = GenerateRequest::for_current_crate(config, options.output);
 
     match options.target {
-        GenerateTarget::Swift => run_backend::<SwiftBackend>(&request, options.experimental),
-        GenerateTarget::Kotlin => run_backend::<KotlinBackend>(&request, options.experimental),
-        GenerateTarget::Java => run_backend::<JavaBackend>(&request, options.experimental),
-        GenerateTarget::Header => run_backend::<HeaderBackend>(&request, options.experimental),
+        GenerateTarget::Swift => run_generator::<SwiftGenerator>(&request, options.experimental),
+        GenerateTarget::Kotlin => run_generator::<KotlinGenerator>(&request, options.experimental),
+        GenerateTarget::Java => run_generator::<JavaGenerator>(&request, options.experimental),
+        GenerateTarget::Header => run_generator::<HeaderGenerator>(&request, options.experimental),
         GenerateTarget::Typescript => {
-            run_backend::<TypeScriptBackend>(&request, options.experimental)
+            run_generator::<TypeScriptGenerator>(&request, options.experimental)
         }
-        GenerateTarget::Dart => run_backend::<DartBackend>(&request, options.experimental),
-        GenerateTarget::Python => run_backend::<PythonBackend>(&request, options.experimental),
+        GenerateTarget::Dart => run_generator::<DartGenerator>(&request, options.experimental),
+        GenerateTarget::Python => run_generator::<PythonGenerator>(&request, options.experimental),
         GenerateTarget::All => {
             if config.should_process(Target::Swift, options.experimental) {
-                run_backend::<SwiftBackend>(&request, options.experimental)?;
+                run_generator::<SwiftGenerator>(&request, options.experimental)?;
             }
 
             if config.should_process(Target::Kotlin, options.experimental) {
-                run_backend::<KotlinBackend>(&request, options.experimental)?;
+                run_generator::<KotlinGenerator>(&request, options.experimental)?;
             }
 
             if config.should_process(Target::Java, options.experimental) {
-                run_backend::<JavaBackend>(&request, options.experimental)?;
+                run_generator::<JavaGenerator>(&request, options.experimental)?;
             }
 
             if config.should_process(Target::Header, options.experimental) {
-                run_backend::<HeaderBackend>(&request, options.experimental)?;
+                run_generator::<HeaderGenerator>(&request, options.experimental)?;
             }
 
             if config.should_process(Target::TypeScript, options.experimental) {
-                run_backend::<TypeScriptBackend>(&request, options.experimental)?;
+                run_generator::<TypeScriptGenerator>(&request, options.experimental)?;
             }
 
             if config.should_process(Target::Dart, options.experimental) {
-                run_backend::<DartBackend>(&request, options.experimental)?;
+                run_generator::<DartGenerator>(&request, options.experimental)?;
             }
 
             if config.should_process(Target::Python, options.experimental) {
-                run_backend::<PythonBackend>(&request, options.experimental)?;
+                run_generator::<PythonGenerator>(&request, options.experimental)?;
             }
 
             Ok(())
@@ -83,7 +84,7 @@ pub fn run_generate_java_with_output_from_source_dir(
     source_directory: &Path,
     crate_name: &str,
 ) -> Result<()> {
-    JavaBackend::generate_from_source_directory(config, output, source_directory, crate_name)
+    JavaGenerator::generate_from_source_directory(config, output, source_directory, crate_name)
 }
 
 #[cfg(test)]
@@ -92,7 +93,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{GenerateOptions, GenerateTarget, PythonBackend, run_generate_with_output};
+    use super::{GenerateOptions, GenerateTarget, PythonGenerator, run_generate_with_output};
     use crate::config::Config;
     use crate::error::CliError;
 
@@ -184,7 +185,7 @@ enabled = true
 "#,
         );
 
-        PythonBackend::generate_from_source_directory(
+        PythonGenerator::generate_from_source_directory(
             &config,
             Some(output_directory.clone()),
             &demo_source_directory(),

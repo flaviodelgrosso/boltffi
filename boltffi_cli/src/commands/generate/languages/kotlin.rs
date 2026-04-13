@@ -4,17 +4,17 @@ use boltffi_bindgen::{
     FactoryStyle as BindgenFactoryStyle, KotlinApiStyle as BindgenKotlinApiStyle, KotlinOptions,
 };
 
-use crate::commands::generate::backend::{
-    GenerateBackend, GenerateRequest, ScanPointerWidth, bindgen_type_mappings,
+use crate::commands::generate::generator::{
+    GenerateRequest, LanguageGenerator, ScanPointerWidth, bindgen_type_mappings,
 };
 use crate::config::{
     FactoryStyle as ConfigFactoryStyle, KotlinApiStyle as ConfigKotlinApiStyle, Target,
 };
 use crate::error::{CliError, Result};
 
-pub struct KotlinBackend;
+pub struct KotlinGenerator;
 
-impl KotlinBackend {
+impl KotlinGenerator {
     fn kotlin_options(request: &GenerateRequest<'_>, module_name: &str) -> KotlinOptions {
         let factory_style = match request.config().android_kotlin_factory_style() {
             ConfigFactoryStyle::Constructors => BindgenFactoryStyle::Constructors,
@@ -37,7 +37,7 @@ impl KotlinBackend {
     }
 }
 
-impl GenerateBackend for KotlinBackend {
+impl LanguageGenerator for KotlinGenerator {
     const TARGET: Target = Target::Kotlin;
 
     fn generate(request: &GenerateRequest<'_>) -> Result<()> {

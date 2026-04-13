@@ -5,9 +5,9 @@ mod python;
 mod swift;
 mod typescript;
 
-pub use dart::DartBackend;
-pub use java::JavaBackend;
-pub use kotlin::KotlinBackend;
-pub use python::PythonBackend;
-pub use swift::SwiftBackend;
-pub use typescript::TypeScriptBackend;
+pub use dart::DartGenerator;
+pub use java::JavaGenerator;
+pub use kotlin::KotlinGenerator;
+pub use python::PythonGenerator;
+pub use swift::SwiftGenerator;
+pub use typescript::TypeScriptGenerator;

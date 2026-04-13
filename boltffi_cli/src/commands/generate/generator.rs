@@ -167,35 +167,35 @@ impl<'a> GenerateRequest<'a> {
     }
 }
 
-pub trait GenerateBackend {
+pub trait LanguageGenerator {
     const TARGET: Target;
 
     fn generate(request: &GenerateRequest<'_>) -> Result<()>;
 }
 
-pub fn run_backend<Backend: GenerateBackend>(
+pub fn run_generator<Generator: LanguageGenerator>(
     request: &GenerateRequest<'_>,
     experimental_flag: bool,
 ) -> Result<()> {
-    if Experimental::is_target_experimental(Backend::TARGET) {
+    if Experimental::is_target_experimental(Generator::TARGET) {
         let enabled_in_config = request
             .config()
             .experimental
-            .contains(&Backend::TARGET.name().to_string());
+            .contains(&Generator::TARGET.name().to_string());
 
         if !experimental_flag && !enabled_in_config {
             return Err(CliError::CommandFailed {
                 command: format!(
                     "{} is experimental, use --experimental flag or add \"{}\" to [experimental]",
-                    Backend::TARGET.name(),
-                    Backend::TARGET.name()
+                    Generator::TARGET.name(),
+                    Generator::TARGET.name()
                 ),
                 status: None,
             });
         }
     }
 
-    Backend::generate(request)
+    Generator::generate(request)
 }
 
 pub fn bindgen_type_mappings(

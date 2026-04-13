@@ -2,13 +2,13 @@ use boltffi_bindgen::render::typescript::{
     TypeScriptEmitter, TypeScriptLowerError, TypeScriptLowerer,
 };
 
-use crate::commands::generate::backend::{GenerateBackend, GenerateRequest, ScanPointerWidth};
+use crate::commands::generate::generator::{GenerateRequest, LanguageGenerator, ScanPointerWidth};
 use crate::config::Target;
 use crate::error::{CliError, Result};
 
-pub struct TypeScriptBackend;
+pub struct TypeScriptGenerator;
 
-impl GenerateBackend for TypeScriptBackend {
+impl LanguageGenerator for TypeScriptGenerator {
     const TARGET: Target = Target::TypeScript;
 
     fn generate(request: &GenerateRequest<'_>) -> Result<()> {

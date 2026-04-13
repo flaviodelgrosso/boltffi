@@ -1,15 +1,15 @@
 use boltffi_bindgen::ffi_prefix;
 use boltffi_bindgen::render::swift::{SwiftEmitter, SwiftLowerer};
 
-use crate::commands::generate::backend::{
-    GenerateBackend, GenerateRequest, ScanPointerWidth, bindgen_type_mappings,
+use crate::commands::generate::generator::{
+    GenerateRequest, LanguageGenerator, ScanPointerWidth, bindgen_type_mappings,
 };
 use crate::config::Target;
 use crate::error::{CliError, Result};
 
-pub struct SwiftBackend;
+pub struct SwiftGenerator;
 
-impl SwiftBackend {
+impl SwiftGenerator {
     fn bindings_file_name(library_name: &str) -> String {
         let mut characters = library_name.chars();
 
@@ -26,7 +26,7 @@ impl SwiftBackend {
     }
 }
 
-impl GenerateBackend for SwiftBackend {
+impl LanguageGenerator for SwiftGenerator {
     const TARGET: Target = Target::Swift;
 
     fn generate(request: &GenerateRequest<'_>) -> Result<()> {

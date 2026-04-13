@@ -1,12 +1,12 @@
 use boltffi_bindgen::render::dart::{DartEmitter, DartLowerer};
 
-use crate::commands::generate::backend::{GenerateBackend, GenerateRequest, ScanPointerWidth};
+use crate::commands::generate::generator::{GenerateRequest, LanguageGenerator, ScanPointerWidth};
 use crate::config::Target;
 use crate::error::{CliError, Result};
 
-pub struct DartBackend;
+pub struct DartGenerator;
 
-impl GenerateBackend for DartBackend {
+impl LanguageGenerator for DartGenerator {
     const TARGET: Target = Target::Dart;
 
     fn generate(request: &GenerateRequest<'_>) -> Result<()> {

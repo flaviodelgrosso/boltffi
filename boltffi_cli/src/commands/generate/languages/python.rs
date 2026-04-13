@@ -1,33 +1,30 @@
-use std::path::{Path, PathBuf};
-
 use boltffi_bindgen::render::python::{PythonEmitter, PythonLowerer};
 
-use crate::commands::generate::backend::{
-    GenerateBackend, GenerateRequest, ScanPointerWidth, SourceCrate,
-};
+use crate::commands::generate::generator::{GenerateRequest, LanguageGenerator, ScanPointerWidth};
 use crate::config::Target;
 use crate::error::{CliError, Result};
 
-pub struct PythonBackend;
+pub struct PythonGenerator;
 
-impl PythonBackend {
+impl PythonGenerator {
+    #[cfg(test)]
     pub fn generate_from_source_directory(
         config: &crate::config::Config,
-        output_override: Option<PathBuf>,
-        source_directory: &Path,
+        output_override: Option<std::path::PathBuf>,
+        source_directory: &std::path::Path,
         crate_name: &str,
     ) -> Result<()> {
         let request = GenerateRequest::new(
             config,
             output_override,
-            SourceCrate::new(source_directory, crate_name),
+            crate::commands::generate::generator::SourceCrate::new(source_directory, crate_name),
         );
 
         Self::generate(&request)
     }
 }
 
-impl GenerateBackend for PythonBackend {
+impl LanguageGenerator for PythonGenerator {
     const TARGET: Target = Target::Python;
 
     fn generate(request: &GenerateRequest<'_>) -> Result<()> {

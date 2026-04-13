@@ -1,12 +1,12 @@
 use boltffi_bindgen::CHeaderLowerer;
 
-use crate::commands::generate::backend::{GenerateBackend, GenerateRequest, ScanPointerWidth};
+use crate::commands::generate::generator::{GenerateRequest, LanguageGenerator, ScanPointerWidth};
 use crate::config::Target;
 use crate::error::{CliError, Result};
 
-pub struct HeaderBackend;
+pub struct HeaderGenerator;
 
-impl GenerateBackend for HeaderBackend {
+impl LanguageGenerator for HeaderGenerator {
     const TARGET: Target = Target::Header;
 
     fn generate(request: &GenerateRequest<'_>) -> Result<()> {

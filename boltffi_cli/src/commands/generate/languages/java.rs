@@ -3,8 +3,8 @@ use std::path::{Component, Path, PathBuf};
 use boltffi_bindgen::render::java::{JavaEmitter, JavaOptions, JavaVersion};
 use boltffi_bindgen::render::jni::{JniEmitter, JniLowerer, JvmBindingStyle};
 
-use crate::commands::generate::backend::{
-    GenerateBackend, GenerateRequest, ScanPointerWidth, SourceCrate,
+use crate::commands::generate::generator::{
+    GenerateRequest, LanguageGenerator, ScanPointerWidth, SourceCrate,
 };
 use crate::config::Target;
 use crate::error::{CliError, Result};
@@ -24,9 +24,9 @@ impl JavaGenerationMode {
     }
 }
 
-pub struct JavaBackend;
+pub struct JavaGenerator;
 
-impl JavaBackend {
+impl JavaGenerator {
     pub fn generate_from_source_directory(
         config: &crate::config::Config,
         output_override: Option<PathBuf>,
@@ -96,7 +96,7 @@ impl JavaBackend {
     }
 }
 
-impl GenerateBackend for JavaBackend {
+impl LanguageGenerator for JavaGenerator {
     const TARGET: Target = Target::Java;
 
     fn generate(request: &GenerateRequest<'_>) -> Result<()> {
