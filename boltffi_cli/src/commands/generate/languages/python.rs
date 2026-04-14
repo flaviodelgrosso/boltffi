@@ -1,4 +1,4 @@
-use boltffi_bindgen::render::python::{PythonEmitter, PythonLowerer};
+use boltffi_bindgen::render::python::{PythonEmitter, PythonLowerError, PythonLowerer};
 
 use crate::cli::{CliError, Result};
 use crate::commands::generate::generator::{GenerateRequest, LanguageGenerator, ScanPointerWidth};
@@ -48,12 +48,28 @@ impl LanguageGenerator for PythonGenerator {
             &lowered_crate.ffi_contract,
             &lowered_crate.abi_contract,
             &module_name,
+            &request.config().package.name,
             request.config().package_version(),
+            &request.config().crate_artifact_name(),
         )
-        .lower();
-        let python_source = PythonEmitter::emit(&python_module);
-        let output_path = output_directory.join(format!("{module_name}.py"));
+        .lower()
+        .map_err(|error| match error {
+            PythonLowerError::TopLevelFunctionNameCollision { .. }
+            | PythonLowerError::ParameterNameCollision { .. } => CliError::CommandFailed {
+                command: format!("generate python: {error}"),
+                status: None,
+            },
+        })?;
+        let python_sources = PythonEmitter::emit(&python_module);
 
-        request.write_output(&output_path, python_source)
+        python_sources.files.iter().try_for_each(|output_file| {
+            let output_path = output_directory.join(&output_file.relative_path);
+
+            if let Some(parent_directory) = output_path.parent() {
+                request.ensure_output_directory(parent_directory)?;
+            }
+
+            request.write_output(&output_path, &output_file.contents)
+        })
     }
 }

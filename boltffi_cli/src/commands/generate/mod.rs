@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn python_generate_writes_module_file() {
+    fn python_generate_writes_scalar_package_files() {
         let output_directory = unique_temp_dir("boltffi-python-generate-test");
         let config = parse_config(
             r#"
@@ -137,14 +137,38 @@ enabled = true
         )
         .expect("python generate should succeed");
 
-        let generated_module_path = output_directory.join("demo.py");
-        let generated_module = fs::read_to_string(&generated_module_path)
-            .expect("generated python module should be readable");
+        let generated_init_path = output_directory.join("demo/__init__.py");
+        let generated_stub_path = output_directory.join("demo/__init__.pyi");
+        let generated_native_path = output_directory.join("demo/_native.c");
+        let generated_pyproject_path = output_directory.join("pyproject.toml");
+        let generated_setup_path = output_directory.join("setup.py");
+        let generated_init = fs::read_to_string(&generated_init_path)
+            .expect("generated python init should be readable");
+        let generated_stub = fs::read_to_string(&generated_stub_path)
+            .expect("generated python typing stub should be readable");
+        let generated_native = fs::read_to_string(&generated_native_path)
+            .expect("generated native bridge should be readable");
+        let generated_pyproject = fs::read_to_string(&generated_pyproject_path)
+            .expect("generated pyproject should be readable");
+        let generated_setup = fs::read_to_string(&generated_setup_path)
+            .expect("generated setup.py should be readable");
 
-        assert!(generated_module.contains("MODULE_NAME = \"demo\""));
-        assert!(generated_module.contains("PACKAGE_NAME = \"demo\""));
-        assert!(generated_module.contains("PACKAGE_VERSION = \"0.1.0\""));
-        assert!(generated_module.contains("EXPORTED_API = {"));
+        assert!(generated_init.contains("from pathlib import Path"));
+        assert!(generated_init.contains("from . import _native"));
+        assert!(generated_init.contains("_native._initialize_loader"));
+        assert!(generated_init.contains("echo_i32"));
+        assert!(generated_init.contains("PACKAGE_NAME = \"demo\""));
+        assert!(generated_stub.contains("def echo_i32"));
+        assert!(!generated_stub.contains("def echo_string"));
+        assert!(!generated_stub.contains("def echo_vec_i32"));
+        assert!(generated_pyproject.contains("setuptools.build_meta"));
+        assert!(generated_setup.contains("Extension("));
+        assert!(generated_setup.contains("\"demo._native\""));
+        assert!(generated_native.contains("boltffi_python_echo_i32_symbol_fn"));
+        assert!(!generated_native.contains("boltffi_echo_string"));
+        assert!(!generated_native.contains("boltffi_echo_vec_i32"));
+        assert!(generated_native.contains("boltffi_python_initialize_loader"));
+        assert!(generated_native.contains("PyInit__native"));
 
         fs::remove_dir_all(output_directory).expect("cleanup generated output");
     }
