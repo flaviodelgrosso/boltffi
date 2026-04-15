@@ -3,6 +3,8 @@
 .DS_Store
 .vscode/
 .idea/
+__pycache__/
+*.pyc
 debug/
 Cargo.lock
 *.log
@@ -14,3 +16,4 @@ examples/platforms/kotlin/build/
 examples/platforms/kotlin/generated/
 examples/platforms/apple/ffi
 examples/platforms/apple/.build
+examples/platforms/python/dist/
