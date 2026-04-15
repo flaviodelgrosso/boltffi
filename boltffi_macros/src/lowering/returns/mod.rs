@@ -68,8 +68,8 @@ mod tests {
             .invalid_arg_early_return_statement()
             .to_string();
         assert!(
-            combined.contains("return ;"),
-            "combined: wasm branch should use void return"
+            combined.contains("FfiBuf :: default () . into_packed ()"),
+            "combined: wasm branch should return packed empty FfiBuf"
         );
         assert!(
             combined.contains("return :: boltffi :: __private :: FfiBuf :: default ()"),
@@ -80,7 +80,7 @@ mod tests {
             resolved_return
                 .wasm_invalid_arg_early_return_statement()
                 .to_string(),
-            "return ;",
+            "return :: boltffi :: __private :: FfiBuf :: default () . into_packed () ;",
         );
         assert_eq!(
             resolved_return

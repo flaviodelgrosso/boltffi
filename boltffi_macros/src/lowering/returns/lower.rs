@@ -31,7 +31,7 @@ impl ResolvedReturn {
                 quote! {
                     #[cfg(target_arch = "wasm32")]
                     {
-                        return;
+                        return ::boltffi::__private::FfiBuf::default().into_packed();
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     {
@@ -84,7 +84,7 @@ impl ResolvedReturn {
     pub fn wasm_invalid_arg_early_return_statement(&self) -> proc_macro2::TokenStream {
         match self.value_return_strategy() {
             ValueReturnStrategy::Buffer(EncodedReturnStrategy::DirectVec) => quote! {
-                return;
+                return ::boltffi::__private::FfiBuf::default().into_packed();
             },
             ValueReturnStrategy::Buffer(EncodedReturnStrategy::OptionScalar) => {
                 let _ = WasmOptionScalarEncoding::from_option_rust_type(self.rust_type())
