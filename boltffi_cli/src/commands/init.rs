@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use crate::cli::Result;
 use crate::config::{
     AndroidConfig, AndroidKotlinConfig, AndroidPackConfig, AppleConfig, AppleSwiftConfig,
-    CargoConfig, Config, DartConfig, ErrorStyle, FactoryStyle, HeaderConfig, JavaConfig,
-    PackageConfig, PythonConfig, SpmConfig, TargetsConfig, WasmConfig, XcframeworkConfig,
+    CSharpConfig, CargoConfig, Config, DartConfig, ErrorStyle, FactoryStyle, HeaderConfig,
+    JavaConfig, PackageConfig, PythonConfig, SpmConfig, TargetsConfig, WasmConfig,
+    XcframeworkConfig,
 };
 
 pub struct InitOptions {
@@ -128,6 +129,7 @@ fn create_default_config(package_name: &str) -> Config {
             java: JavaConfig::default(),
             dart: DartConfig::default(),
             python: PythonConfig::default(),
+            csharp: CSharpConfig::default(),
         },
     }
 }
