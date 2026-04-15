@@ -188,16 +188,34 @@ impl<'a> PythonWheelBuilder<'a> {
                 interpreter.command,
                 format_command_for_log(&command)
             ));
-        }
+            let on_output: Option<OutputCallback> =
+                Some(Box::new(|line: &str| print_verbose_detail(line)) as OutputCallback);
 
-        let on_output: Option<OutputCallback> =
-            verbose.then(|| Box::new(|line: &str| print_verbose_detail(line)) as OutputCallback);
-
-        if !run_command_streaming(&mut command, on_output.as_ref()) {
-            return Err(CliError::CommandFailed {
-                command: format!("{} -m pip wheel", interpreter.command),
+            if !run_command_streaming(&mut command, on_output.as_ref()) {
+                return Err(CliError::CommandFailed {
+                    command: format!("{} -m pip wheel", interpreter.command),
+                    status: None,
+                });
+            }
+        } else {
+            let output = command.output().map_err(|source| CliError::CommandFailed {
+                command: format!("{} -m pip wheel: {source}", interpreter.command),
                 status: None,
-            });
+            })?;
+
+            if !output.status.success() {
+                let failure_output = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .chain(String::from_utf8_lossy(&output.stderr).lines())
+                    .filter(|line| !line.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+
+                return Err(CliError::CommandFailed {
+                    command: format!("{} -m pip wheel: {}", interpreter.command, failure_output),
+                    status: output.status.code(),
+                });
+            }
         }
 
         self.new_wheel(interpreter, &existing_wheels)

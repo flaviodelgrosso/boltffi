@@ -153,9 +153,12 @@ mod tests {
         assert!(native_source.contains("static PyObject *boltffi_python_initialize_loader"));
         assert!(native_source.contains("static int boltffi_python_parse_i32"));
         assert!(native_source.contains("static PyObject *boltffi_python_echo_bool"));
+        assert!(native_source.contains("wchar_t *wide_library_path = NULL;"));
         assert!(native_source.contains("dlsym"));
         assert!(native_source.contains("GetProcAddress"));
         assert!(native_source.contains("FLT_MAX"));
+        assert!(!native_source.contains("isfinite"));
         assert!(native_source.contains("METH_FASTCALL"));
+        assert!(pyproject_source.contains("wheel>=0.43"));
     }
 }
