@@ -10,7 +10,10 @@
 {%- for func in module.functions %}
 
         [DllImport(LibName, EntryPoint = "{{ func.ffi_name }}")]
-        internal static extern {{ func.return_type }} {{ func.name }}({% for param in func.params %}{{ param.csharp_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
+{%- if func.return_type == "bool" %}
+        [return: MarshalAs(UnmanagedType.I1)]
+{%- endif %}
+        internal static extern {{ func.return_type }} {{ func.name }}({% for param in func.params %}{% if param.csharp_type == "bool" %}[MarshalAs(UnmanagedType.I1)] {% endif %}{{ param.csharp_type }} {{ param.name }}{% if !loop.last %}, {% endif %}{% endfor %});
 {%- endfor %}
     }
 }

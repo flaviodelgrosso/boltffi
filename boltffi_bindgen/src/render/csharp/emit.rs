@@ -174,4 +174,27 @@ mod tests {
 
         assert!(output.source.contains("@int"));
     }
+
+    /// C# P/Invoke marshals `bool` as a 4-byte Win32 BOOL by default, but
+    /// BoltFFI's C ABI uses a 1-byte native bool, so the generated native
+    /// signature must force `UnmanagedType.I1` for both param and return.
+    #[test]
+    fn emit_bool_function_uses_i1_marshalling_for_native_signature() {
+        let mut contract = empty_contract();
+        contract.functions.push(primitive_function(
+            "flip",
+            vec![("value", PrimitiveType::Bool)],
+            ReturnDef::Value(TypeExpr::Primitive(PrimitiveType::Bool)),
+        ));
+
+        let output = emit_contract(&contract);
+
+        assert!(output.source.contains("public static bool Flip(bool value)"));
+        assert!(output
+            .source
+            .contains("[return: MarshalAs(UnmanagedType.I1)]"));
+        assert!(output
+            .source
+            .contains("internal static extern bool Flip([MarshalAs(UnmanagedType.I1)] bool value);"));
+    }
 }
