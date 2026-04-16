@@ -15,9 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt
+          # caching handled by Swatinem/rust-cache in other jobs
+          cache: false
       - run: cargo fmt --all --check
 
   clippy:
@@ -25,9 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy
+          # caching handled by Swatinem/rust-cache below
+          cache: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -42,7 +44,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # caching handled by Swatinem/rust-cache below
+          cache: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -63,9 +68,11 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: ${{ matrix.target }}
+          # caching handled by Swatinem/rust-cache below
+          cache: false
+          target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -78,7 +85,10 @@ jobs:
     needs: [build]
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # caching handled by Swatinem/rust-cache below
+          cache: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -90,7 +100,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # caching handled by Swatinem/rust-cache below
+          cache: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -121,7 +134,10 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # caching handled by Swatinem/rust-cache below
+          cache: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -162,7 +178,10 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # caching handled by Swatinem/rust-cache below
+          cache: false
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
