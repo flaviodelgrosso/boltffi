@@ -103,6 +103,7 @@ impl<'a> CSharpLowerer<'a> {
     fn lower_type(type_expr: &TypeExpr) -> Option<CSharpType> {
         match type_expr {
             TypeExpr::Primitive(primitive) => Some(mappings::csharp_type(*primitive)),
+            TypeExpr::String => Some(CSharpType::String),
             _ => None,
         }
     }

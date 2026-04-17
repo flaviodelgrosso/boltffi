@@ -24,6 +24,14 @@ impl CSharpModule {
     pub fn has_functions(&self) -> bool {
         !self.functions.is_empty()
     }
+
+    /// Whether any function uses strings — drives the inclusion of string
+    /// marshalling helpers (`FfiBuf` struct, `WireReader`) in the preamble.
+    pub fn has_strings(&self) -> bool {
+        self.functions.iter().any(|f| {
+            f.return_type.is_string() || f.params.iter().any(|p| p.csharp_type.is_string())
+        })
+    }
 }
 
 /// A C# type keyword. Includes `Void` so return types and value types share
@@ -45,6 +53,7 @@ pub enum CSharpType {
     NUInt,
     Float,
     Double,
+    String,
 }
 
 impl CSharpType {
@@ -64,6 +73,7 @@ impl CSharpType {
             Self::NUInt => "nuint",
             Self::Float => "float",
             Self::Double => "double",
+            Self::String => "string",
         }
     }
 
@@ -73,6 +83,10 @@ impl CSharpType {
 
     pub fn is_bool(self) -> bool {
         matches!(self, Self::Bool)
+    }
+
+    pub fn is_string(self) -> bool {
+        matches!(self, Self::String)
     }
 }
 
