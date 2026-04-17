@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use boltffi_ffi_rules::naming;
 
-use crate::ir::abi::{AbiCall, AbiParam, AbiRecord, ParamRole};
+use crate::ir::abi::{AbiCall, AbiParam, AbiRecord, CallId, ParamRole};
 use crate::ir::definitions::{FieldDef, FunctionDef, ParamDef, ParamPassing, RecordDef, ReturnDef};
 use crate::ir::ids::{FieldName, RecordId};
 use crate::ir::ops::{ReadOp, ReadSeq, WriteOp, WriteSeq};
@@ -345,7 +345,6 @@ impl<'a> CSharpLowerer<'a> {
     }
 
     fn abi_call_for_function(&self, function: &FunctionDef) -> Option<&AbiCall> {
-        use crate::ir::abi::CallId;
         self.abi.calls.iter().find(|call| match &call.id {
             CallId::Function(id) => id == &function.id,
             _ => false,
