@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>BoltFFI.Demo.Tests</RootNamespace>
     <AssemblyName>DemoTest</AssemblyName>
     <Nullable>disable</Nullable>
@@ -11,7 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\dist\Demo.cs" Link="Generated\Demo.cs" />
+    <Compile Include="..\dist\*.cs" Link="Generated\%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

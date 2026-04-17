@@ -8,7 +8,7 @@ manifest_path="$repo_root/Cargo.toml"
 test_project="$script_dir/DemoTest"
 
 configuration="Debug"
-target_framework="net8.0"
+target_framework="net10.0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
