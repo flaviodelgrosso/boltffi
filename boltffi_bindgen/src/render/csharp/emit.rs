@@ -607,11 +607,11 @@ mod tests {
         assert_source_contains(
             main_source,
             "using System.Text;",
-            "the main file needs System.Text when record string fields make WireReader/WireWriter use Encoding.UTF8",
+            "the main file needs System.Text when record string fields make WireWriter use Encoding.UTF8.GetBytes/GetByteCount",
         );
         assert_source_contains(
             main_source,
-            "Encoding.UTF8.GetString",
+            "Marshal.PtrToStringUTF8",
             "WireReader string decode still lives in the main file for record-only string usage",
         );
     }

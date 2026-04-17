@@ -30,13 +30,16 @@ impl CSharpModule {
 
     /// Whether the shared runtime helpers need `System.Text`.
     ///
-    /// Top-level string params/returns use `Encoding.UTF8` in the wrapper,
-    /// and any record with string fields uses it in the shared
-    /// `WireReader` / `WireWriter` helpers emitted into the main file.
+    /// Top-level string params use `Encoding.UTF8.GetBytes` in the wrapper,
+    /// and `WireWriter` uses `Encoding.UTF8.GetByteCount` / `GetBytes` when
+    /// encoding string fields of a record. Decoding no longer needs
+    /// `System.Text` — `WireReader` reads strings through
+    /// `Marshal.PtrToStringUTF8`.
     pub fn needs_system_text(&self) -> bool {
-        self.functions.iter().any(|f| {
-            f.return_type.is_string() || f.params.iter().any(|p| p.csharp_type.is_string())
-        }) || self.records.iter().any(CSharpRecord::has_string_fields)
+        self.functions
+            .iter()
+            .any(|f| f.params.iter().any(|p| p.csharp_type.is_string()))
+            || self.records.iter().any(CSharpRecord::has_string_fields)
     }
 
     /// Whether any function takes a wire-encoded record param. Blittable

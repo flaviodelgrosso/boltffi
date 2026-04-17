@@ -12,23 +12,20 @@
 {%- if module.needs_wire_reader() %}
     internal sealed class WireReader
     {
-        private readonly byte[] _data;
+        // Reads directly from the unmanaged FfiBuf pointer — no eager copy into
+        // a managed byte[]. Safe APIs only: Marshal.Read* for primitives,
+        // Marshal.PtrToStringUTF8 for length-prefixed UTF-8, Marshal.Copy for
+        // bytes. BitConverter.IsLittleEndian is a JIT intrinsic that folds the
+        // byte-swap branch away on little-endian hosts (all our supported
+        // targets).
+        private readonly IntPtr _ptr;
         private readonly int _length;
         private int _pos;
 
         internal WireReader(FfiBuf buf)
         {
-            if (buf.ptr == IntPtr.Zero)
-            {
-                _data = Array.Empty<byte>();
-                _length = 0;
-            }
-            else
-            {
-                _length = checked((int)(nuint)buf.len);
-                _data = new byte[_length];
-                if (_length > 0) Marshal.Copy(buf.ptr, _data, 0, _length);
-            }
+            _ptr = buf.ptr;
+            _length = buf.ptr == IntPtr.Zero ? 0 : checked((int)(nuint)buf.len);
             _pos = 0;
         }
 
@@ -37,23 +34,82 @@
         internal sbyte ReadI8()
         {
             Require(1, "i8");
-            return (sbyte)_data[_pos++];
+            sbyte v = (sbyte)Marshal.ReadByte(_ptr, _pos);
+            _pos += 1;
+            return v;
         }
 
         internal byte ReadU8()
         {
             Require(1, "u8");
-            return _data[_pos++];
+            byte v = Marshal.ReadByte(_ptr, _pos);
+            _pos += 1;
+            return v;
         }
 
-        internal short ReadI16() { Require(2, "i16"); var v = BinaryPrimitives.ReadInt16LittleEndian(_data.AsSpan(_pos)); _pos += 2; return v; }
-        internal ushort ReadU16() { Require(2, "u16"); var v = BinaryPrimitives.ReadUInt16LittleEndian(_data.AsSpan(_pos)); _pos += 2; return v; }
-        internal int ReadI32() { Require(4, "i32"); var v = BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(_pos)); _pos += 4; return v; }
-        internal uint ReadU32() { Require(4, "u32"); var v = BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(_pos)); _pos += 4; return v; }
-        internal long ReadI64() { Require(8, "i64"); var v = BinaryPrimitives.ReadInt64LittleEndian(_data.AsSpan(_pos)); _pos += 8; return v; }
-        internal ulong ReadU64() { Require(8, "u64"); var v = BinaryPrimitives.ReadUInt64LittleEndian(_data.AsSpan(_pos)); _pos += 8; return v; }
-        internal float ReadF32() { Require(4, "f32"); var v = BinaryPrimitives.ReadSingleLittleEndian(_data.AsSpan(_pos)); _pos += 4; return v; }
-        internal double ReadF64() { Require(8, "f64"); var v = BinaryPrimitives.ReadDoubleLittleEndian(_data.AsSpan(_pos)); _pos += 8; return v; }
+        internal short ReadI16()
+        {
+            Require(2, "i16");
+            short v = Marshal.ReadInt16(_ptr, _pos);
+            _pos += 2;
+            return BitConverter.IsLittleEndian ? v : BinaryPrimitives.ReverseEndianness(v);
+        }
+
+        internal ushort ReadU16()
+        {
+            Require(2, "u16");
+            ushort v = (ushort)Marshal.ReadInt16(_ptr, _pos);
+            _pos += 2;
+            return BitConverter.IsLittleEndian ? v : BinaryPrimitives.ReverseEndianness(v);
+        }
+
+        internal int ReadI32()
+        {
+            Require(4, "i32");
+            int v = Marshal.ReadInt32(_ptr, _pos);
+            _pos += 4;
+            return BitConverter.IsLittleEndian ? v : BinaryPrimitives.ReverseEndianness(v);
+        }
+
+        internal uint ReadU32()
+        {
+            Require(4, "u32");
+            uint v = (uint)Marshal.ReadInt32(_ptr, _pos);
+            _pos += 4;
+            return BitConverter.IsLittleEndian ? v : BinaryPrimitives.ReverseEndianness(v);
+        }
+
+        internal long ReadI64()
+        {
+            Require(8, "i64");
+            long v = Marshal.ReadInt64(_ptr, _pos);
+            _pos += 8;
+            return BitConverter.IsLittleEndian ? v : BinaryPrimitives.ReverseEndianness(v);
+        }
+
+        internal ulong ReadU64()
+        {
+            Require(8, "u64");
+            ulong v = (ulong)Marshal.ReadInt64(_ptr, _pos);
+            _pos += 8;
+            return BitConverter.IsLittleEndian ? v : BinaryPrimitives.ReverseEndianness(v);
+        }
+
+        internal float ReadF32()
+        {
+            Require(4, "f32");
+            int bits = Marshal.ReadInt32(_ptr, _pos);
+            _pos += 4;
+            return BitConverter.Int32BitsToSingle(BitConverter.IsLittleEndian ? bits : BinaryPrimitives.ReverseEndianness(bits));
+        }
+
+        internal double ReadF64()
+        {
+            Require(8, "f64");
+            long bits = Marshal.ReadInt64(_ptr, _pos);
+            _pos += 8;
+            return BitConverter.Int64BitsToDouble(BitConverter.IsLittleEndian ? bits : BinaryPrimitives.ReverseEndianness(bits));
+        }
 
         // usize/isize travel as 64-bit integers on the wire so the wire
         // layout stays stable across pointer widths.
@@ -66,7 +122,8 @@
             if (len == 0) return "";
             if (len < 0) throw new InvalidOperationException("corrupt wire: negative string length");
             Require(len, "string payload");
-            string v = Encoding.UTF8.GetString(_data, _pos, len);
+            string v = Marshal.PtrToStringUTF8(_ptr + _pos, len)
+                ?? throw new InvalidOperationException("PtrToStringUTF8 returned null");
             _pos += len;
             return v;
         }
@@ -78,7 +135,7 @@
             if (len < 0) throw new InvalidOperationException("corrupt wire: negative bytes length");
             Require(len, "bytes payload");
             byte[] v = new byte[len];
-            Buffer.BlockCopy(_data, _pos, v, 0, len);
+            Marshal.Copy(_ptr + _pos, v, 0, len);
             _pos += len;
             return v;
         }
