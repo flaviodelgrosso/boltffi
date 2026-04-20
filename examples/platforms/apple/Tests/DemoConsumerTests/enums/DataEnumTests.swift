@@ -35,11 +35,21 @@ final class DataEnumTests: XCTestCase {
     }
 
     func testTaskStatusFns() {
+        XCTAssertEqual(echoTaskStatus(status: .pending), .pending)
+        XCTAssertEqual(echoTaskStatus(status: .inProgress(progress: 7)), .inProgress(progress: 7))
+        XCTAssertEqual(echoTaskStatus(status: .failed(errorCode: -5, retryCount: 2)), .failed(errorCode: -5, retryCount: 2))
         XCTAssertEqual(getStatusProgress(status: .pending), 0)
         XCTAssertEqual(getStatusProgress(status: .inProgress(progress: 7)), 7)
         XCTAssertEqual(getStatusProgress(status: .completed(result: 9)), 9)
         XCTAssertEqual(getStatusProgress(status: .failed(errorCode: -5, retryCount: 2)), -5)
         XCTAssertFalse(isStatusComplete(status: .pending))
         XCTAssertTrue(isStatusComplete(status: .completed(result: 1)))
+    }
+
+    func testLifecycleEventFns() {
+        let started = makeCriticalLifecycleEvent(id: 7)
+        XCTAssertEqual(started, LifecycleEvent.taskStarted(priority: .critical, id: 7))
+        XCTAssertEqual(echoLifecycleEvent(ev: started), started)
+        XCTAssertEqual(echoLifecycleEvent(ev: .tick), .tick)
     }
 }

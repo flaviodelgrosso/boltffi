@@ -39,4 +39,11 @@ export async function run() {
   assert.deepEqual(demo.echoAnimal(cat), cat);
   assert.equal(demo.animalName({ tag: "Fish", count: 5 }), "5 fish");
   assert.equal(demo.animalName(cat), "Milo");
+
+  const started = demo.makeCriticalLifecycleEvent(7n);
+  assert.equal(started.tag, "TaskStarted");
+  assert.equal(started.priority, demo.Priority.Critical);
+  assert.equal(started.id, 7n);
+  assert.deepEqual(demo.echoLifecycleEvent(started), started);
+  assert.deepEqual(demo.echoLifecycleEvent({ tag: "Tick" }), { tag: "Tick" });
 }

@@ -226,6 +226,20 @@ class DemoValueTypesTest {
             echoVecLogLevel(listOf(LogLevel.TRACE, LogLevel.INFO, LogLevel.ERROR))
         )
 
+        assertEquals(200.toShort(), HttpCode.OK.value)
+        assertEquals(404.toShort(), HttpCode.NOT_FOUND.value)
+        assertEquals(500.toShort(), HttpCode.SERVER_ERROR.value)
+        assertEquals(HttpCode.NOT_FOUND, httpCodeNotFound())
+        assertEquals(HttpCode.OK, echoHttpCode(HttpCode.OK))
+        assertEquals(HttpCode.SERVER_ERROR, echoHttpCode(HttpCode.SERVER_ERROR))
+
+        assertEquals((-1).toByte(), Sign.NEGATIVE.value)
+        assertEquals(0.toByte(), Sign.ZERO.value)
+        assertEquals(1.toByte(), Sign.POSITIVE.value)
+        assertEquals(Sign.NEGATIVE, signNegative())
+        assertEquals(Sign.NEGATIVE, echoSign(Sign.NEGATIVE))
+        assertEquals(Sign.POSITIVE, echoSign(Sign.POSITIVE))
+
         val circle = Shape.new(5.0)
         assertIs<Shape.Circle>(circle)
         assertIs<Shape.Circle>(Shape.unitCircle())
@@ -316,6 +330,29 @@ class DemoValueTypesTest {
 
         val notification = Notification("heads up", Priority.HIGH, false)
         assertEquals(notification, echoNotification(notification))
+
+        val triangleHolder = makeTriangleHolder()
+        assertIs<Shape.Triangle>(triangleHolder.shape)
+        assertEquals(triangleHolder, echoHolder(triangleHolder))
+
+        val header = makeCriticalTaskHeader(42L)
+        assertEquals(42L, header.id)
+        assertEquals(Priority.CRITICAL, header.priority)
+        assertEquals(false, header.completed)
+        assertEquals(header, echoTaskHeader(header))
+
+        val started = makeCriticalLifecycleEvent(7L)
+        assertIs<LifecycleEvent.TaskStarted>(started)
+        assertEquals(Priority.CRITICAL, started.priority)
+        assertEquals(7L, started.id)
+        assertEquals(started, echoLifecycleEvent(started))
+        assertEquals(LifecycleEvent.Tick, echoLifecycleEvent(LifecycleEvent.Tick))
+
+        val logEntry = makeErrorLogEntry(1234567890L, 42.toUShort())
+        assertEquals(1234567890L, logEntry.timestamp)
+        assertEquals(LogLevel.ERROR, logEntry.level)
+        assertEquals(42.toUShort(), logEntry.code)
+        assertEquals(logEntry, echoLogEntry(logEntry))
 
         val userProfile = makeUserProfile("Alice", 30u, "alice@example.com", 98.5)
         assertEquals(userProfile, echoUserProfile(userProfile))

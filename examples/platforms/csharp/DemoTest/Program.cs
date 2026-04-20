@@ -26,6 +26,9 @@ public static class DemoTest
         TestBlittableRecords();
         TestRecordsWithStrings();
         TestNestedRecords();
+        TestCStyleEnums();
+        TestDataEnums();
+        TestRecordsWithEnumFields();
         Console.WriteLine("All tests passed!");
         return 0;
     }
@@ -262,6 +265,275 @@ public static class DemoTest
         Require(echoedRect == rect, "EchoRect round-trip");
 
         Require(Math.Abs(RectArea(rect) - 200.0) < 1e-9, "RectArea 10*20");
+
+        Console.WriteLine("  PASS\n");
+    }
+
+    /// <summary>
+    /// C-style enums (Status, Direction, LogLevel) pass across P/Invoke as
+    /// their declared backing type — no wire encoding. Instance methods show up as C#
+    /// extension methods; static factories live on a `{Name}Methods`
+    /// companion class.
+    /// </summary>
+    private static void TestCStyleEnums()
+    {
+        Console.WriteLine("Testing C-style enums (Status, Direction, LogLevel)...");
+
+        // Direct P/Invoke round-trip — the CLR marshals the enum as its
+        // declared backing type.
+        Require(EchoStatus(Status.Active) == Status.Active, "EchoStatus(Active)");
+        Require(EchoStatus(Status.Pending) == Status.Pending, "EchoStatus(Pending)");
+        Require(StatusToString(Status.Active) == "active", "StatusToString(Active)");
+        Require(IsActive(Status.Active), "IsActive(Active)");
+        Require(!IsActive(Status.Inactive), "IsActive(Inactive) false");
+
+        Require(EchoDirection(Direction.North) == Direction.North, "EchoDirection(North)");
+        Require(
+            OppositeDirection(Direction.East) == Direction.West,
+            "OppositeDirection(East) == West"
+        );
+
+        // Extension methods generated on the Methods companion class.
+        Require(Direction.North.Opposite() == Direction.South, "North.Opposite()");
+        Require(Direction.East.IsHorizontal(), "East.IsHorizontal()");
+        Require(!Direction.North.IsHorizontal(), "!North.IsHorizontal()");
+        Require(Direction.South.Label() == "S", "South.Label()");
+
+        // Static factories on the companion class.
+        Require(DirectionMethods.Cardinal() == Direction.North, "Cardinal() == North");
+        Require(DirectionMethods.FromDegrees(90.0) == Direction.East, "FromDegrees(90) == East");
+        Require(DirectionMethods.FromDegrees(180.0) == Direction.South, "FromDegrees(180) == South");
+        Require(DirectionMethods.Count() == 4u, "Count() == 4");
+        Require(DirectionMethods.New(2) == Direction.East, "New(2) == East");
+
+        // Non-default backing type: LogLevel is #[repr(u8)] on the Rust side,
+        // so these direct P/Invoke calls catch any accidental `enum : int`
+        // projection in the generated C# surface.
+        Require(EchoLogLevel(LogLevel.Trace) == LogLevel.Trace, "EchoLogLevel(Trace)");
+        Require(EchoLogLevel(LogLevel.Error) == LogLevel.Error, "EchoLogLevel(Error)");
+        Require(ShouldLog(LogLevel.Error, LogLevel.Warn), "ShouldLog(Error, Warn)");
+        Require(!ShouldLog(LogLevel.Debug, LogLevel.Info), "!ShouldLog(Debug, Info)");
+
+        // HttpCode has gapped #[repr(u16)] discriminants (200, 404, 500).
+        // The raw value of each C# member must equal the Rust discriminant,
+        // and a value constructed on the Rust side must map back to the
+        // corresponding named member on the C# side.
+        Require((ushort)HttpCode.Ok == 200, "HttpCode.Ok == 200");
+        Require((ushort)HttpCode.NotFound == 404, "HttpCode.NotFound == 404");
+        Require((ushort)HttpCode.ServerError == 500, "HttpCode.ServerError == 500");
+        Require(HttpCodeNotFound() == HttpCode.NotFound, "Rust NotFound == C# NotFound");
+        Require(EchoHttpCode(HttpCode.Ok) == HttpCode.Ok, "EchoHttpCode(Ok)");
+        Require(EchoHttpCode(HttpCode.ServerError) == HttpCode.ServerError, "EchoHttpCode(ServerError)");
+
+        // Sign has a #[repr(i8)] with a negative discriminant. The CLR
+        // marshals sbyte across P/Invoke; the bit pattern must stay signed
+        // in both directions.
+        Require((sbyte)Sign.Negative == -1, "Sign.Negative == -1");
+        Require((sbyte)Sign.Zero == 0, "Sign.Zero == 0");
+        Require((sbyte)Sign.Positive == 1, "Sign.Positive == 1");
+        Require(SignNegative() == Sign.Negative, "Rust Negative == C# Negative");
+        Require(EchoSign(Sign.Negative) == Sign.Negative, "EchoSign(Negative)");
+        Require(EchoSign(Sign.Positive) == Sign.Positive, "EchoSign(Positive)");
+
+        Console.WriteLine("  PASS\n");
+    }
+
+    /// <summary>
+    /// Data enums (Shape, Message, Animal) travel across the wire —
+    /// `WireWriter` on the way in, `FfiBuf` + `WireReader` on the way
+    /// out. Exercises every variant shape the renderer produces: unit,
+    /// single-field, multi-field, and nested-record payloads. Pattern
+    /// matching on the returned value confirms the discriminated-union
+    /// surface is intact.
+    /// </summary>
+    private static void TestDataEnums()
+    {
+        Console.WriteLine("Testing data enums (Shape, Message, Animal)...");
+
+        // Shape — named-field variants, a nested-record variant with a
+        // shadowed outer Point, and a unit variant that collides with
+        // the outer Point record name.
+        Shape circle = new Shape.Circle(5.0);
+        Shape echoedCircle = EchoShape(circle);
+        Require(echoedCircle is Shape.Circle c && c.Radius == 5.0, "EchoShape(Circle)");
+
+        Shape rect = new Shape.Rectangle(3.0, 4.0);
+        Shape echoedRect = EchoShape(rect);
+        Require(
+            echoedRect is Shape.Rectangle r && r.Width == 3.0 && r.Height == 4.0,
+            "EchoShape(Rectangle)"
+        );
+
+        Shape triangle = new Shape.Triangle(
+            new Point(0.0, 0.0),
+            new Point(4.0, 0.0),
+            new Point(0.0, 3.0)
+        );
+        Shape echoedTriangle = EchoShape(triangle);
+        Require(
+            echoedTriangle is Shape.Triangle t
+                && t.A == new Point(0.0, 0.0)
+                && t.B == new Point(4.0, 0.0)
+                && t.C == new Point(0.0, 3.0),
+            "EchoShape(Triangle) with nested Point"
+        );
+
+        Shape point = new Shape.Point();
+        Shape echoedPoint = EchoShape(point);
+        Require(echoedPoint is Shape.Point, "EchoShape(Point) unit variant");
+
+        // Free-function factories producing Shape.
+        Require(MakeCircle(2.0) is Shape.Circle c2 && c2.Radius == 2.0, "MakeCircle");
+        Require(
+            MakeRectangle(5.0, 10.0) is Shape.Rectangle r2 && r2.Width == 5.0 && r2.Height == 10.0,
+            "MakeRectangle"
+        );
+
+        // Instance methods on the data enum — wire-encode self, call
+        // native, decode return.
+        Require(Math.Abs(new Shape.Circle(1.0).Area() - Math.PI) < 1e-9, "Circle(1).Area() == PI");
+        Require(new Shape.Rectangle(3.0, 4.0).Area() == 12.0, "Rectangle(3,4).Area()");
+        Require(new Shape.Point().Area() == 0.0, "Point.Area() == 0");
+        Require(new Shape.Circle(2.0).Describe() == "circle r=2", "Circle.Describe()");
+        Require(new Shape.Point().Describe() == "point", "Point.Describe()");
+
+        // Static methods / factories on the data enum.
+        Require(Shape.UnitCircle() is Shape.Circle uc && uc.Radius == 1.0, "Shape.UnitCircle()");
+        Require(
+            Shape.Square(7.0) is Shape.Rectangle sq && sq.Width == 7.0 && sq.Height == 7.0,
+            "Shape.Square(7)"
+        );
+        Require(Shape.VariantCount() == 4u, "Shape.VariantCount() == 4");
+        Require(Shape.New(3.0) is Shape.Circle sn && sn.Radius == 3.0, "Shape.New(3)");
+
+        // Message — mixes string, primitive, and unit variants.
+        Message text = new Message.Text("hello");
+        Require(
+            EchoMessage(text) is Message.Text et && et.Body == "hello",
+            "EchoMessage(Text)"
+        );
+
+        Message image = new Message.Image("https://example.com/a.png", 1920, 1080);
+        Require(
+            EchoMessage(image) is Message.Image ei
+                && ei.Url == "https://example.com/a.png"
+                && ei.Width == 1920u
+                && ei.Height == 1080u,
+            "EchoMessage(Image)"
+        );
+
+        Message ping = new Message.Ping();
+        Require(EchoMessage(ping) is Message.Ping, "EchoMessage(Ping)");
+
+        Require(
+            MessageSummary(new Message.Text("hi")) == "text: hi",
+            "MessageSummary(Text)"
+        );
+        Require(MessageSummary(new Message.Ping()) == "ping", "MessageSummary(Ping)");
+
+        // Animal — three struct variants, one with a bool field.
+        Animal dog = new Animal.Dog("Rex", "Labrador");
+        Require(
+            EchoAnimal(dog) is Animal.Dog d && d.Name == "Rex" && d.Breed == "Labrador",
+            "EchoAnimal(Dog)"
+        );
+
+        Animal cat = new Animal.Cat("Whiskers", true);
+        Require(
+            EchoAnimal(cat) is Animal.Cat ca && ca.Name == "Whiskers" && ca.Indoor,
+            "EchoAnimal(Cat indoor)"
+        );
+
+        Animal fish = new Animal.Fish(3u);
+        Require(
+            EchoAnimal(fish) is Animal.Fish f && f.Count == 3u,
+            "EchoAnimal(Fish)"
+        );
+
+        Require(AnimalName(new Animal.Dog("Rex", "Lab")) == "Rex", "AnimalName(Dog)");
+        Require(AnimalName(new Animal.Fish(5u)) == "5 fish", "AnimalName(Fish)");
+
+        // LifecycleEvent — a data enum whose variant payload carries a
+        // C-style enum (Priority). The codec must wire-encode the outer
+        // variant tag and the inner enum's backing integer together.
+        LifecycleEvent started = MakeCriticalLifecycleEvent(7);
+        Require(
+            started is LifecycleEvent.TaskStarted ts
+                && ts.Priority == Priority.Critical
+                && ts.Id == 7,
+            "MakeCriticalLifecycleEvent returns TaskStarted with Critical priority"
+        );
+        LifecycleEvent echoedStarted = EchoLifecycleEvent(started);
+        Require(echoedStarted == started, "EchoLifecycleEvent(TaskStarted) round-trip");
+        LifecycleEvent tick = new LifecycleEvent.Tick();
+        Require(EchoLifecycleEvent(tick) is LifecycleEvent.Tick, "EchoLifecycleEvent(Tick)");
+
+        Console.WriteLine("  PASS\n");
+    }
+
+    /// <summary>
+    /// Records that embed a C-style enum field stay on the wire path if
+    /// they also have non-blittable fields (e.g., a string). The enum
+    /// field flows through via `PriorityWire.Decode` / the
+    /// `WireEncodeTo` extension method, uniform with how record fields
+    /// embed other records.
+    /// </summary>
+    private static void TestRecordsWithEnumFields()
+    {
+        Console.WriteLine("Testing records with enum fields (Notification, Task)...");
+
+        // Task is a C# keyword in `System.Threading.Tasks` — the generated
+        // record fully qualifies to avoid collision when addressing it
+        // directly. Using the namespace-qualified form makes the intent
+        // explicit here too.
+        global::Demo.Task task = new global::Demo.Task("Write docs", Priority.High, false);
+        global::Demo.Task echoedTask = EchoTask(task);
+        Require(echoedTask == task, "EchoTask round-trip");
+        Require(echoedTask.Priority == Priority.High, "Task.Priority preserved");
+
+        Notification notification = new Notification("Build failed", Priority.Critical, false);
+        Notification echoedNotification = EchoNotification(notification);
+        Require(echoedNotification == notification, "EchoNotification round-trip");
+        Require(echoedNotification.Priority == Priority.Critical, "Notification.Priority preserved");
+        Require(!echoedNotification.Read, "Notification.Read preserved");
+
+        // Holder is #[repr(C)] but wraps a data enum (Shape). Data enums
+        // have a variable-width on-the-wire representation — this record
+        // must ride the wire codec, not direct P/Invoke, despite the
+        // repr(C) decoration.
+        Holder triangle = MakeTriangleHolder();
+        Require(
+            triangle.Shape is Shape.Triangle t
+                && t.A == new Point(0.0, 0.0)
+                && t.B == new Point(4.0, 0.0)
+                && t.C == new Point(0.0, 3.0),
+            "MakeTriangleHolder returns Triangle"
+        );
+        Holder echoedHolder = EchoHolder(triangle);
+        Require(echoedHolder == triangle, "EchoHolder round-trip");
+
+        // TaskHeader is #[repr(C)] with primitive + C-style enum fields,
+        // but rides the wire codec like any record with a non-primitive
+        // field: the Rust #[export] macro doesn't yet admit C-style enums
+        // as layout-compatible primitives, so both sides agree on wire
+        // encoding. Follow-up work (see TaskHeader doc) can widen both
+        // sides together to lift this onto direct P/Invoke.
+        TaskHeader header = MakeCriticalTaskHeader(42);
+        Require(header.Id == 42, "MakeCriticalTaskHeader.Id");
+        Require(header.Priority == Priority.Critical, "MakeCriticalTaskHeader.Priority");
+        Require(!header.Completed, "MakeCriticalTaskHeader.Completed");
+        TaskHeader echoedHeader = EchoTaskHeader(header);
+        Require(echoedHeader == header, "EchoTaskHeader round-trip");
+
+        // LogEntry — same family as TaskHeader but the C-style enum field
+        // is u8-backed, so field alignment matters. Wire-encoded today for
+        // the same reason TaskHeader is.
+        LogEntry entry = MakeErrorLogEntry(1234567890, 42);
+        Require(entry.Timestamp == 1234567890, "MakeErrorLogEntry.Timestamp");
+        Require(entry.Level == LogLevel.Error, "MakeErrorLogEntry.Level");
+        Require(entry.Code == 42, "MakeErrorLogEntry.Code");
+        LogEntry echoedEntry = EchoLogEntry(entry);
+        Require(echoedEntry == entry, "EchoLogEntry round-trip");
 
         Console.WriteLine("  PASS\n");
     }

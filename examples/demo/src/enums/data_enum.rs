@@ -1,6 +1,7 @@
 use boltffi::*;
 use demo_bench_macros::benchmark_candidate;
 
+use crate::enums::repr_int::Priority;
 use crate::records::blittable::Point;
 
 /// A geometric shape where each variant carries different data.
@@ -152,6 +153,16 @@ pub enum TaskStatus {
     Failed { error_code: i32, retry_count: i32 },
 }
 
+/// Returns the given data enum unchanged — measures the full wire
+/// round-trip for a value with a variable-width payload. Paired with
+/// `echo_direction` so benchmarks can price the wire-encoding overhead
+/// against the direct-marshaling baseline.
+#[export]
+#[benchmark_candidate(function, uniffi)]
+pub fn echo_task_status(status: TaskStatus) -> TaskStatus {
+    status
+}
+
 #[export]
 #[benchmark_candidate(function, uniffi)]
 pub fn get_status_progress(status: TaskStatus) -> i32 {
@@ -167,4 +178,32 @@ pub fn get_status_progress(status: TaskStatus) -> i32 {
 #[benchmark_candidate(function, uniffi)]
 pub fn is_status_complete(status: TaskStatus) -> bool {
     matches!(status, TaskStatus::Completed { .. })
+}
+
+/// A lifecycle event with a C-style enum nested in a variant's payload.
+///
+/// Exercises the code path where a C-style enum surfaces inside a
+/// data-enum variant's struct payload — distinct from a bare enum
+/// parameter and from an enum field on a non-variant record. The
+/// generated codec must encode the variant tag, then encode the
+/// nested enum's backing integer, then decode them symmetrically on
+/// the other side.
+#[data]
+#[derive(Clone, Debug, PartialEq)]
+pub enum LifecycleEvent {
+    TaskStarted { priority: Priority, id: i64 },
+    Tick,
+}
+
+#[export]
+pub fn echo_lifecycle_event(ev: LifecycleEvent) -> LifecycleEvent {
+    ev
+}
+
+#[export]
+pub fn make_critical_lifecycle_event(id: i64) -> LifecycleEvent {
+    LifecycleEvent::TaskStarted {
+        priority: Priority::Critical,
+        id,
+    }
 }
