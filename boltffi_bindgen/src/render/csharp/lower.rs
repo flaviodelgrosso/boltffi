@@ -259,27 +259,17 @@ impl<'a> CSharpLowerer<'a> {
     }
 
     /// Whether the record rides across P/Invoke by value with
-    /// `[StructLayout(Sequential)]` and no wire encoding. The IR's own
-    /// `is_blittable` flag admits all-primitive `#[repr(C)]` records only —
-    /// the conservative, language-neutral answer. C# goes further: a
-    /// `public enum Status : byte|short|int|long|...` is bit-for-bit its
-    /// backing primitive at runtime, so a `#[repr(C)]` record whose fields
-    /// are primitives or C-style enums lays out identically across the CLR
-    /// and Rust. The extension stays C#-local because Java/Kotlin represent
-    /// enums as heap objects and can't claim the same equivalence.
+    /// `[StructLayout(Sequential)]` and no wire encoding. Defers entirely
+    /// to the IR's `is_blittable` flag, which admits all-primitive
+    /// `#[repr(C)]` records only. A record that carries any user-defined
+    /// type (record or enum, C-style or data) stays on the wire path —
+    /// the Rust `#[export]` macro (see `boltffi_macros::data::analysis`)
+    /// makes the same call, so the two sides agree on whether a given
+    /// FFI symbol returns a value or an `FfiBuf`. Widening C#'s view
+    /// without teaching the macro would produce a call-site / ABI
+    /// mismatch and segfault at runtime.
     fn is_blittable_record(&self, id: &RecordId) -> bool {
-        if self.abi_record_for(id).is_some_and(|r| r.is_blittable) {
-            return true;
-        }
-        let Some(definition) = self.ffi.catalog.resolve_record(id) else {
-            return false;
-        };
-        definition.is_repr_c
-            && definition.fields.iter().all(|f| match &f.type_expr {
-                TypeExpr::Primitive(_) => true,
-                TypeExpr::Enum(enum_id) => self.supported_enums.contains(enum_id.as_str()),
-                _ => false,
-            })
+        self.abi_record_for(id).is_some_and(|r| r.is_blittable)
     }
 
     fn is_supported_param(&self, param: &ParamDef) -> bool {
@@ -376,10 +366,19 @@ impl<'a> CSharpLowerer<'a> {
     }
 
     /// Lowers a Rust enum definition into the C# plan, or returns `None`
-    /// when the enum is not in the supported set. Wire tags come from the
-    /// variant's position in the declaration list
-    /// (`EnumTagStrategy::OrdinalIndex`) — the `#[repr(iN)]` discriminant
-    /// is ignored on the wire, so C# mirrors that by tagging 0, 1, 2….
+    /// when the enum is not in the supported set.
+    ///
+    /// The two `EnumRepr` arms carry different numbering semantics:
+    ///
+    /// - **C-style enums** render as `public enum X : Backing`. Each C#
+    ///   member's numeric value IS the Rust discriminant, because the
+    ///   value crosses P/Invoke as its backing primitive and must be
+    ///   bit-for-bit identical on both sides. Gapped or negative
+    ///   discriminants must be preserved.
+    /// - **Data enums** render as nested `sealed record` variants
+    ///   dispatched by a wire tag. Tags come from the variant's ordinal
+    ///   position (`EnumTagStrategy::OrdinalIndex`) — the Rust
+    ///   discriminant is not part of the codec.
     fn lower_enum(&self, enum_def: &EnumDef) -> Option<CSharpEnum> {
         if !self.supported_enums.contains(enum_def.id.as_str()) {
             return None;
@@ -393,7 +392,8 @@ impl<'a> CSharpLowerer<'a> {
                     .enumerate()
                     .map(|(ordinal, variant)| CSharpEnumVariant {
                         name: NamingConvention::class_name(variant.name.as_str()),
-                        tag: ordinal as i32,
+                        tag: variant.discriminant as i32,
+                        wire_tag: ordinal as i32,
                         fields: Vec::new(),
                     })
                     .collect();
@@ -459,6 +459,10 @@ impl<'a> CSharpLowerer<'a> {
         CSharpEnumVariant {
             name: NamingConvention::class_name(variant.name.as_str()),
             tag,
+            // For data enums the public surface is a `sealed record`,
+            // not a numbered enum, so `tag` and `wire_tag` converge —
+            // both are the ordinal dispatch value used on the wire.
+            wire_tag: tag,
             fields,
         }
     }

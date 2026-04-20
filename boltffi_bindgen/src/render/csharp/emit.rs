@@ -1456,8 +1456,14 @@ mod tests {
         );
     }
 
+    /// A `#[repr(u8)]` enum's public declaration uses `byte` as the backing
+    /// type (so the CLR marshals the enum as its declared width on the
+    /// direct-P/Invoke path), but the wire codec stays on the 4-byte
+    /// `i32` ordinal format every boltffi backend agrees on. Mixing the
+    /// two would cause a cross-language byte-count mismatch in
+    /// wire-encoded containers.
     #[test]
-    fn emit_u8_c_style_enum_uses_byte_backing_type_and_u8_wire_helpers() {
+    fn emit_u8_c_style_enum_declares_byte_backing_but_uses_4_byte_i32_wire_codec() {
         let mut contract = empty_contract();
         contract.catalog.insert_enum(c_style_enum_with_tag_type(
             "log_level",
@@ -1478,18 +1484,18 @@ mod tests {
         );
         assert_source_contains(
             &log_level_cs.1,
-            "internal const int WireEncodedSize = 1;",
-            "the wire helper to size non-i32 C-style enums from their actual backing type",
+            "internal const int WireEncodedSize = 4;",
+            "the wire codec to use the cross-backend 4-byte i32 ordinal format",
         );
         assert_source_contains(
             &log_level_cs.1,
-            "(LogLevel)reader.ReadU8()",
-            "the decode helper to use the matching 1-byte wire reader",
+            "reader.ReadI32() switch",
+            "the decode helper to read a 4-byte i32 ordinal and switch on it",
         );
         assert_source_contains(
             &log_level_cs.1,
-            "wire.WriteU8((byte)value);",
-            "the encode helper to cast through the enum's declared byte backing type",
+            "wire.WriteI32(value switch",
+            "the encode helper to write a 4-byte i32 after mapping the variant to its ordinal",
         );
     }
 }

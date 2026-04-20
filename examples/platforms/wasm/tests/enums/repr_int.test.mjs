@@ -11,4 +11,18 @@ export async function run() {
     demo.echoVecLogLevel(Uint8Array.from([demo.LogLevel.Trace, demo.LogLevel.Info, demo.LogLevel.Error])),
     [demo.LogLevel.Trace, demo.LogLevel.Info, demo.LogLevel.Error],
   );
+
+  assert.equal(demo.HttpCode.Ok, 200);
+  assert.equal(demo.HttpCode.NotFound, 404);
+  assert.equal(demo.HttpCode.ServerError, 500);
+  assert.equal(demo.httpCodeNotFound(), demo.HttpCode.NotFound);
+  assert.equal(demo.echoHttpCode(demo.HttpCode.Ok), demo.HttpCode.Ok);
+  assert.equal(demo.echoHttpCode(demo.HttpCode.ServerError), demo.HttpCode.ServerError);
+
+  assert.equal(demo.Sign.Negative, -1);
+  assert.equal(demo.Sign.Zero, 0);
+  assert.equal(demo.Sign.Positive, 1);
+  assert.equal(demo.signNegative(), demo.Sign.Negative);
+  assert.equal(demo.echoSign(demo.Sign.Negative), demo.Sign.Negative);
+  assert.equal(demo.echoSign(demo.Sign.Positive), demo.Sign.Positive);
 }

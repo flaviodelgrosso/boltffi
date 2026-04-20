@@ -341,10 +341,21 @@ pub enum CSharpEnumKind {
 pub struct CSharpEnumVariant {
     /// PascalCase variant name (e.g., `"Circle"`, `"Active"`).
     pub name: String,
-    /// Wire tag — always the ordinal index (0, 1, 2…) matching
-    /// `EnumTagStrategy::OrdinalIndex`. Rendered as `i32` literals on both
-    /// encode and decode sides.
+    /// Numeric value rendered in the *public* surface. For C-style enums
+    /// this is the Rust discriminant — `HttpCode.NotFound = 404` — so
+    /// client code reading or comparing the enum sees real values, not
+    /// ordinals. For data-enum variants this equals `wire_tag`; their
+    /// public surface is a `sealed record`, not a numbered enum member,
+    /// and only the codec uses the value.
     pub tag: i32,
+    /// Ordinal index on the wire (0, 1, 2…), matching
+    /// `EnumTagStrategy::OrdinalIndex`. Every boltffi backend wire-encodes
+    /// C-style and data enums alike as a 4-byte little-endian `i32` of
+    /// this tag — so C# must too, even for enums whose public `tag`
+    /// diverges from their declaration order (gapped or negative
+    /// discriminants). Keeping `wire_tag` separate from `tag` makes the
+    /// two concepts explicit instead of hoping they'll always match.
+    pub wire_tag: i32,
     /// Variant fields. Empty for unit variants and for every C-style
     /// variant. Reuses [`CSharpRecordField`] because variant payloads are
     /// structurally identical to record fields — same name, type, and
@@ -383,46 +394,6 @@ impl CSharpEnum {
             PrimitiveType::U32 => "uint",
             PrimitiveType::I64 => "long",
             PrimitiveType::U64 => "ulong",
-            PrimitiveType::Bool
-            | PrimitiveType::ISize
-            | PrimitiveType::USize
-            | PrimitiveType::F32
-            | PrimitiveType::F64 => panic!("unsupported C# enum backing type"),
-        }
-    }
-
-    pub fn c_style_wire_size(&self) -> usize {
-        self.c_style_tag_type().wire_size_bytes()
-    }
-
-    pub fn c_style_read_method(&self) -> &'static str {
-        match self.c_style_tag_type() {
-            PrimitiveType::I8 => "ReadI8",
-            PrimitiveType::U8 => "ReadU8",
-            PrimitiveType::I16 => "ReadI16",
-            PrimitiveType::U16 => "ReadU16",
-            PrimitiveType::I32 => "ReadI32",
-            PrimitiveType::U32 => "ReadU32",
-            PrimitiveType::I64 => "ReadI64",
-            PrimitiveType::U64 => "ReadU64",
-            PrimitiveType::Bool
-            | PrimitiveType::ISize
-            | PrimitiveType::USize
-            | PrimitiveType::F32
-            | PrimitiveType::F64 => panic!("unsupported C# enum backing type"),
-        }
-    }
-
-    pub fn c_style_write_method(&self) -> &'static str {
-        match self.c_style_tag_type() {
-            PrimitiveType::I8 => "WriteI8",
-            PrimitiveType::U8 => "WriteU8",
-            PrimitiveType::I16 => "WriteI16",
-            PrimitiveType::U16 => "WriteU16",
-            PrimitiveType::I32 => "WriteI32",
-            PrimitiveType::U32 => "WriteU32",
-            PrimitiveType::I64 => "WriteI64",
-            PrimitiveType::U64 => "WriteU64",
             PrimitiveType::Bool
             | PrimitiveType::ISize
             | PrimitiveType::USize
@@ -934,6 +905,7 @@ mod tests {
         let variant = CSharpEnumVariant {
             name: "Active".to_string(),
             tag: 0,
+            wire_tag: 0,
             fields: vec![],
         };
         assert!(variant.is_unit());
@@ -947,6 +919,7 @@ mod tests {
         let variant = CSharpEnumVariant {
             name: "Circle".to_string(),
             tag: 0,
+            wire_tag: 0,
             fields: vec![CSharpRecordField {
                 name: "Radius".to_string(),
                 csharp_type: CSharpType::Double,
@@ -984,8 +957,13 @@ mod tests {
         assert!(!enumeration.is_c_style());
     }
 
+    /// `c_style_backing_type` drives only the public enum declaration
+    /// (`public enum LogLevel : byte`). The wire codec is width-fixed at
+    /// 4 bytes across every boltffi backend, so there is no per-backing-
+    /// type read/write method to resolve — the template hardcodes
+    /// `ReadI32`/`WriteI32` around an ordinal-tag switch.
     #[test]
-    fn c_style_enum_helpers_use_u8_backing_type() {
+    fn c_style_backing_type_maps_primitive_to_csharp_keyword() {
         let enumeration = CSharpEnum {
             class_name: "LogLevel".to_string(),
             kind: CSharpEnumKind::CStyle,
@@ -995,9 +973,6 @@ mod tests {
         };
 
         assert_eq!(enumeration.c_style_backing_type(), "byte");
-        assert_eq!(enumeration.c_style_wire_size(), 1);
-        assert_eq!(enumeration.c_style_read_method(), "ReadU8");
-        assert_eq!(enumeration.c_style_write_method(), "WriteU8");
     }
 
     /// C-style enums ride P/Invoke as their declared backing integral type,

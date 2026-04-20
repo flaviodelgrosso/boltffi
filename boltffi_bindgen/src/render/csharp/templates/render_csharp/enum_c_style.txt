@@ -15,13 +15,25 @@ namespace {{ namespace }}
 
     internal static class {{ enumeration.class_name }}Wire
     {
-        internal const int WireEncodedSize = {{ enumeration.c_style_wire_size() }};
+        internal const int WireEncodedSize = 4;
 
         internal static {{ enumeration.class_name }} Decode(WireReader reader) =>
-            ({{ enumeration.class_name }})reader.{{ enumeration.c_style_read_method() }}();
+            reader.ReadI32() switch
+            {
+{%- for variant in enumeration.variants %}
+                {{ variant.wire_tag }} => {{ enumeration.class_name }}.{{ variant.name }},
+{%- endfor %}
+                int tag => throw new InvalidOperationException($"Unknown {{ enumeration.class_name }} wire tag: {tag}"),
+            };
 
         internal static void WireEncodeTo(this {{ enumeration.class_name }} value, WireWriter wire) =>
-            wire.{{ enumeration.c_style_write_method() }}(({{ enumeration.c_style_backing_type() }})value);
+            wire.WriteI32(value switch
+            {
+{%- for variant in enumeration.variants %}
+                {{ enumeration.class_name }}.{{ variant.name }} => {{ variant.wire_tag }},
+{%- endfor %}
+                _ => throw new InvalidOperationException($"Unknown {{ enumeration.class_name }} variant: {value}"),
+            });
     }
 {%- if enumeration.has_methods() %}
 

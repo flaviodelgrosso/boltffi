@@ -288,21 +288,25 @@ mod tests {
                 CSharpEnumVariant {
                     name: "North".to_string(),
                     tag: 0,
+                    wire_tag: 0,
                     fields: vec![],
                 },
                 CSharpEnumVariant {
                     name: "South".to_string(),
                     tag: 1,
+                    wire_tag: 1,
                     fields: vec![],
                 },
                 CSharpEnumVariant {
                     name: "East".to_string(),
                     tag: 2,
+                    wire_tag: 2,
                     fields: vec![],
                 },
                 CSharpEnumVariant {
                     name: "West".to_string(),
                     tag: 3,
+                    wire_tag: 3,
                     fields: vec![],
                 },
             ],
@@ -374,16 +378,19 @@ mod tests {
                 CSharpEnumVariant {
                     name: "Active".to_string(),
                     tag: 0,
+                    wire_tag: 0,
                     fields: vec![],
                 },
                 CSharpEnumVariant {
                     name: "Inactive".to_string(),
                     tag: 1,
+                    wire_tag: 1,
                     fields: vec![],
                 },
                 CSharpEnumVariant {
                     name: "Pending".to_string(),
                     tag: 2,
+                    wire_tag: 2,
                     fields: vec![],
                 },
             ],
@@ -410,26 +417,31 @@ mod tests {
                 CSharpEnumVariant {
                     name: "Trace".to_string(),
                     tag: 0,
+                    wire_tag: 0,
                     fields: vec![],
                 },
                 CSharpEnumVariant {
                     name: "Debug".to_string(),
                     tag: 1,
+                    wire_tag: 1,
                     fields: vec![],
                 },
                 CSharpEnumVariant {
                     name: "Info".to_string(),
                     tag: 2,
+                    wire_tag: 2,
                     fields: vec![],
                 },
                 CSharpEnumVariant {
                     name: "Warn".to_string(),
                     tag: 3,
+                    wire_tag: 3,
                     fields: vec![],
                 },
                 CSharpEnumVariant {
                     name: "Error".to_string(),
                     tag: 4,
+                    wire_tag: 4,
                     fields: vec![],
                 },
             ],
@@ -458,6 +470,7 @@ mod tests {
                 CSharpEnumVariant {
                     name: "Circle".to_string(),
                     tag: 0,
+                    wire_tag: 0,
                     fields: vec![record_field(
                         "Radius",
                         CSharpType::Double,
@@ -469,6 +482,7 @@ mod tests {
                 CSharpEnumVariant {
                     name: "Rectangle".to_string(),
                     tag: 1,
+                    wire_tag: 1,
                     fields: vec![
                         record_field(
                             "Width",
@@ -489,6 +503,7 @@ mod tests {
                 CSharpEnumVariant {
                     name: "Point".to_string(),
                     tag: 2,
+                    wire_tag: 2,
                     fields: vec![],
                 },
             ],
@@ -514,6 +529,7 @@ mod tests {
             variants: vec![CSharpEnumVariant {
                 name: "Circle".to_string(),
                 tag: 0,
+                wire_tag: 0,
                 fields: vec![record_field(
                     "Radius",
                     CSharpType::Double,

@@ -314,6 +314,27 @@ public static class DemoTest
         Require(ShouldLog(LogLevel.Error, LogLevel.Warn), "ShouldLog(Error, Warn)");
         Require(!ShouldLog(LogLevel.Debug, LogLevel.Info), "!ShouldLog(Debug, Info)");
 
+        // HttpCode has gapped #[repr(u16)] discriminants (200, 404, 500).
+        // The raw value of each C# member must equal the Rust discriminant,
+        // and a value constructed on the Rust side must map back to the
+        // corresponding named member on the C# side.
+        Require((ushort)HttpCode.Ok == 200, "HttpCode.Ok == 200");
+        Require((ushort)HttpCode.NotFound == 404, "HttpCode.NotFound == 404");
+        Require((ushort)HttpCode.ServerError == 500, "HttpCode.ServerError == 500");
+        Require(HttpCodeNotFound() == HttpCode.NotFound, "Rust NotFound == C# NotFound");
+        Require(EchoHttpCode(HttpCode.Ok) == HttpCode.Ok, "EchoHttpCode(Ok)");
+        Require(EchoHttpCode(HttpCode.ServerError) == HttpCode.ServerError, "EchoHttpCode(ServerError)");
+
+        // Sign has a #[repr(i8)] with a negative discriminant. The CLR
+        // marshals sbyte across P/Invoke; the bit pattern must stay signed
+        // in both directions.
+        Require((sbyte)Sign.Negative == -1, "Sign.Negative == -1");
+        Require((sbyte)Sign.Zero == 0, "Sign.Zero == 0");
+        Require((sbyte)Sign.Positive == 1, "Sign.Positive == 1");
+        Require(SignNegative() == Sign.Negative, "Rust Negative == C# Negative");
+        Require(EchoSign(Sign.Negative) == Sign.Negative, "EchoSign(Negative)");
+        Require(EchoSign(Sign.Positive) == Sign.Positive, "EchoSign(Positive)");
+
         Console.WriteLine("  PASS\n");
     }
 
@@ -432,6 +453,21 @@ public static class DemoTest
         Require(AnimalName(new Animal.Dog("Rex", "Lab")) == "Rex", "AnimalName(Dog)");
         Require(AnimalName(new Animal.Fish(5u)) == "5 fish", "AnimalName(Fish)");
 
+        // LifecycleEvent — a data enum whose variant payload carries a
+        // C-style enum (Priority). The codec must wire-encode the outer
+        // variant tag and the inner enum's backing integer together.
+        LifecycleEvent started = MakeCriticalLifecycleEvent(7);
+        Require(
+            started is LifecycleEvent.TaskStarted ts
+                && ts.Priority == Priority.Critical
+                && ts.Id == 7,
+            "MakeCriticalLifecycleEvent returns TaskStarted with Critical priority"
+        );
+        LifecycleEvent echoedStarted = EchoLifecycleEvent(started);
+        Require(echoedStarted == started, "EchoLifecycleEvent(TaskStarted) round-trip");
+        LifecycleEvent tick = new LifecycleEvent.Tick();
+        Require(EchoLifecycleEvent(tick) is LifecycleEvent.Tick, "EchoLifecycleEvent(Tick)");
+
         Console.WriteLine("  PASS\n");
     }
 
@@ -460,6 +496,44 @@ public static class DemoTest
         Require(echoedNotification == notification, "EchoNotification round-trip");
         Require(echoedNotification.Priority == Priority.Critical, "Notification.Priority preserved");
         Require(!echoedNotification.Read, "Notification.Read preserved");
+
+        // Holder is #[repr(C)] but wraps a data enum (Shape). Data enums
+        // have a variable-width on-the-wire representation — this record
+        // must ride the wire codec, not direct P/Invoke, despite the
+        // repr(C) decoration.
+        Holder triangle = MakeTriangleHolder();
+        Require(
+            triangle.Shape is Shape.Triangle t
+                && t.A == new Point(0.0, 0.0)
+                && t.B == new Point(4.0, 0.0)
+                && t.C == new Point(0.0, 3.0),
+            "MakeTriangleHolder returns Triangle"
+        );
+        Holder echoedHolder = EchoHolder(triangle);
+        Require(echoedHolder == triangle, "EchoHolder round-trip");
+
+        // TaskHeader is #[repr(C)] with primitive + C-style enum fields,
+        // but rides the wire codec like any record with a non-primitive
+        // field: the Rust #[export] macro doesn't yet admit C-style enums
+        // as layout-compatible primitives, so both sides agree on wire
+        // encoding. Follow-up work (see TaskHeader doc) can widen both
+        // sides together to lift this onto direct P/Invoke.
+        TaskHeader header = MakeCriticalTaskHeader(42);
+        Require(header.Id == 42, "MakeCriticalTaskHeader.Id");
+        Require(header.Priority == Priority.Critical, "MakeCriticalTaskHeader.Priority");
+        Require(!header.Completed, "MakeCriticalTaskHeader.Completed");
+        TaskHeader echoedHeader = EchoTaskHeader(header);
+        Require(echoedHeader == header, "EchoTaskHeader round-trip");
+
+        // LogEntry — same family as TaskHeader but the C-style enum field
+        // is u8-backed, so field alignment matters. Wire-encoded today for
+        // the same reason TaskHeader is.
+        LogEntry entry = MakeErrorLogEntry(1234567890, 42);
+        Require(entry.Timestamp == 1234567890, "MakeErrorLogEntry.Timestamp");
+        Require(entry.Level == LogLevel.Error, "MakeErrorLogEntry.Level");
+        Require(entry.Code == 42, "MakeErrorLogEntry.Code");
+        LogEntry echoedEntry = EchoLogEntry(entry);
+        Require(echoedEntry == entry, "EchoLogEntry round-trip");
 
         Console.WriteLine("  PASS\n");
     }

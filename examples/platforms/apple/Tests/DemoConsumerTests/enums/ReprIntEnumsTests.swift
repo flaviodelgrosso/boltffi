@@ -14,4 +14,22 @@ final class ReprIntEnumsTests: XCTestCase {
         XCTAssertEqual(shouldLog(level: LogLevel.error, minLevel: LogLevel.warn), true)
         XCTAssertEqual(echoVecLogLevel(levels: [LogLevel.trace, LogLevel.info, LogLevel.error]), [LogLevel.trace, LogLevel.info, LogLevel.error])
     }
+
+    func testHttpCodeFns() {
+        XCTAssertEqual(HttpCode.ok.rawValue, 200)
+        XCTAssertEqual(HttpCode.notFound.rawValue, 404)
+        XCTAssertEqual(HttpCode.serverError.rawValue, 500)
+        XCTAssertEqual(httpCodeNotFound(), HttpCode.notFound)
+        XCTAssertEqual(echoHttpCode(code: HttpCode.ok), HttpCode.ok)
+        XCTAssertEqual(echoHttpCode(code: HttpCode.serverError), HttpCode.serverError)
+    }
+
+    func testSignFns() {
+        XCTAssertEqual(Sign.negative.rawValue, -1)
+        XCTAssertEqual(Sign.zero.rawValue, 0)
+        XCTAssertEqual(Sign.positive.rawValue, 1)
+        XCTAssertEqual(signNegative(), Sign.negative)
+        XCTAssertEqual(echoSign(s: Sign.negative), Sign.negative)
+        XCTAssertEqual(echoSign(s: Sign.positive), Sign.positive)
+    }
 }

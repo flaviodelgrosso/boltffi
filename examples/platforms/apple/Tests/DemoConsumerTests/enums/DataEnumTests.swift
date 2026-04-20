@@ -45,4 +45,11 @@ final class DataEnumTests: XCTestCase {
         XCTAssertFalse(isStatusComplete(status: .pending))
         XCTAssertTrue(isStatusComplete(status: .completed(result: 1)))
     }
+
+    func testLifecycleEventFns() {
+        let started = makeCriticalLifecycleEvent(id: 7)
+        XCTAssertEqual(started, LifecycleEvent.taskStarted(priority: .critical, id: 7))
+        XCTAssertEqual(echoLifecycleEvent(ev: started), started)
+        XCTAssertEqual(echoLifecycleEvent(ev: .tick), .tick)
+    }
 }

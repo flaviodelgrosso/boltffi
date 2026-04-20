@@ -263,11 +263,51 @@ public final class DemoTest {
         assert Demo.shouldLog(LogLevel.ERROR, LogLevel.WARN) : "shouldLog(Error >= Warn)";
         assert !Demo.shouldLog(LogLevel.DEBUG, LogLevel.INFO) : "shouldLog(Debug < Info)";
 
+        assert HttpCode.OK.value == (short) 200 : "HttpCode.OK.value == 200";
+        assert HttpCode.NOT_FOUND.value == (short) 404 : "HttpCode.NOT_FOUND.value == 404";
+        assert HttpCode.SERVER_ERROR.value == (short) 500 : "HttpCode.SERVER_ERROR.value == 500";
+        assert Demo.httpCodeNotFound() == HttpCode.NOT_FOUND : "httpCodeNotFound() == NOT_FOUND";
+        assert Demo.echoHttpCode(HttpCode.OK) == HttpCode.OK : "echoHttpCode(OK)";
+        assert Demo.echoHttpCode(HttpCode.SERVER_ERROR) == HttpCode.SERVER_ERROR : "echoHttpCode(SERVER_ERROR)";
+
+        assert Sign.NEGATIVE.value == (byte) -1 : "Sign.NEGATIVE.value == -1";
+        assert Sign.ZERO.value == (byte) 0 : "Sign.ZERO.value == 0";
+        assert Sign.POSITIVE.value == (byte) 1 : "Sign.POSITIVE.value == 1";
+        assert Demo.signNegative() == Sign.NEGATIVE : "signNegative() == NEGATIVE";
+        assert Demo.echoSign(Sign.NEGATIVE) == Sign.NEGATIVE : "echoSign(NEGATIVE)";
+        assert Demo.echoSign(Sign.POSITIVE) == Sign.POSITIVE : "echoSign(POSITIVE)";
+
         System.out.println("  PASS\n");
     }
 
     private static void testDataEnums() {
         System.out.println("Testing data enums...");
+
+        Holder triangleHolder = Demo.makeTriangleHolder();
+        assert triangleHolder.shape() instanceof Shape.Triangle : "Holder.shape is Triangle";
+        Holder echoedHolder = Demo.echoHolder(triangleHolder);
+        assert echoedHolder.equals(triangleHolder) : "echoHolder round-trip";
+
+        TaskHeader header = Demo.makeCriticalTaskHeader(42L);
+        assert header.id() == 42L : "TaskHeader.id";
+        assert header.priority() == Priority.CRITICAL : "TaskHeader.priority";
+        assert !header.completed() : "TaskHeader.completed";
+        TaskHeader echoedHeader = Demo.echoTaskHeader(header);
+        assert echoedHeader.equals(header) : "echoTaskHeader round-trip";
+
+        LifecycleEvent started = Demo.makeCriticalLifecycleEvent(7L);
+        assert started instanceof LifecycleEvent.TaskStarted : "LifecycleEvent.TaskStarted variant";
+        LifecycleEvent.TaskStarted startedTs = (LifecycleEvent.TaskStarted) started;
+        assert startedTs.priority == Priority.CRITICAL : "LifecycleEvent.TaskStarted.priority";
+        assert startedTs.id == 7L : "LifecycleEvent.TaskStarted.id";
+        assert Demo.echoLifecycleEvent(started).equals(started) : "echoLifecycleEvent(TaskStarted)";
+        assert Demo.echoLifecycleEvent(LifecycleEvent.Tick.INSTANCE) instanceof LifecycleEvent.Tick : "echoLifecycleEvent(Tick)";
+
+        LogEntry logEntry = Demo.makeErrorLogEntry(1234567890L, (short) 42);
+        assert logEntry.timestamp() == 1234567890L : "LogEntry.timestamp";
+        assert logEntry.level() == LogLevel.ERROR : "LogEntry.level";
+        assert logEntry.code() == (short) 42 : "LogEntry.code";
+        assert Demo.echoLogEntry(logEntry).equals(logEntry) : "echoLogEntry round-trip";
 
         Shape circle = Demo.makeCircle(5.0);
         assert circle instanceof Shape.Circle : "makeCircle returns Circle";
