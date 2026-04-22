@@ -108,6 +108,8 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use boltffi_bindgen::render::python::PythonRuntimeVersion;
+
     use super::languages::PythonGenerator;
     use crate::config::Config;
 
@@ -167,6 +169,8 @@ enabled = true
             .expect("generated pyproject should be readable");
         let generated_setup = fs::read_to_string(&generated_setup_path)
             .expect("generated setup.py should be readable");
+        let minimum_python_version_requirement =
+            PythonRuntimeVersion::minimum_supported().package_requirement();
 
         assert!(generated_init.contains("from pathlib import Path"));
         assert!(generated_init.contains("from . import _native"));
@@ -178,6 +182,9 @@ enabled = true
         assert!(generated_pyproject.contains("setuptools.build_meta"));
         assert!(generated_setup.contains("Extension("));
         assert!(generated_setup.contains("\"demo._native\""));
+        assert!(generated_setup.contains(&format!(
+            "python_requires={minimum_python_version_requirement:?}"
+        )));
         assert!(generated_native.contains("boltffi_python_symbol_echo_i32_fn"));
         assert!(generated_native.contains("boltffi_python_initialize_loader"));
         assert!(generated_native.contains("PyInit__native"));

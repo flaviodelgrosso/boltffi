@@ -1,5 +1,5 @@
 use crate::ir::abi::CallId;
-use crate::ir::definitions::{ConstructorDef, MethodDef, Receiver, RecordDef, ReturnDef};
+use crate::ir::definitions::{ConstructorDef, FieldDef, MethodDef, Receiver, RecordDef, ReturnDef};
 use crate::ir::types::TypeExpr;
 use crate::render::python::{
     NamingConvention, PythonCallable, PythonLowerError, PythonParameter, PythonRecord,
@@ -71,7 +71,7 @@ impl PythonLowerer<'_> {
         ))
     }
 
-    fn lower_record_field(field: &crate::ir::definitions::FieldDef) -> PythonRecordField {
+    fn lower_record_field(field: &FieldDef) -> PythonRecordField {
         let TypeExpr::Primitive(primitive) = &field.type_expr else {
             unreachable!("blittable python records must contain only primitive fields");
         };

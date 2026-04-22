@@ -5,6 +5,7 @@ mod naming;
 mod plan;
 mod primitives;
 mod templates;
+mod version;
 
 pub use emit::{PythonEmitter, PythonOutputFile, PythonPackageSources};
 pub use error::PythonLowerError;
@@ -16,3 +17,4 @@ pub use plan::{
     PythonRecordConstructor, PythonRecordField, PythonRecordMethod, PythonRecordType,
     PythonSequenceType, PythonType,
 };
+pub use version::PythonRuntimeVersion;

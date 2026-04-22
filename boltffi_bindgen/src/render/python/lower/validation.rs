@@ -390,10 +390,10 @@ mod tests {
 
     use crate::ir::TypeCatalog;
     use crate::ir::definitions::{
-        CStyleVariant, ConstructorDef, EnumDef, EnumRepr, FieldDef, MethodDef, Receiver, RecordDef,
-        ReturnDef,
+        CStyleVariant, ConstructorDef, EnumDef, EnumRepr, FieldDef, FunctionDef, MethodDef,
+        Receiver, RecordDef, ReturnDef,
     };
-    use crate::ir::ids::{EnumId, MethodId, RecordId, VariantName};
+    use crate::ir::ids::{EnumId, FunctionId, MethodId, RecordId, VariantName};
     use crate::ir::types::{PrimitiveType, TypeExpr};
     use crate::render::python::PythonLowerError;
 
@@ -469,8 +469,8 @@ mod tests {
     fn reject_native_loader_name_for_functions() {
         let error = lower_contract(
             TypeCatalog::default(),
-            vec![crate::ir::definitions::FunctionDef {
-                id: crate::ir::ids::FunctionId::new("_initialize_loader"),
+            vec![FunctionDef {
+                id: FunctionId::new("_initialize_loader"),
                 params: vec![],
                 returns: ReturnDef::Void,
                 execution_kind: ExecutionKind::Sync,
@@ -511,8 +511,8 @@ mod tests {
 
         let error = lower_contract(
             catalog,
-            vec![crate::ir::definitions::FunctionDef {
-                id: crate::ir::ids::FunctionId::new("_register_status"),
+            vec![FunctionDef {
+                id: FunctionId::new("_register_status"),
                 params: vec![],
                 returns: ReturnDef::Void,
                 execution_kind: ExecutionKind::Sync,

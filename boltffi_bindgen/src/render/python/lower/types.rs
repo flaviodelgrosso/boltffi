@@ -1,4 +1,4 @@
-use crate::ir::definitions::{ParamDef, ParamPassing, ReturnDef};
+use crate::ir::definitions::{EnumRepr, ParamDef, ParamPassing, ReturnDef};
 use crate::ir::ids::{EnumId, RecordId};
 use crate::ir::types::TypeExpr;
 use crate::render::python::{
@@ -81,7 +81,7 @@ impl PythonLowerer<'_> {
 
     fn lower_c_style_enum_type(&self, enum_id: &EnumId) -> Option<PythonEnumType> {
         let enumeration = self.ffi_contract.catalog.resolve_enum(enum_id)?;
-        let crate::ir::definitions::EnumRepr::CStyle { tag_type, .. } = &enumeration.repr else {
+        let EnumRepr::CStyle { tag_type, .. } = &enumeration.repr else {
             return None;
         };
 

@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use askama::Template as _;
 
-use crate::render::python::PythonModule;
 use crate::render::python::templates::{
     InitStubTemplate, InitTemplate, NativeModuleTemplate, PyprojectTemplate, SetupTemplate,
 };
+use crate::render::python::{PythonModule, PythonRuntimeVersion};
 
 use super::{PythonOutputFile, PythonPackageSources};
 
@@ -16,6 +16,10 @@ impl PythonEmitter {
         let package_directory = PathBuf::from(&module.module_name);
         let package_version_literal =
             format!("{:?}", module.package_version.as_deref().unwrap_or("0.0.0"));
+        let minimum_python_version_requirement_literal = format!(
+            "{:?}",
+            PythonRuntimeVersion::minimum_supported().package_requirement()
+        );
         let native_extension_name_literal =
             format!("{:?}", format!("{}._native", module.module_name));
         let native_source_path_literal =
@@ -33,6 +37,8 @@ impl PythonEmitter {
                     contents: SetupTemplate {
                         module,
                         package_version_literal: &package_version_literal,
+                        minimum_python_version_requirement_literal:
+                            &minimum_python_version_requirement_literal,
                         native_extension_name_literal: &native_extension_name_literal,
                         native_source_path_literal: &native_source_path_literal,
                     }
@@ -84,7 +90,7 @@ mod tests {
         PythonCStyleEnum, PythonCStyleEnumVariant, PythonCallable, PythonEnumConstructor,
         PythonEnumMethod, PythonEnumType, PythonFunction, PythonModule, PythonParameter,
         PythonRecord, PythonRecordConstructor, PythonRecordField, PythonRecordMethod,
-        PythonRecordType, PythonSequenceType, PythonType,
+        PythonRecordType, PythonRuntimeVersion, PythonSequenceType, PythonType,
     };
 
     struct NativePythonPackageFixture;
@@ -488,12 +494,17 @@ mod tests {
             NativePythonPackageFixture::rendered_file(&rendered, "demo_lib/__init__.pyi");
         let native_source =
             NativePythonPackageFixture::rendered_file(&rendered, "demo_lib/_native.c");
+        let minimum_python_version_requirement =
+            PythonRuntimeVersion::minimum_supported().package_requirement();
 
         assert!(pyproject_source.contains("build-backend = \"setuptools.build_meta\""));
         assert!(pyproject_source.ends_with('\n'));
         assert!(setup_source.contains("Extension("));
         assert!(setup_source.contains("\"demo_lib._native\""));
         assert!(setup_source.contains("\"*.pyi\""));
+        assert!(setup_source.contains(&format!(
+            "python_requires={minimum_python_version_requirement:?}"
+        )));
         assert!(init_source.contains("from dataclasses import dataclass"));
         assert!(init_source.contains("from enum import IntEnum"));
         assert!(init_source.contains("from pathlib import Path"));
