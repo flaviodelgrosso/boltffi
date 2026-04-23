@@ -1235,7 +1235,7 @@ fn generate_async_method_export(
     let visibility: syn::Visibility = syn::parse_quote! { pub };
 
     let other_inputs = method.sig.inputs.iter().skip(1).cloned();
-    let on_wire_record_error = quote! { ::core::ptr::null() };
+    let on_wire_record_error = ExternExport::async_entry_invalid_arg_early_return_statement();
     let params = match transform_method_params_async(
         other_inputs,
         return_lowering,

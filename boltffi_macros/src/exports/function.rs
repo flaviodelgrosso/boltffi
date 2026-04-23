@@ -555,7 +555,7 @@ fn generate_async_export(
     };
     let return_lowering = ReturnLoweringContext::new(custom_types, &data_types);
 
-    let on_wire_record_error = quote! { ::core::ptr::null() };
+    let on_wire_record_error = ExternExport::async_entry_invalid_arg_early_return_statement();
     let params = match transform_params_async(
         fn_inputs,
         &return_lowering,

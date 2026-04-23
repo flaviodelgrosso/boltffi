@@ -81,6 +81,10 @@ impl<'a> DualPlatformExternExport<'a> {
 }
 
 impl<'a> ExternExport<'a> {
+    pub(crate) fn async_entry_invalid_arg_early_return_statement() -> proc_macro2::TokenStream {
+        quote! { return ::core::ptr::null(); }
+    }
+
     pub(crate) fn async_entry(
         visibility: &'a syn::Visibility,
         export_name: &'a syn::Ident,
