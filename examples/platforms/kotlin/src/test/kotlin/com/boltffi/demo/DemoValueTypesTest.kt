@@ -189,6 +189,14 @@ class DemoValueTypesTest {
         assertNull(echoOptionalVec(null))
         assertEquals(2u, optionalVecLength(intArrayOf(9, 8)))
         assertNull(optionalVecLength(null))
+
+        // Vec<Option<T>>: each element carries its own present/absent tag.
+        // Mixed positions surface any off-by-one errors in the per-slot
+        // Option encoding inside the encoded-array wire path.
+        val mixedOptionals = listOf(1, null, 3, null, 5)
+        assertEquals(mixedOptionals, echoVecOptionalI32(mixedOptionals))
+        assertEquals(emptyList(), echoVecOptionalI32(emptyList()))
+        assertEquals(listOf(null, null, null), echoVecOptionalI32(listOf(null, null, null)))
     }
 
     @Test
@@ -311,7 +319,7 @@ class DemoValueTypesTest {
         assertIs<Shape.Rectangle>(Shape.square(3.0))
         assertIs<Shape.Circle>(Shape.tryCircle(2.0))
         assertMessageContains(assertFailsWith<FfiException> { Shape.tryCircle(-1.0) }, "radius must be positive")
-        assertEquals(4u, Shape.variantCount())
+        assertEquals(6u, Shape.variantCount())
         assertDoubleEquals(PI * 25.0, circle.area(), 1e-6)
         assertEquals("circle r=5", circle.describe())
         assertIs<Shape.Circle>(echoShape(makeCircle(2.0)))

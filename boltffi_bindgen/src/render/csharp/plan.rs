@@ -1,7 +1,27 @@
+//! View model for the C# backend: the data shapes the templates
+//! consume. `CSharpType` is the central vocabulary: every record
+//! field, param, return, and variant field resolves to one. All wire
+//! expressions (decode, size, encode) are pre-rendered strings
+//! produced by the lowerer; templates only interpolate.
+//!
+//! `CSharpType` owns its IR-to-type constructors
+//! (`impl From<PrimitiveType>`, `enum_backing_for`, `for_enum`,
+//! `from_read_op`, `from_type_expr`), so one place answers "what C#
+//! type does this become?".
+//!
+//! No dependency on `emit` or `lower`: the plan is passive data.
+//! `lower` produces it, `templates` consume it.
+
+use std::collections::HashSet;
 use std::fmt;
 
-use crate::ir::types::PrimitiveType;
+use crate::ir::codec::EnumLayout;
+use crate::ir::definitions::{EnumDef, EnumRepr};
+use crate::ir::ops::ReadOp;
+use crate::ir::types::{PrimitiveType, TypeExpr};
 use boltffi_ffi_rules::naming::{LibraryName, Name};
+
+use super::NamingConvention;
 
 /// Represents a lowered C# module, containing everything the templates need
 /// to render a `.cs` file.
@@ -19,11 +39,11 @@ pub struct CSharpModule {
     /// `.cs` file as a `readonly record struct`.
     pub records: Vec<CSharpRecord>,
     /// Enums exposed by the module. Each enum is rendered to its own `.cs`
-    /// file — C-style as a native `enum`, data-carrying as an
+    /// file: C-style as a native `enum`, data-carrying as an
     /// `abstract record` with nested `sealed record` variants.
     pub enums: Vec<CSharpEnum>,
     /// Top-level primitive functions. Used by both the public wrapper class
-    /// and the `[DllImport]` native declarations — C# P/Invoke passes
+    /// and the `[DllImport]` native declarations: C# P/Invoke passes
     /// primitives directly, so one struct serves both layers.
     pub functions: Vec<CSharpFunction>,
 }
@@ -39,7 +59,7 @@ impl CSharpModule {
     /// and `WireWriter` uses `Encoding.UTF8.GetByteCount` / `GetBytes` when
     /// encoding string-bearing params (including `Vec<String>` / nested
     /// string vecs) or string fields of a record. Decoding no longer needs
-    /// `System.Text` — `WireReader` reads strings through
+    /// `System.Text`. `WireReader` reads strings through
     /// `Marshal.PtrToStringUTF8`.
     pub fn needs_system_text(&self) -> bool {
         self.functions
@@ -55,7 +75,7 @@ impl CSharpModule {
         self.functions.iter().any(|f| !f.wire_writers.is_empty())
     }
 
-    /// Whether any function returns through an `FfiBuf` — a wire-decoded
+    /// Whether any function returns through an `FfiBuf`, a wire-decoded
     /// string or non-blittable record. Blittable records come back as
     /// direct struct values and do not count here.
     pub fn has_ffi_buf_returns(&self) -> bool {
@@ -110,20 +130,28 @@ pub enum CSharpType {
     /// name (e.g., `"Point"`).
     Record(String),
     /// A user-defined C-style enum (all variants are unit). Renders as a
-    /// C# `enum` with an `int` backing type. Blittable — passes directly
+    /// C# `enum` with an `int` backing type. Blittable: passes directly
     /// across P/Invoke as its underlying integer, and stays blittable when
     /// embedded in a `[StructLayout(Sequential)]` record.
     CStyleEnum(String),
     /// A user-defined data enum (at least one variant carries a payload).
     /// Renders as an `abstract record` with nested `sealed record` variants.
-    /// Always wire-encoded — never blittable — because variant payloads
+    /// Always wire-encoded (never blittable) because variant payloads
     /// are variable-width.
     DataEnum(String),
     /// A `Vec<T>` projected into the C# surface as a `T[]` jagged array.
-    /// Uniform representation across every element kind — primitives ride
+    /// Uniform representation across every element kind: primitives ride
     /// the blittable bulk-copy path, composites walk element-by-element.
     /// Nested vecs fall out naturally via recursive `Array(Array(...))`.
     Array(Box<CSharpType>),
+    /// An `Option<T>` projected into the C# surface as `T?`. Uniform
+    /// across value-type and reference-type inners: for value types it
+    /// desugars to `Nullable<T>`, for reference types it reads as a
+    /// nullable-annotated reference (both require `#nullable enable`,
+    /// which the generated files opt in to). Always travels
+    /// wire-encoded across the ABI. The 1-byte tag + payload form does
+    /// not line up with any CLR primitive layout.
+    Nullable(Box<CSharpType>),
 }
 
 impl CSharpType {
@@ -145,7 +173,7 @@ impl CSharpType {
     pub fn contains_string(&self) -> bool {
         match self {
             Self::String => true,
-            Self::Array(inner) => inner.contains_string(),
+            Self::Array(inner) | Self::Nullable(inner) => inner.contains_string(),
             _ => false,
         }
     }
@@ -199,18 +227,118 @@ impl CSharpType {
             Self::Array(inner) => {
                 Self::Array(Box::new((*inner).qualify_if_shadowed(shadowed, namespace)))
             }
+            Self::Nullable(inner) => {
+                Self::Nullable(Box::new((*inner).qualify_if_shadowed(shadowed, namespace)))
+            }
             other => other,
         }
     }
 
-    /// Whether this type is blittable in the CLR's sense — i.e. it can
+    /// Applies [`Self::qualify_if_shadowed`] when `scope` is `Some`.
+    pub fn qualify_if_shadowed_opt(self, scope: Option<&ShadowScope<'_>>) -> Self {
+        match scope {
+            Some(s) => self.qualify_if_shadowed(s.shadowed, s.namespace),
+            None => self,
+        }
+    }
+
+    /// The C# type a Rust C-style enum's tag primitive becomes when used
+    /// as the enum's backing type. Returns `None` for primitives that C#
+    /// does not accept as an enum base (`nint`, `nuint`, `bool`, `f32`,
+    /// `f64`), so the caller can drop the enum from the supported set
+    /// instead of emitting an illegal `enum : nuint`.
+    pub fn enum_backing_for(tag_type: PrimitiveType) -> Option<CSharpType> {
+        match tag_type {
+            PrimitiveType::I8 => Some(CSharpType::SByte),
+            PrimitiveType::U8 => Some(CSharpType::Byte),
+            PrimitiveType::I16 => Some(CSharpType::Short),
+            PrimitiveType::U16 => Some(CSharpType::UShort),
+            PrimitiveType::I32 => Some(CSharpType::Int),
+            PrimitiveType::U32 => Some(CSharpType::UInt),
+            PrimitiveType::I64 => Some(CSharpType::Long),
+            PrimitiveType::U64 => Some(CSharpType::ULong),
+            PrimitiveType::Bool
+            | PrimitiveType::ISize
+            | PrimitiveType::USize
+            | PrimitiveType::F32
+            | PrimitiveType::F64 => None,
+        }
+    }
+
+    /// The C# type a Rust enum definition lifts to. The `EnumRepr` drives
+    /// the split: a C-style enum (all unit variants) becomes
+    /// [`CSharpType::CStyleEnum`] and rides P/Invoke as its declared
+    /// backing integral type; a data enum (at least one payload-carrying
+    /// variant) becomes [`CSharpType::DataEnum`] and wire-encodes.
+    /// Everything downstream (the return-kind dispatch, param marshaling,
+    /// record blittability) keys off this one decision.
+    pub fn for_enum(enum_def: &EnumDef) -> CSharpType {
+        let class_name = NamingConvention::class_name(enum_def.id.as_str());
+        match &enum_def.repr {
+            EnumRepr::CStyle { .. } => CSharpType::CStyleEnum(class_name),
+            EnumRepr::Data { .. } => CSharpType::DataEnum(class_name),
+        }
+    }
+
+    /// Converts from a [`ReadOp`].
+    pub fn from_read_op(op: &ReadOp) -> Self {
+        match op {
+            ReadOp::Primitive { primitive, .. } => Self::from(*primitive),
+            ReadOp::String { .. } => Self::String,
+            ReadOp::Bytes { .. } => Self::Array(Box::new(Self::Byte)),
+            ReadOp::Option { some, .. } => {
+                let inner = Self::from_read_op(some.ops.first().expect("option inner read op"));
+                Self::Nullable(Box::new(inner))
+            }
+            ReadOp::Vec { element_type, .. } => {
+                Self::Array(Box::new(Self::from_type_expr(element_type)))
+            }
+            ReadOp::Record { id, .. } => Self::Record(NamingConvention::class_name(id.as_str())),
+            ReadOp::Enum { id, layout, .. } => {
+                let class_name = NamingConvention::class_name(id.as_str());
+                match layout {
+                    EnumLayout::CStyle { .. } => Self::CStyleEnum(class_name),
+                    EnumLayout::Data { .. } | EnumLayout::Recursive => Self::DataEnum(class_name),
+                }
+            }
+            ReadOp::Custom { underlying, .. } => {
+                Self::from_read_op(underlying.ops.first().expect("custom underlying read op"))
+            }
+            ReadOp::Result { .. } | ReadOp::Builtin { .. } => {
+                todo!("CSharpType::from_read_op: {:?}", op)
+            }
+        }
+    }
+
+    /// Converts from a [`TypeExpr`]. `TypeExpr::Enum` picks [`Self::DataEnum`]
+    /// arbitrarily; all three named-type variants render the same through
+    /// [`fmt::Display`] and [`Self::qualify_if_shadowed`].
+    pub fn from_type_expr(expr: &TypeExpr) -> Self {
+        match expr {
+            TypeExpr::Void => Self::Void,
+            TypeExpr::Primitive(p) => Self::from(*p),
+            TypeExpr::String => Self::String,
+            TypeExpr::Bytes => Self::Array(Box::new(Self::Byte)),
+            TypeExpr::Vec(inner) => Self::Array(Box::new(Self::from_type_expr(inner))),
+            TypeExpr::Option(inner) => Self::Nullable(Box::new(Self::from_type_expr(inner))),
+            TypeExpr::Record(id) => Self::Record(NamingConvention::class_name(id.as_str())),
+            TypeExpr::Enum(id) => Self::DataEnum(NamingConvention::class_name(id.as_str())),
+            TypeExpr::Result { .. }
+            | TypeExpr::Callback(_)
+            | TypeExpr::Custom(_)
+            | TypeExpr::Builtin(_)
+            | TypeExpr::Handle(_) => todo!("CSharpType::from_type_expr: {:?}", expr),
+        }
+    }
+
+    /// Whether this type is blittable in the CLR's sense: it can
     /// live inside a `[StructLayout(Sequential)]` record field and pass
     /// across P/Invoke without wire encoding. Primitives all qualify;
     /// `bool` does not (P/Invoke defaults to a 4-byte Win32 BOOL, so
     /// records with bool fields go through the wire path today). Strings
     /// and data enums are always wire-encoded. C-style enums are `int`
     /// underneath and ride the zero-copy path. Records are blittable or
-    /// not based on their own field contents, decided elsewhere — this
+    /// not based on their own field contents, decided elsewhere. This
     /// predicate only answers "is this *leaf* type blittable?".
     pub fn is_blittable_leaf(&self) -> bool {
         match self {
@@ -232,7 +360,31 @@ impl CSharpType {
             | Self::String
             | Self::Record(_)
             | Self::DataEnum(_)
-            | Self::Array(_) => false,
+            | Self::Array(_)
+            | Self::Nullable(_) => false,
+        }
+    }
+}
+
+impl From<PrimitiveType> for CSharpType {
+    /// Each boltffi primitive maps to a distinct C# type. C# has native
+    /// unsigned types (`byte`, `ushort`, `uint`, `ulong`) and platform-
+    /// sized integers (`nint`, `nuint`), so the conversion is lossless.
+    fn from(primitive: PrimitiveType) -> Self {
+        match primitive {
+            PrimitiveType::Bool => CSharpType::Bool,
+            PrimitiveType::I8 => CSharpType::SByte,
+            PrimitiveType::U8 => CSharpType::Byte,
+            PrimitiveType::I16 => CSharpType::Short,
+            PrimitiveType::U16 => CSharpType::UShort,
+            PrimitiveType::I32 => CSharpType::Int,
+            PrimitiveType::U32 => CSharpType::UInt,
+            PrimitiveType::I64 => CSharpType::Long,
+            PrimitiveType::U64 => CSharpType::ULong,
+            PrimitiveType::ISize => CSharpType::NInt,
+            PrimitiveType::USize => CSharpType::NUInt,
+            PrimitiveType::F32 => CSharpType::Float,
+            PrimitiveType::F64 => CSharpType::Double,
         }
     }
 }
@@ -257,8 +409,20 @@ impl fmt::Display for CSharpType {
             Self::String => f.write_str("string"),
             Self::Record(name) | Self::CStyleEnum(name) | Self::DataEnum(name) => f.write_str(name),
             Self::Array(inner) => write!(f, "{inner}[]"),
+            Self::Nullable(inner) => write!(f, "{inner}?"),
         }
     }
+}
+
+/// Type names shadowed by a nested scope at the render site. Used when
+/// emitting inside a data enum's body, where nested `sealed record`
+/// variants shadow module-level types of the same name: any class
+/// reference whose name is in `shadowed` gets qualified as
+/// `global::{namespace}.{ClassName}` so it resolves past the shadowing
+/// variant. Constructed by the lowerer and passed down through emit.
+pub struct ShadowScope<'a> {
+    pub shadowed: &'a HashSet<String>,
+    pub namespace: &'a str,
 }
 
 /// A record (Rust struct) exposed as a C# `readonly record struct`.
@@ -266,7 +430,7 @@ impl fmt::Display for CSharpType {
 /// Each record is emitted to its own `.cs` file. Blittable records (all
 /// fields are primitives, layout matches Rust's `#[repr(C)]`) get a
 /// `[StructLayout(LayoutKind.Sequential)]` attribute so the CLR passes
-/// them directly across the P/Invoke boundary by value — no wire encoding
+/// them directly across the P/Invoke boundary by value, no wire encoding
 /// needed. Non-blittable records carry `Decode` / `WireEncodedSize` /
 /// `WireEncodeTo` members and travel as wire-encoded buffers.
 #[derive(Debug, Clone)]
@@ -292,12 +456,13 @@ impl CSharpRecord {
         !self.is_blittable
     }
 
-    /// Whether the record has at least one string-typed field. Used by the
-    /// record template to decide whether to import `System.Text` (for
-    /// `Encoding.UTF8.GetByteCount`). Required because
-    /// `TreatWarningsAsErrors` flags unused usings.
+    /// Whether the record has at least one field whose type contains a
+    /// string at any nesting depth (bare `string`, `string?`, `string[]`,
+    /// nested vecs of strings). Used by the record template to decide
+    /// whether to import `System.Text` (for `Encoding.UTF8.GetByteCount`).
+    /// Required because `TreatWarningsAsErrors` flags unused usings.
     pub fn has_string_fields(&self) -> bool {
-        self.fields.iter().any(|f| f.csharp_type.is_string())
+        self.fields.iter().any(|f| f.csharp_type.contains_string())
     }
 }
 
@@ -329,7 +494,7 @@ pub struct CSharpRecordField {
 pub struct CSharpEnum {
     /// PascalCase class name (e.g., `"Shape"`, `"Status"`).
     pub class_name: String,
-    /// Whether this is a C-style or data enum — drives the rendering shape.
+    /// Whether this is a C-style or data enum. Drives the rendering shape.
     pub kind: CSharpEnumKind,
     /// For C-style enums, the declared integral repr primitive. `None` for
     /// data enums, whose public surface is always a reference type and whose
@@ -343,14 +508,14 @@ pub struct CSharpEnum {
     /// C-style enums these render as a companion `{Name}Methods` static
     /// class; for data enums they go directly on the abstract record.
     /// The Rust IR separates constructors from methods, but at the C#
-    /// call site they're both just static or instance methods — merged
+    /// call site they're both just static or instance methods, merged
     /// into one list here.
     pub methods: Vec<CSharpMethod>,
 }
 
 /// The two flavors the enum renderer knows how to produce. The `#[repr]`
 /// type could inform the C# backing type of a C-style enum, but for now
-/// we always use `int` — matches the i32 wire tag and keeps the DllImport
+/// we always use `int`, which matches the i32 wire tag and keeps the DllImport
 /// signatures uniform with the free-function enum param/return shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CSharpEnumKind {
@@ -373,7 +538,7 @@ pub struct CSharpEnumVariant {
     /// PascalCase variant name (e.g., `"Circle"`, `"Active"`).
     pub name: String,
     /// Numeric value rendered in the *public* surface. For C-style enums
-    /// this is the Rust discriminant — `HttpCode.NotFound = 404` — so
+    /// this is the Rust discriminant (`HttpCode.NotFound = 404`), so
     /// client code reading or comparing the enum sees real values, not
     /// ordinals. For data-enum variants this equals `wire_tag`; their
     /// public surface is a `sealed record`, not a numbered enum member,
@@ -382,14 +547,14 @@ pub struct CSharpEnumVariant {
     /// Ordinal index on the wire (0, 1, 2…), matching
     /// `EnumTagStrategy::OrdinalIndex`. Every boltffi backend wire-encodes
     /// C-style and data enums alike as a 4-byte little-endian `i32` of
-    /// this tag — so C# must too, even for enums whose public `tag`
+    /// this tag, so C# must too, even for enums whose public `tag`
     /// diverges from their declaration order (gapped or negative
     /// discriminants). Keeping `wire_tag` separate from `tag` makes the
     /// two concepts explicit instead of hoping they'll always match.
     pub wire_tag: i32,
     /// Variant fields. Empty for unit variants and for every C-style
     /// variant. Reuses [`CSharpRecordField`] because variant payloads are
-    /// structurally identical to record fields — same name, type, and
+    /// structurally identical to record fields: same name, type, and
     /// pre-rendered wire expressions.
     pub fields: Vec<CSharpRecordField>,
 }
@@ -433,15 +598,16 @@ impl CSharpEnum {
         }
     }
 
-    /// Whether any variant payload field is a `string`. Drives the
-    /// `using System.Text;` import in the data enum template — needed
-    /// because string-valued wire-size expressions call
-    /// `Encoding.UTF8.GetByteCount(...)`, which lives in `System.Text`.
+    /// Whether any variant payload field's type contains a string at any
+    /// nesting depth. Drives the `using System.Text;` import in the data
+    /// enum template, needed because string-valued wire-size expressions
+    /// call `Encoding.UTF8.GetByteCount(...)`, which lives in
+    /// `System.Text`.
     pub fn has_string_fields(&self) -> bool {
         self.variants
             .iter()
             .flat_map(|v| v.fields.iter())
-            .any(|f| f.csharp_type.is_string())
+            .any(|f| f.csharp_type.contains_string())
     }
 }
 
@@ -453,7 +619,7 @@ impl CSharpEnumVariant {
     }
 }
 
-/// A method or factory constructor on a value type — today always an
+/// A method or factory constructor on a value type, today always an
 /// enum, eventually also records. Renders as a static method, a C#
 /// extension method (for C-style enum instance methods, since C# enums
 /// can't have members), or a native instance method on the owning type.
@@ -474,7 +640,7 @@ pub struct CSharpMethod {
     pub ffi_name: String,
     /// How `self` (if any) participates in the call.
     pub receiver: CSharpReceiver,
-    /// Explicit params — does not include `self` for instance methods.
+    /// Explicit params. Does not include `self` for instance methods.
     pub params: Vec<CSharpParam>,
     /// C# return type of the public-facing method.
     pub return_type: CSharpType,
@@ -488,19 +654,19 @@ pub struct CSharpMethod {
 /// How a method's receiver (`self`) participates in the rendered C#.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CSharpReceiver {
-    /// Static method — no `self`. Lives on whichever container the
+    /// Static method, no `self`. Lives on whichever container the
     /// owning type uses: a companion `{Name}Methods` class for C-style
     /// enums, the abstract record for data enums, the record struct for
     /// records. Renders as `public static {ReturnType} {Name}({params})`.
     Static,
     /// Instance method on a C-style enum. Renders as a C# *extension*
     /// method `public static {ReturnType} {Name}(this {EnumType} self,
-    /// {params})` in the companion class — giving `d.Name(args)` call
+    /// {params})` in the companion class, giving `d.Name(args)` call
     /// syntax without requiring members on the enum itself. `self`
     /// passes directly to the DllImport since the CLR marshals the enum
     /// as its declared backing integral type.
     InstanceExtension,
-    /// Instance method on a type that can hold its own members — data
+    /// Instance method on a type that can hold its own members: data
     /// enums (on the abstract record) and records. Renders as a native
     /// method: `public {ReturnType} {Name}({params})`. When the owning
     /// type is wire-encoded (data enums, non-blittable records), the
@@ -528,8 +694,8 @@ impl CSharpMethod {
         matches!(self.return_kind, CSharpReturnKind::Void)
     }
 
-    /// Comma-joined param declarations for the method signature —
-    /// excludes `self`, which the template handles separately based on
+    /// Comma-joined param declarations for the method signature.
+    /// Excludes `self`, which the template handles separately based on
     /// the receiver kind.
     pub fn wrapper_param_list(&self) -> String {
         self.params
@@ -573,12 +739,12 @@ impl CSharpMethod {
     /// Param list used in the DllImport signature, including the
     /// receiver-dependent self declaration prepended when the method is
     /// an instance method:
-    /// - `InstanceExtension` — prepends `{OwnerClass} self`, relying on
+    /// - `InstanceExtension`: prepends `{OwnerClass} self`, relying on
     ///   the CLR to marshal the enum as its declared backing integral type.
-    /// - `InstanceNative` — prepends `byte[] self, UIntPtr selfLen` for
+    /// - `InstanceNative`: prepends `byte[] self, UIntPtr selfLen` for
     ///   wire-encoded `this`; passes `{OwnerClass} self` for blittable
     ///   types.
-    /// - `Static` — no self declaration.
+    /// - `Static`: no self declaration.
     ///
     /// `owner_is_blittable` distinguishes the two `InstanceNative` sub-
     /// cases. For wire-encoded owners it's `false`; for blittable
@@ -725,7 +891,7 @@ pub enum CSharpReturnKind {
     /// No return value.
     Void,
     /// Returned directly. Primitives, bools, and blittable records all
-    /// share this path — the CLR already knows how to marshal them.
+    /// share this path. The CLR already knows how to marshal them.
     Direct,
     /// The native function returns an `FfiBuf`. The wrapper copies the
     /// bytes into a managed `string` via `WireReader.ReadString` and
@@ -745,6 +911,13 @@ pub enum CSharpReturnKind {
     /// e.g. `ReadBlittableArray<int>()` for `Vec<i32>` or
     /// `ReadBoolArray()` for `Vec<bool>`.
     WireDecodeArray { reader_call: String },
+    /// The native function returns an `FfiBuf` carrying a wire-encoded
+    /// `Option<T>` (1-byte tag + optional payload). The wrapper wraps
+    /// it in a `WireReader` named `reader` and evaluates `decode_expr`,
+    /// which emit has already rendered against that reader so it
+    /// handles every inner shape (primitive, string, record, enum, vec)
+    /// without per-shape branching here.
+    WireDecodeOption { decode_expr: String },
 }
 
 impl CSharpReturnKind {
@@ -768,11 +941,18 @@ impl CSharpReturnKind {
         matches!(self, Self::WireDecodeArray { .. })
     }
 
+    pub fn is_wire_decode_option(&self) -> bool {
+        matches!(self, Self::WireDecodeOption { .. })
+    }
+
     /// Whether the native (DllImport) signature returns an `FfiBuf`.
     pub fn native_returns_ffi_buf(&self) -> bool {
         matches!(
             self,
-            Self::WireDecodeString | Self::WireDecodeObject { .. } | Self::WireDecodeArray { .. }
+            Self::WireDecodeString
+                | Self::WireDecodeObject { .. }
+                | Self::WireDecodeArray { .. }
+                | Self::WireDecodeOption { .. }
         )
     }
 
@@ -804,6 +984,10 @@ impl CSharpReturnKind {
                 "return new WireReader({}).{};",
                 buf_var, reader_call
             )),
+            Self::WireDecodeOption { decode_expr } => Some(format!(
+                "var reader = new WireReader({}); return {};",
+                buf_var, decode_expr
+            )),
             _ => None,
         }
     }
@@ -827,7 +1011,7 @@ impl CSharpParam {
         format!("{} {}", self.csharp_type, self.name)
     }
 
-    /// Declaration as it appears in the `[DllImport]` signature — this
+    /// Declaration as it appears in the `[DllImport]` signature. This
     /// is where the different marshalling paths diverge:
     /// - Primitives and blittable records pass through directly.
     /// - Bool needs the `[MarshalAs(UnmanagedType.I1)]` attribute
@@ -861,7 +1045,7 @@ impl CSharpParam {
             }
             // The wrapper's `fixed` block takes the managed array and
             // hands the native side a raw pointer, so the DllImport sees
-            // only `IntPtr` and a length — no element type, no P/Invoke
+            // only `IntPtr` and a length. No element type, no P/Invoke
             // marshaling.
             CSharpParamKind::PinnedArray { .. } => {
                 format!("IntPtr {name}, UIntPtr {name}Len", name = self.name)
@@ -869,7 +1053,7 @@ impl CSharpParam {
         }
     }
 
-    /// The argument expression to hand to the native call — either the
+    /// The argument expression to hand to the native call: either the
     /// raw param, or the pre-encoded byte array plus its length.
     pub fn native_call_arg(&self) -> String {
         match &self.kind {
@@ -890,7 +1074,7 @@ impl CSharpParam {
             //
             // The Rust FFI shim for `Vec<Passable>` takes a raw byte
             // length and divides by `size_of::<T>()` to recover the
-            // element count — the opposite of `Vec<Primitive>`, which
+            // element count, the opposite of `Vec<Primitive>`, which
             // takes element count directly. The primitive path and this
             // path therefore send different numbers across the same
             // `UIntPtr` slot. `Unsafe.SizeOf<T>()` is a JIT-time constant
@@ -991,8 +1175,8 @@ pub enum CSharpParamKind {
     /// native call and passes the pointer as `IntPtr`. C# and Rust then
     /// read the same block of managed heap memory.
     ///
-    /// `element_type` is the C# type literal for `T` (e.g., `"Location"`)
-    /// — threaded here so `pinned_fixed_args` can render
+    /// `element_type` is the C# type literal for `T` (e.g., `"Location"`),
+    /// threaded here so `pinned_fixed_args` can render
     /// `Location* _xPtr = x` without re-deriving from `csharp_type`.
     PinnedArray { element_type: String },
 }
@@ -1084,7 +1268,7 @@ mod tests {
         assert!(!ty.is_c_style_enum());
     }
 
-    /// A variant with no payload fields is a unit — true for every C-style
+    /// A variant with no payload fields is a unit: true for every C-style
     /// variant and for data-enum unit variants like `Shape::Point`.
     #[test]
     fn variant_with_empty_fields_is_unit() {
@@ -1097,7 +1281,7 @@ mod tests {
         assert!(variant.is_unit());
     }
 
-    /// A variant with at least one payload field is not a unit — the
+    /// A variant with at least one payload field is not a unit. The
     /// renderer emits a positional `sealed record Foo(double Radius)`
     /// rather than the empty-paren `sealed record Foo()` shape.
     #[test]
@@ -1146,7 +1330,7 @@ mod tests {
     /// `c_style_backing_type` drives only the public enum declaration
     /// (`public enum LogLevel : byte`). The wire codec is width-fixed at
     /// 4 bytes across every boltffi backend, so there is no per-backing-
-    /// type read/write method to resolve — the template hardcodes
+    /// type read/write method to resolve: the template hardcodes
     /// `ReadI32`/`WriteI32` around an ordinal-tag switch.
     #[test]
     fn c_style_backing_type_maps_primitive_to_csharp_keyword() {
@@ -1163,7 +1347,7 @@ mod tests {
 
     /// C-style enums ride P/Invoke as their declared backing integral type,
     /// so they count as blittable leaves alongside the numeric primitives.
-    /// Data enums never do — their payloads are variable-width and must
+    /// Data enums never do: their payloads are variable-width and must
     /// wire-encode.
     #[rstest]
     #[case::int(CSharpType::Int, true)]
@@ -1173,8 +1357,42 @@ mod tests {
     #[case::string(CSharpType::String, false)]
     #[case::record(CSharpType::Record("Point".to_string()), false)]
     #[case::data_enum(CSharpType::DataEnum("Shape".to_string()), false)]
+    #[case::nullable_int(CSharpType::Nullable(Box::new(CSharpType::Int)), false)]
+    #[case::nullable_string(CSharpType::Nullable(Box::new(CSharpType::String)), false)]
     fn is_blittable_leaf_matches_marshaling_story(#[case] ty: CSharpType, #[case] expected: bool) {
         assert_eq!(ty.is_blittable_leaf(), expected);
+    }
+
+    /// `Nullable` renders as `{inner}?`, uniform for value-type inners
+    /// (which desugar to `Nullable<T>`) and reference-type inners (which
+    /// read as nullable-annotated references under `#nullable enable`).
+    #[test]
+    fn nullable_type_display_appends_question_mark() {
+        assert_eq!(
+            CSharpType::Nullable(Box::new(CSharpType::Int)).to_string(),
+            "int?"
+        );
+        assert_eq!(
+            CSharpType::Nullable(Box::new(CSharpType::String)).to_string(),
+            "string?"
+        );
+        assert_eq!(
+            CSharpType::Nullable(Box::new(CSharpType::Record("Point".to_string()))).to_string(),
+            "Point?"
+        );
+    }
+
+    /// `contains_string` must see through `Nullable` so a `string?` field
+    /// still triggers the `System.Text` import: the wire-size expression
+    /// for a nullable string still calls `Encoding.UTF8.GetByteCount`.
+    #[test]
+    fn contains_string_sees_through_nullable() {
+        assert!(CSharpType::Nullable(Box::new(CSharpType::String)).contains_string());
+        assert!(
+            CSharpType::Array(Box::new(CSharpType::Nullable(Box::new(CSharpType::String))))
+                .contains_string()
+        );
+        assert!(!CSharpType::Nullable(Box::new(CSharpType::Int)).contains_string());
     }
 
     // ----- CSharpParam render helpers -----
@@ -1215,7 +1433,7 @@ mod tests {
     }
 
     /// Blittable record params use `Direct` kind and pass by value, so the
-    /// native declaration is just the struct name — no byte[] split.
+    /// native declaration is just the struct name, no byte[] split.
     #[test]
     fn native_declaration_blittable_record_passes_by_value() {
         let p = param(
@@ -1337,7 +1555,7 @@ mod tests {
         assert_eq!(f.wrapper_param_list(), "");
     }
 
-    /// The native param list exposes each slot's marshalling shape — a
+    /// The native param list exposes each slot's marshalling shape: a
     /// string expands to a pair, bool gets a MarshalAs, and primitives
     /// stay bare. This is the one place the different shapes must line
     /// up, so we pin it with a mixed-shape case.
@@ -1398,6 +1616,13 @@ mod tests {
         CSharpReturnKind::WireDecodeObject { class_name: "Person".to_string() },
         "FfiBuf",
     )]
+    #[case::option_primitive(
+        CSharpType::Nullable(Box::new(CSharpType::Int)),
+        CSharpReturnKind::WireDecodeOption {
+            decode_expr: "reader.ReadU8() == 0 ? (int?)null : reader.ReadI32()".to_string(),
+        },
+        "FfiBuf",
+    )]
     fn native_return_type_reflects_ffi_buf_paths(
         #[case] return_type: CSharpType,
         #[case] return_kind: CSharpReturnKind,
@@ -1429,6 +1654,23 @@ mod tests {
         );
     }
 
+    /// `WireDecodeOption` wraps the pre-rendered `decode_expr` in a local
+    /// `reader` binding so the emit-time decoder can reference `reader`
+    /// multiple times (once for the 1-byte tag, again for the payload)
+    /// without duplicating buffer construction.
+    #[test]
+    fn wire_decode_return_for_option_binds_reader_local() {
+        let kind = CSharpReturnKind::WireDecodeOption {
+            decode_expr: "reader.ReadU8() == 0 ? (int?)null : reader.ReadI32()".to_string(),
+        };
+        assert_eq!(
+            kind.wire_decode_return("_buf").as_deref(),
+            Some(
+                "var reader = new WireReader(_buf); return reader.ReadU8() == 0 ? (int?)null : reader.ReadI32();"
+            ),
+        );
+    }
+
     #[rstest]
     #[case::void(CSharpReturnKind::Void)]
     #[case::direct(CSharpReturnKind::Direct)]
@@ -1448,5 +1690,346 @@ mod tests {
         assert_eq!(CSharpReturnKind::WireDecodeString.decode_class_name(), None);
         assert_eq!(CSharpReturnKind::Void.decode_class_name(), None);
         assert_eq!(CSharpReturnKind::Direct.decode_class_name(), None);
+    }
+
+    mod from_read_op {
+        use super::*;
+        use crate::ir::codec::{EnumLayout, VecLayout};
+        use crate::ir::ids::{EnumId, RecordId};
+        use crate::ir::ops::{OffsetExpr, ReadOp, ReadSeq, SizeExpr, WireShape};
+        use boltffi_ffi_rules::transport::EnumTagStrategy;
+
+        fn seq(op: ReadOp) -> ReadSeq {
+            ReadSeq {
+                size: SizeExpr::Fixed(0),
+                ops: vec![op],
+                shape: WireShape::Value,
+            }
+        }
+
+        fn prim(p: PrimitiveType) -> ReadOp {
+            ReadOp::Primitive {
+                primitive: p,
+                offset: OffsetExpr::Base,
+            }
+        }
+
+        fn cstyle_layout() -> EnumLayout {
+            EnumLayout::CStyle {
+                tag_type: PrimitiveType::I32,
+                tag_strategy: EnumTagStrategy::Discriminant,
+                is_error: false,
+            }
+        }
+
+        fn data_layout() -> EnumLayout {
+            EnumLayout::Data {
+                tag_type: PrimitiveType::I32,
+                tag_strategy: EnumTagStrategy::Discriminant,
+                variants: vec![],
+            }
+        }
+
+        #[test]
+        fn primitive_maps_to_backing_type() {
+            assert_eq!(
+                CSharpType::from_read_op(&prim(PrimitiveType::I32)),
+                CSharpType::Int
+            );
+            assert_eq!(
+                CSharpType::from_read_op(&prim(PrimitiveType::F64)),
+                CSharpType::Double
+            );
+        }
+
+        #[test]
+        fn string_maps_to_string() {
+            let op = ReadOp::String {
+                offset: OffsetExpr::Base,
+            };
+            assert_eq!(CSharpType::from_read_op(&op), CSharpType::String);
+        }
+
+        #[test]
+        fn record_maps_to_record_with_class_name() {
+            let op = ReadOp::Record {
+                id: RecordId::new("point"),
+                offset: OffsetExpr::Base,
+                fields: vec![],
+            };
+            assert_eq!(
+                CSharpType::from_read_op(&op),
+                CSharpType::Record("Point".to_string())
+            );
+        }
+
+        #[test]
+        fn enum_cstyle_layout_maps_to_cstyle_enum() {
+            let op = ReadOp::Enum {
+                id: EnumId::new("status"),
+                offset: OffsetExpr::Base,
+                layout: cstyle_layout(),
+            };
+            assert_eq!(
+                CSharpType::from_read_op(&op),
+                CSharpType::CStyleEnum("Status".to_string())
+            );
+        }
+
+        #[test]
+        fn enum_data_layout_maps_to_data_enum() {
+            let op = ReadOp::Enum {
+                id: EnumId::new("shape"),
+                offset: OffsetExpr::Base,
+                layout: data_layout(),
+            };
+            assert_eq!(
+                CSharpType::from_read_op(&op),
+                CSharpType::DataEnum("Shape".to_string())
+            );
+        }
+
+        #[test]
+        fn option_wraps_inner_in_nullable() {
+            let op = ReadOp::Option {
+                tag_offset: OffsetExpr::Base,
+                some: Box::new(seq(prim(PrimitiveType::I32))),
+            };
+            assert_eq!(
+                CSharpType::from_read_op(&op),
+                CSharpType::Nullable(Box::new(CSharpType::Int))
+            );
+        }
+
+        #[test]
+        fn vec_wraps_element_type_in_array() {
+            let op = ReadOp::Vec {
+                len_offset: OffsetExpr::Base,
+                element_type: TypeExpr::Record(RecordId::new("point")),
+                element: Box::new(seq(ReadOp::Record {
+                    id: RecordId::new("point"),
+                    offset: OffsetExpr::Base,
+                    fields: vec![],
+                })),
+                layout: VecLayout::Encoded,
+            };
+            assert_eq!(
+                CSharpType::from_read_op(&op),
+                CSharpType::Array(Box::new(CSharpType::Record("Point".to_string())))
+            );
+        }
+
+        #[test]
+        fn option_of_vec_of_record_nests_correctly() {
+            let inner_vec = ReadOp::Vec {
+                len_offset: OffsetExpr::Base,
+                element_type: TypeExpr::Record(RecordId::new("point")),
+                element: Box::new(seq(ReadOp::Record {
+                    id: RecordId::new("point"),
+                    offset: OffsetExpr::Base,
+                    fields: vec![],
+                })),
+                layout: VecLayout::Encoded,
+            };
+            let option_op = ReadOp::Option {
+                tag_offset: OffsetExpr::Base,
+                some: Box::new(seq(inner_vec)),
+            };
+            assert_eq!(
+                CSharpType::from_read_op(&option_op),
+                CSharpType::Nullable(Box::new(CSharpType::Array(Box::new(CSharpType::Record(
+                    "Point".to_string()
+                )))))
+            );
+        }
+
+        /// Plan step 2 note: `qualify_if_shadowed` recurses through the
+        /// typed intermediate, so a shadowed `Point` inside `Option<Vec<Point>>`
+        /// still qualifies correctly.
+        #[test]
+        fn qualify_if_shadowed_reaches_through_nested_builder_output() {
+            let option_op = ReadOp::Option {
+                tag_offset: OffsetExpr::Base,
+                some: Box::new(seq(ReadOp::Vec {
+                    len_offset: OffsetExpr::Base,
+                    element_type: TypeExpr::Record(RecordId::new("point")),
+                    element: Box::new(seq(ReadOp::Record {
+                        id: RecordId::new("point"),
+                        offset: OffsetExpr::Base,
+                        fields: vec![],
+                    })),
+                    layout: VecLayout::Encoded,
+                })),
+            };
+            let ty = CSharpType::from_read_op(&option_op);
+            let shadowed: std::collections::HashSet<String> =
+                std::iter::once("Point".to_string()).collect();
+            let qualified = ty.qualify_if_shadowed(&shadowed, "Demo");
+            assert_eq!(qualified.to_string(), "global::Demo.Point[]?");
+        }
+    }
+
+    mod from_type_expr {
+        use super::*;
+        use crate::ir::ids::{EnumId, RecordId};
+
+        #[test]
+        fn primitive_maps_to_backing_type() {
+            assert_eq!(
+                CSharpType::from_type_expr(&TypeExpr::Primitive(PrimitiveType::I32)),
+                CSharpType::Int
+            );
+        }
+
+        #[test]
+        fn string_maps_to_string() {
+            assert_eq!(
+                CSharpType::from_type_expr(&TypeExpr::String),
+                CSharpType::String
+            );
+        }
+
+        #[test]
+        fn record_maps_to_record_with_class_name() {
+            assert_eq!(
+                CSharpType::from_type_expr(&TypeExpr::Record(RecordId::new("point"))),
+                CSharpType::Record("Point".to_string())
+            );
+        }
+
+        /// `TypeExpr::Enum` has no layout metadata available here, so we
+        /// commit to [`CSharpType::DataEnum`] by convention. Display and
+        /// qualification render identically for all named-type variants,
+        /// so downstream rendering is unaffected.
+        #[test]
+        fn enum_maps_to_data_enum_by_convention() {
+            assert_eq!(
+                CSharpType::from_type_expr(&TypeExpr::Enum(EnumId::new("status"))),
+                CSharpType::DataEnum("Status".to_string())
+            );
+        }
+
+        #[test]
+        fn vec_wraps_element_in_array() {
+            let expr = TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::F64)));
+            assert_eq!(
+                CSharpType::from_type_expr(&expr),
+                CSharpType::Array(Box::new(CSharpType::Double))
+            );
+        }
+
+        #[test]
+        fn option_wraps_inner_in_nullable() {
+            let expr = TypeExpr::Option(Box::new(TypeExpr::String));
+            assert_eq!(
+                CSharpType::from_type_expr(&expr),
+                CSharpType::Nullable(Box::new(CSharpType::String))
+            );
+        }
+
+        #[test]
+        fn option_of_vec_of_record_nests_correctly() {
+            let expr = TypeExpr::Option(Box::new(TypeExpr::Vec(Box::new(TypeExpr::Record(
+                RecordId::new("point"),
+            )))));
+            assert_eq!(
+                CSharpType::from_type_expr(&expr),
+                CSharpType::Nullable(Box::new(CSharpType::Array(Box::new(CSharpType::Record(
+                    "Point".to_string()
+                )))))
+            );
+        }
+    }
+
+    mod for_enum {
+        use super::*;
+        use crate::ir::definitions::{CStyleVariant, DataVariant, VariantPayload};
+        use crate::ir::ids::EnumId;
+
+        fn enum_def(id: &str, repr: EnumRepr) -> EnumDef {
+            EnumDef {
+                id: EnumId::new(id),
+                repr,
+                is_error: false,
+                constructors: vec![],
+                methods: vec![],
+                doc: None,
+                deprecated: None,
+            }
+        }
+
+        #[test]
+        fn c_style_repr_maps_to_c_style_enum_type() {
+            let def = enum_def(
+                "Status",
+                EnumRepr::CStyle {
+                    tag_type: PrimitiveType::I32,
+                    variants: vec![CStyleVariant {
+                        name: "Active".into(),
+                        discriminant: 0,
+                        doc: None,
+                    }],
+                },
+            );
+            assert_eq!(
+                CSharpType::for_enum(&def),
+                CSharpType::CStyleEnum("Status".to_string())
+            );
+        }
+
+        #[test]
+        fn data_repr_maps_to_data_enum_type() {
+            let def = enum_def(
+                "Shape",
+                EnumRepr::Data {
+                    tag_type: PrimitiveType::I32,
+                    variants: vec![DataVariant {
+                        name: "Point".into(),
+                        discriminant: 0,
+                        payload: VariantPayload::Unit,
+                        doc: None,
+                    }],
+                },
+            );
+            assert_eq!(
+                CSharpType::for_enum(&def),
+                CSharpType::DataEnum("Shape".to_string())
+            );
+        }
+
+        /// `class_name` runs the source `snake_case` enum name through
+        /// [`NamingConvention::class_name`], so the C# type keeps the name
+        /// in PascalCase even if upstream ever shifts the ID casing.
+        #[test]
+        fn class_name_round_trips_through_naming_convention() {
+            let def = enum_def(
+                "log_level",
+                EnumRepr::CStyle {
+                    tag_type: PrimitiveType::I32,
+                    variants: vec![],
+                },
+            );
+            assert_eq!(
+                CSharpType::for_enum(&def),
+                CSharpType::CStyleEnum("LogLevel".to_string())
+            );
+        }
+    }
+
+    mod enum_backing_for {
+        use super::*;
+
+        #[test]
+        fn maps_u8_to_byte() {
+            assert_eq!(
+                CSharpType::enum_backing_for(PrimitiveType::U8),
+                Some(CSharpType::Byte)
+            );
+        }
+
+        #[test]
+        fn rejects_usize() {
+            assert_eq!(CSharpType::enum_backing_for(PrimitiveType::USize), None);
+        }
     }
 }

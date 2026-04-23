@@ -346,7 +346,7 @@ public final class DemoTest {
         assert Math.abs(rect.area() - 12.0) < 0.0001 : "Shape.area rectangle";
         assert circle.describe().equals("circle r=5") : "Shape.describe circle";
         assert rect.describe().equals("rect 3x4") : "Shape.describe rectangle";
-        assert Shape.variantCount() == 4 : "Shape.variantCount";
+        assert Shape.variantCount() == 6 : "Shape.variantCount";
 
         Shape echoedCircle = Demo.echoShape(circle);
         assert echoedCircle instanceof Shape.Circle : "echoShape(circle) type";
@@ -694,6 +694,18 @@ public final class DemoTest {
         assert !withoutCursor.nextCursor().isPresent() : "echoSearchResult cursor none";
         assert !withoutCursor.maxScore().isPresent() : "echoSearchResult score none";
         assert !Demo.hasMoreResults(withoutCursor) : "hasMoreResults false";
+
+        java.util.List<Optional<Integer>> mixed = java.util.Arrays.asList(
+            Optional.of(1), Optional.empty(), Optional.of(3), Optional.empty(), Optional.of(5)
+        );
+        java.util.List<Optional<Integer>> echoedMixed = Demo.echoVecOptionalI32(mixed);
+        assert echoedMixed.size() == mixed.size() : "echoVecOptionalI32 size";
+        for (int i = 0; i < mixed.size(); i++) {
+            assert echoedMixed.get(i).equals(mixed.get(i))
+                : "echoVecOptionalI32[" + i + "] preserves presence and value";
+        }
+        assert Demo.echoVecOptionalI32(java.util.Collections.emptyList()).isEmpty()
+            : "echoVecOptionalI32 empty";
 
         System.out.println("  PASS\n");
     }

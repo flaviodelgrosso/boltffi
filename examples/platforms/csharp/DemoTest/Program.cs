@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Demo;
 using static Demo.Demo;
 
@@ -34,6 +35,9 @@ public static class DemoTest
         TestBlittableRecordVecs();
         TestEnumVecs();
         TestVecFields();
+        TestOptions();
+        TestOptionsInRecords();
+        TestOptionsWithVec();
         Console.WriteLine("All tests passed!");
         return 0;
     }
@@ -387,6 +391,45 @@ public static class DemoTest
         Shape echoedPoint = EchoShape(point);
         Require(echoedPoint is Shape.Point, "EchoShape(Point) unit variant");
 
+        // Apex — Option<Point> as a variant field where Point is shadowed
+        // by the sibling Shape.Point unit variant. Drives the scoped
+        // rendering of the nullable cast inside the Shape scope.
+        Shape apexSome = new Shape.Apex(new Point(3.0, 4.0));
+        Shape echoedApexSome = EchoShape(apexSome);
+        Require(
+            echoedApexSome is Shape.Apex asome && asome.Tip == new Point(3.0, 4.0),
+            "EchoShape(Apex with Some(Point))"
+        );
+
+        Shape apexNone = new Shape.Apex(null);
+        Shape echoedApexNone = EchoShape(apexNone);
+        Require(
+            echoedApexNone is Shape.Apex anone && anone.Tip is null,
+            "EchoShape(Apex with None)"
+        );
+
+        // Cluster — Vec<Point> as a variant field, same shadow setup.
+        // Drives the scoped rendering of the ReadEncodedArray / blittable
+        // array element type inside the Shape scope.
+        Shape cluster = new Shape.Cluster(new[]
+        {
+            new Point(1.0, 2.0),
+            new Point(3.0, 4.0),
+            new Point(5.0, 6.0),
+        });
+        Shape echoedCluster = EchoShape(cluster);
+        Require(
+            echoedCluster is Shape.Cluster cl && cl.Members.Length == 3
+                && cl.Members[0] == new Point(1.0, 2.0)
+                && cl.Members[2] == new Point(5.0, 6.0),
+            "EchoShape(Cluster with Vec<Point>)"
+        );
+        Require(
+            EchoShape(new Shape.Cluster(Array.Empty<Point>())) is Shape.Cluster clE
+                && clE.Members.Length == 0,
+            "EchoShape(Cluster empty)"
+        );
+
         // Free-function factories producing Shape.
         Require(MakeCircle(2.0) is Shape.Circle c2 && c2.Radius == 2.0, "MakeCircle");
         Require(
@@ -408,8 +451,15 @@ public static class DemoTest
             Shape.Square(7.0) is Shape.Rectangle sq && sq.Width == 7.0 && sq.Height == 7.0,
             "Shape.Square(7)"
         );
-        Require(Shape.VariantCount() == 4u, "Shape.VariantCount() == 4");
+        Require(Shape.VariantCount() == 6u, "Shape.VariantCount() == 6");
         Require(Shape.New(3.0) is Shape.Circle sn && sn.Radius == 3.0, "Shape.New(3)");
+
+        // TryApexPoint — static method whose return type is Option<Point>
+        // where Point is shadowed by a sibling variant. Drives scoped
+        // rendering of the Option decode inside the Shape scope.
+        Point? apexPt = Shape.TryApexPoint(2.5);
+        Require(apexPt is { } pt && pt.X == 0.0 && pt.Y == 2.5, "Shape.TryApexPoint(positive)");
+        Require(Shape.TryApexPoint(-1.0) is null, "Shape.TryApexPoint(negative) == null");
 
         // Message — mixes string, primitive, and unit variants.
         Message text = new Message.Text("hello");
@@ -757,11 +807,24 @@ public static class DemoTest
             new Shape.Rectangle(3.0, 4.0),
             new Shape.Triangle(new Point(0.0, 0.0), new Point(4.0, 0.0), new Point(0.0, 3.0)),
             new Shape.Point(),
+            new Shape.Apex(new Point(7.0, 8.0)),
+            new Shape.Apex(null),
         };
         Shape[] echoedShapes = EchoVecShape(shapes);
         Require(echoedShapes.Length == shapes.Length, "echoVecShape length");
         Require(echoedShapes.SequenceEqual(shapes), "echoVecShape round-trip preserves each variant");
         Require(EchoVecShape(Array.Empty<Shape>()).Length == 0, "echoVecShape empty");
+
+        // Cluster carries a `Point[]`, and C# record default equality treats
+        // arrays by reference, so we compare element-wise explicitly.
+        Point[] clusterPoints = new[] { new Point(1.0, 2.0), new Point(3.0, 4.0) };
+        Shape[] clusterRoundTrip = EchoVecShape(new Shape[] { new Shape.Cluster(clusterPoints) });
+        Require(
+            clusterRoundTrip.Length == 1
+                && clusterRoundTrip[0] is Shape.Cluster rc
+                && rc.Members.SequenceEqual(clusterPoints),
+            "echoVecShape(Cluster with Vec<Point>)"
+        );
 
         Console.WriteLine("  PASS\n");
     }
@@ -858,6 +921,230 @@ public static class DemoTest
         Require(Math.Abs(SumUserScores(profiles) - expectedSum) < 1e-9, "sumUserScores round-trip");
         Require(CountActiveUsers(profiles) == 2, "countActiveUsers (even indices active)");
         Require(SumUserScores(Array.Empty<BenchmarkUserProfile>()) == 0.0, "sumUserScores empty");
+
+        Console.WriteLine("  PASS\n");
+    }
+
+    /// <summary>
+    /// Option&lt;T&gt; travels wire-encoded: 1 byte for the present/absent tag,
+    /// plus the inner payload when Some. The C# surface renders each
+    /// Option as T? uniformly — Nullable&lt;T&gt; for value-type inners,
+    /// nullable-annotated references for reference-type inners, both
+    /// under #nullable enable in the generated files. Covers the
+    /// primitive matrix plus reference-type inners (string), blittable
+    /// records (Point), C-style enums (Status), and data enums
+    /// (ApiResult). Option fields inside records and nested
+    /// Option/Vec combinations land in a later step.
+    /// </summary>
+    private static void TestOptions()
+    {
+        Console.WriteLine("Testing Option types...");
+
+        Require(EchoOptionalI32(42) == 42, "EchoOptionalI32(Some)");
+        Require(EchoOptionalI32(null) == null, "EchoOptionalI32(None)");
+        Require(EchoOptionalI32(int.MinValue) == int.MinValue, "EchoOptionalI32(min)");
+        Require(EchoOptionalI32(int.MaxValue) == int.MaxValue, "EchoOptionalI32(max)");
+
+        Require(EchoOptionalF64(3.14) == 3.14, "EchoOptionalF64(Some)");
+        Require(EchoOptionalF64(null) == null, "EchoOptionalF64(None)");
+
+        Require(EchoOptionalBool(true) == true, "EchoOptionalBool(true)");
+        Require(EchoOptionalBool(false) == false, "EchoOptionalBool(false)");
+        Require(EchoOptionalBool(null) == null, "EchoOptionalBool(None)");
+
+        Require(UnwrapOrDefaultI32(10, 99) == 10, "UnwrapOrDefaultI32(Some)");
+        Require(UnwrapOrDefaultI32(null, 99) == 99, "UnwrapOrDefaultI32(None) falls back");
+
+        Require(MakeSomeI32(7) == 7, "MakeSomeI32 returns Some");
+        Require(MakeNoneI32() == null, "MakeNoneI32 returns null");
+
+        Require(DoubleIfSome(5) == 10, "DoubleIfSome(Some)");
+        Require(DoubleIfSome(null) == null, "DoubleIfSome(None) stays None");
+
+        Require(FindEven(4) == 4, "FindEven(4) == Some(4)");
+        Require(FindEven(3) == null, "FindEven(3) == None");
+
+        Require(FindPositiveI64(100L) == 100L, "FindPositiveI64(100)");
+        Require(FindPositiveI64(-1L) == null, "FindPositiveI64(-1) == None");
+        Require(FindPositiveI64(0L) == null, "FindPositiveI64(0) == None");
+
+        Require(FindPositiveF64(1.5) == 1.5, "FindPositiveF64(1.5)");
+        Require(FindPositiveF64(-0.5) == null, "FindPositiveF64(-0.5) == None");
+
+        // Option<String>: reference-type inner rides the same 1-byte tag
+        // path; the payload is a length-prefixed UTF-8 buffer. café
+        // exercises 2-byte codepoints, 🌍 exercises 4-byte ones.
+        Require(EchoOptionalString("hello") == "hello", "EchoOptionalString(Some ascii)");
+        Require(EchoOptionalString("café") == "café", "EchoOptionalString(2-byte UTF-8)");
+        Require(EchoOptionalString("🌍") == "🌍", "EchoOptionalString(4-byte UTF-8)");
+        Require(EchoOptionalString("") == "", "EchoOptionalString(empty Some)");
+        Require(EchoOptionalString(null) == null, "EchoOptionalString(None)");
+
+        Require(IsSomeString("x"), "IsSomeString(Some)");
+        Require(!IsSomeString(null), "IsSomeString(None)");
+
+        Require(FindName(7) == "Name_7", "FindName(positive) returns Some");
+        Require(FindName(-1) == null, "FindName(non-positive) returns null");
+
+        // Option<BlittableRecord>: Point is #[repr(C)] with two f64
+        // fields, so the inner payload is 16 raw bytes written via
+        // Point.WireEncodeTo and read via Point.Decode — no layout
+        // shortcut, because the 1-byte tag forces the wire path.
+        Require(EchoOptionalPoint(new Point(1.5, 2.5)) == new Point(1.5, 2.5), "EchoOptionalPoint(Some)");
+        Require(EchoOptionalPoint(null) == null, "EchoOptionalPoint(None)");
+
+        Require(MakeSomePoint(3.0, 4.0) == new Point(3.0, 4.0), "MakeSomePoint returns Some");
+        Require(MakeNonePoint() == null, "MakeNonePoint returns null");
+
+        // Option<CStyleEnum>: Status crosses the wire as a 4-byte i32
+        // tag under an Option — the CLR can't reuse its direct
+        // marshaling path because of the outer 1-byte present tag.
+        Require(EchoOptionalStatus(Status.Active) == Status.Active, "EchoOptionalStatus(Active)");
+        Require(EchoOptionalStatus(Status.Pending) == Status.Pending, "EchoOptionalStatus(Pending)");
+        Require(EchoOptionalStatus(null) == null, "EchoOptionalStatus(None)");
+
+        // Option<DataEnum>: ApiResult has unit, tuple, and struct
+        // variants — the decode inside the Option's ternary must
+        // still dispatch to the right variant.
+        Require(
+            FindApiResult(0) is ApiResult.Success,
+            "FindApiResult(0) returns Success"
+        );
+        Require(
+            FindApiResult(1) is ApiResult.ErrorCode ec && ec.Value0 == -1,
+            "FindApiResult(1) returns ErrorCode(-1)"
+        );
+        Require(
+            FindApiResult(2) is ApiResult.ErrorWithData ewd && ewd.Code == -1 && ewd.Detail == -2,
+            "FindApiResult(2) returns ErrorWithData"
+        );
+        Require(FindApiResult(9) == null, "FindApiResult(unknown) returns null");
+
+        Console.WriteLine("  PASS\n");
+    }
+
+    /// <summary>
+    /// Records whose fields are themselves Option&lt;T&gt;. Exercises the
+    /// shared-emit-context plumbing: two Option fields on one record
+    /// must each pick fresh `sizeOpt{n}` / `opt{n}` pattern-binding
+    /// names so the sum inside `WireEncodedSize` and the statements
+    /// inside `WireEncodeTo` don't redeclare the same local. The
+    /// Decode path reads each Option through the same tag-and-branch
+    /// pattern used for top-level Option returns.
+    /// </summary>
+    private static void TestOptionsInRecords()
+    {
+        Console.WriteLine("Testing records with Option fields...");
+
+        // UserProfile: one optional string field, one optional f64.
+        // The record round-trip exercises encode + decode together.
+        UserProfile alice = MakeUserProfile("Alice", 30u, "alice@example.com", 92.5);
+        Require(alice.Name == "Alice", "MakeUserProfile.Name");
+        Require(alice.Age == 30u, "MakeUserProfile.Age");
+        Require(alice.Email == "alice@example.com", "MakeUserProfile.Email(Some)");
+        Require(alice.Score == 92.5, "MakeUserProfile.Score(Some)");
+
+        UserProfile newUser = MakeUserProfile("Bob", 25u, null, null);
+        Require(newUser.Email == null, "MakeUserProfile.Email(None)");
+        Require(newUser.Score == null, "MakeUserProfile.Score(None)");
+
+        UserProfile echoed = EchoUserProfile(alice);
+        Require(echoed == alice, "EchoUserProfile round-trip (all fields Some)");
+
+        UserProfile echoedNew = EchoUserProfile(newUser);
+        Require(echoedNew == newUser, "EchoUserProfile round-trip (Option fields None)");
+
+        // Mixed present/absent: one Option field is Some, the other is None.
+        UserProfile mixed = MakeUserProfile("Carol", 40u, "carol@example.com", null);
+        Require(mixed.Email == "carol@example.com", "MakeUserProfile.Email(Some) with Score(None)");
+        Require(mixed.Score == null, "MakeUserProfile.Score(None) with Email(Some)");
+        Require(EchoUserProfile(mixed) == mixed, "EchoUserProfile round-trip (mixed Option fields)");
+
+        // UTF-8 sentinels inside the optional string field.
+        UserProfile emoji = MakeUserProfile("🌍 User", 42u, "café@example.com", 3.14);
+        UserProfile echoedEmoji = EchoUserProfile(emoji);
+        Require(echoedEmoji == emoji, "EchoUserProfile round-trip (UTF-8 in Option fields)");
+
+        Require(
+            UserDisplayName(alice) == "Alice <alice@example.com>",
+            "UserDisplayName when Email is Some"
+        );
+        Require(UserDisplayName(newUser) == "Bob", "UserDisplayName when Email is None");
+
+        // SearchResult: second record shape with Option fields, exercises
+        // the same code path through a different record class name to
+        // catch any accidental per-record coupling in the generator.
+        SearchResult hits = new SearchResult("cats", 42u, "cursor_abc", 0.97);
+        Require(EchoSearchResult(hits) == hits, "EchoSearchResult round-trip (all Some)");
+        Require(HasMoreResults(hits), "HasMoreResults true when NextCursor is Some");
+
+        SearchResult tail = new SearchResult("cats", 42u, null, null);
+        Require(EchoSearchResult(tail) == tail, "EchoSearchResult round-trip (Option fields None)");
+        Require(!HasMoreResults(tail), "HasMoreResults false when NextCursor is None");
+
+        Console.WriteLine("  PASS\n");
+    }
+
+    /// <summary>
+    /// Option composed with Vec in both directions. `Option&lt;Vec&lt;T&gt;&gt;`
+    /// wraps the entire array in the 1-byte tag; `Vec&lt;Option&lt;T&gt;&gt;`
+    /// writes the count, then a tag per element. Both ride the
+    /// encoded-array path on the wire because the element width varies.
+    /// </summary>
+    private static void TestOptionsWithVec()
+    {
+        Console.WriteLine("Testing Option composed with Vec...");
+
+        // Option<Vec<T>>: the Option tag guards an entire length-prefixed
+        // array. Some(vec) and Some(empty_vec) are distinct from None.
+        var numbers = EchoOptionalVec(new[] { 1, 2, 3 });
+        Require(numbers != null && numbers.SequenceEqual(new[] { 1, 2, 3 }), "EchoOptionalVec(Some)");
+        Require(
+            EchoOptionalVec(Array.Empty<int>())!.Length == 0,
+            "EchoOptionalVec(Some empty) stays Some"
+        );
+        Require(EchoOptionalVec(null) == null, "EchoOptionalVec(None)");
+
+        Require(OptionalVecLength(new[] { 10, 20, 30 }) == 3u, "OptionalVecLength(Some)");
+        Require(OptionalVecLength(null) == null, "OptionalVecLength(None)");
+
+        // Option<Vec<_>>-returning functions: the wire return is
+        // FfiBuf, decoded through ReadU8() + ReadLengthPrefixedBlittableArray
+        // (primitive elements) or ReadEncodedArray (variable-width).
+        Require(
+            FindNumbers(3)!.SequenceEqual(new[] { 0, 1, 2 }),
+            "FindNumbers(positive) returns Some(vec)"
+        );
+        Require(FindNumbers(-1) == null, "FindNumbers(non-positive) returns null");
+
+        var names = FindNames(3);
+        Require(
+            names != null && names.SequenceEqual(new[] { "Name_0", "Name_1", "Name_2" }),
+            "FindNames(positive) returns Some(vec of strings)"
+        );
+        Require(FindNames(0) == null, "FindNames(zero) returns null");
+
+        // Vec<Option<T>>: new fixture. Each element carries its own
+        // Option tag, so the wire shape is: count (i32), then for each
+        // slot, 1-byte tag + optional i32 payload. Mixed Some/None
+        // positions in one vec surface any off-by-one errors.
+        int?[] mixed = new int?[] { 1, null, 3, null, 5 };
+        int?[] echoed = EchoVecOptionalI32(mixed);
+        Require(echoed.Length == mixed.Length, "EchoVecOptionalI32 preserves length");
+        for (int i = 0; i < mixed.Length; i++)
+        {
+            Require(echoed[i] == mixed[i], $"EchoVecOptionalI32[{i}] preserves presence and value");
+        }
+
+        Require(EchoVecOptionalI32(Array.Empty<int?>()).Length == 0, "EchoVecOptionalI32 empty");
+        Require(
+            EchoVecOptionalI32(new int?[] { null, null, null }).All(v => v == null),
+            "EchoVecOptionalI32 all-None preserved"
+        );
+        Require(
+            EchoVecOptionalI32(new int?[] { 10, 20, 30 }).SequenceEqual(new int?[] { 10, 20, 30 }),
+            "EchoVecOptionalI32 all-Some preserved"
+        );
 
         Console.WriteLine("  PASS\n");
     }
