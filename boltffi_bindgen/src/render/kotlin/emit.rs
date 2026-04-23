@@ -362,7 +362,7 @@ fn emit_vec_size(value: &str, inner: &SizeExpr, layout: &VecLayout) -> String {
         }
         (VecLayout::Encoded, _) => {
             format!(
-                "(4 + {}.sumOf {{ item -> ({}).toInt() }})",
+                "(4 + {}.sumOf {{ item -> {} }})",
                 value,
                 emit_size_expr(inner)
             )
@@ -425,5 +425,29 @@ fn emit_write_builtin(id: &BuiltinId, value: &str) -> String {
         "Uuid" => format!("wire.writeUuid({})", value),
         "Url" => format!("wire.writeUri({})", value),
         _ => format!("wire.writeString({})", value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::ids::RecordId;
+    use crate::ir::ops::WireSizeOwner;
+
+    #[test]
+    fn encoded_vec_size_does_not_emit_redundant_int_conversion() {
+        let size = SizeExpr::VecSize {
+            value: ValueExpr::Var("items".to_string()),
+            inner: Box::new(SizeExpr::WireSize {
+                value: ValueExpr::Var("item".to_string()),
+                owner: Some(WireSizeOwner::Record(RecordId::new("Item"))),
+            }),
+            layout: VecLayout::Encoded,
+        };
+
+        assert_eq!(
+            emit_size_expr(&size),
+            "(4 + items.sumOf { item -> item.wireEncodedSize() })"
+        );
     }
 }
