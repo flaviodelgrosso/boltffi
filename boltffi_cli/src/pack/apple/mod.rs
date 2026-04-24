@@ -324,6 +324,6 @@ fn apple_symbol_directory_name(platform: Platform) -> &'static str {
         Platform::Ios => "ios",
         Platform::IosSimulator => "ios-simulator",
         Platform::MacOs => "macos",
-        Platform::Android | Platform::Wasm => unreachable!("non-apple platform"),
+        Platform::Android | Platform::Wasm | Platform::Linux => unreachable!("non-apple platform"),
     }
 }

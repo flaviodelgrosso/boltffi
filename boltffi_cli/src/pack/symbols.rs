@@ -1225,6 +1225,7 @@ fn platform_name(platform: Platform) -> &'static str {
         Platform::MacOs => "macos",
         Platform::Android => "android",
         Platform::Wasm => "wasm",
+        Platform::Linux => "linux",
     }
 }
 
