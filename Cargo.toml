@@ -24,7 +24,7 @@ syn = { version = "2.0", features = ["full", "parsing", "visit"] }
 quote = "1.0"
 proc-macro2 = "1.0"
 walkdir = "2.4"
-rstest = "0.25"
+rstest = "0.26"
 tokio = "1"
 
 [workspace.lints.rust]
