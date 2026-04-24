@@ -39,6 +39,16 @@ static inline void boltffi_throw_runtime(JNIEnv* env, const char* message) {
     (*env)->DeleteLocalRef(env, exception_class);
 }
 
+static inline void boltffi_throw_status(JNIEnv* env, FfiStatus status, const char* fallback_message) {
+    if (status.code == 3) {
+        boltffi_throw_illegal_argument(env, "invalid argument");
+    } else if (status.code == 4) {
+        boltffi_throw_runtime(env, "operation cancelled");
+    } else {
+        boltffi_throw_runtime(env, fallback_message);
+    }
+}
+
 static inline bool boltffi_try_jlong_to_usize(jlong value, uintptr_t* out_value) {
     if (value < 0) return false;
     uint64_t unsigned_value = (uint64_t)value;
@@ -142,6 +152,7 @@ static inline jbyteArray boltffi_status_buf_to_jbytearray(JNIEnv* env, FfiStatus
         if (buf.ptr != NULL) {
             {{ prefix }}_free_buf(buf);
         }
+        boltffi_throw_status(env, status, "ffi call failed");
         return NULL;
     }
     return boltffi_buf_to_jbytearray(env, buf);
@@ -913,9 +924,17 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
 {%- if func.complete_kind.is_void() %}
     FfiStatus _status;
     {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0) {
+        boltffi_throw_status(env, _status, "async call failed");
+        return;
+    }
 {%- elif func.complete_kind.is_blittable_struct() %}
     FfiStatus _status;
     {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0) {
+        boltffi_throw_status(env, _status, "async call failed");
+        return NULL;
+    }
     jbyteArray _arr = (*env)->NewByteArray(env, (jsize)sizeof(_result));
     if (_arr != NULL) {
         (*env)->SetByteArrayRegion(env, _arr, 0, (jsize)sizeof(_result), (const jbyte*)&_result);
@@ -928,6 +947,10 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
 {%- else %}
     FfiStatus _status;
     {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0) {
+        boltffi_throw_status(env, _status, "async call failed");
+        return 0;
+    }
     return {{ func.complete_kind.return_expr() }};
 {%- endif %}
 }
@@ -1067,9 +1090,17 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
 {%- if func.complete_kind.is_void() %}
     FfiStatus _status;
     {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0) {
+        boltffi_throw_status(env, _status, "async call failed");
+        return;
+    }
 {%- elif func.complete_kind.is_blittable_struct() %}
     FfiStatus _status;
     {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0) {
+        boltffi_throw_status(env, _status, "async call failed");
+        return NULL;
+    }
     jbyteArray _arr = (*env)->NewByteArray(env, (jsize)sizeof(_result));
     if (_arr != NULL) {
         (*env)->SetByteArrayRegion(env, _arr, 0, (jsize)sizeof(_result), (const jbyte*)&_result);
@@ -1082,6 +1113,10 @@ JNIEXPORT {{ func.complete_kind.jni_return() }} JNICALL {{ func.jni_complete_nam
 {%- else %}
     FfiStatus _status;
     {{ func.complete_kind.c_type() }} _result = {{ func.ffi_complete }}((RustFutureHandle)future, &_status);
+    if (_status.code != 0) {
+        boltffi_throw_status(env, _status, "async call failed");
+        return 0;
+    }
     return {{ func.complete_kind.return_expr() }};
 {%- endif %}
 }

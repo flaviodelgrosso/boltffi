@@ -130,14 +130,17 @@ export class {{ cls.class_name }} {
       (futureHandle: number) => (_exports.{{ async_method.free_ffi_name }} as Function)(futureHandle)
     );
 {%- if async_method.return_route.is_async_scalar() %}
-    const result = (_exports.{{ async_method.complete_ffi_name }} as Function)(awaitedHandle){{ async_method.return_route.ts_cast() }};
-    (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
-    return result;
+    try {
+      const result = _module.completeAsync((statusPtr: number) => (_exports.{{ async_method.complete_ffi_name }} as Function)(awaitedHandle, statusPtr)){{ async_method.return_route.ts_cast() }};
+      return result;
+    } finally {
+      (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+    }
 {%- elif async_method.return_route.is_packed() %}
     const outPtr = _module.allocBufDescriptor();
     let completeCompleted = false;
     try {
-      (_exports.{{ async_method.complete_ffi_name }} as Function)(outPtr, awaitedHandle, 0);
+      _module.completeAsync((statusPtr: number) => (_exports.{{ async_method.complete_ffi_name }} as Function)(outPtr, awaitedHandle, statusPtr));
       completeCompleted = true;
       const reader = _module.readerFromBuf(outPtr);
       const result = {{ async_method.return_route.decode_expr() }};
@@ -160,7 +163,11 @@ export class {{ cls.class_name }} {
       (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
     }
 {%- elif async_method.return_route.is_void() %}
-    (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+    try {
+      _module.completeAsync((statusPtr: number) => (_exports.{{ async_method.complete_ffi_name }} as Function)(awaitedHandle, statusPtr));
+    } finally {
+      (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+    }
 {%- elif async_method.return_route.is_direct() %}
     (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
     throw new Error("Unsupported async return route: Direct{{ async_method.return_route.ts_cast() }}");
@@ -224,14 +231,17 @@ export class {{ cls.class_name }} {
         (futureHandle: number) => (_exports.{{ async_method.free_ffi_name }} as Function)(futureHandle)
       );
 {%- if async_method.return_route.is_async_scalar() %}
-      const result = (_exports.{{ async_method.complete_ffi_name }} as Function)(awaitedHandle){{ async_method.return_route.ts_cast() }};
-      (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
-      return result;
+      try {
+        const result = _module.completeAsync((statusPtr: number) => (_exports.{{ async_method.complete_ffi_name }} as Function)(awaitedHandle, statusPtr)){{ async_method.return_route.ts_cast() }};
+        return result;
+      } finally {
+        (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+      }
 {%- elif async_method.return_route.is_packed() %}
       const outPtr = _module.allocBufDescriptor();
       let completeCompleted = false;
       try {
-        (_exports.{{ async_method.complete_ffi_name }} as Function)(outPtr, awaitedHandle, 0);
+        _module.completeAsync((statusPtr: number) => (_exports.{{ async_method.complete_ffi_name }} as Function)(outPtr, awaitedHandle, statusPtr));
         completeCompleted = true;
         const reader = _module.readerFromBuf(outPtr);
         const result = {{ async_method.return_route.decode_expr() }};
@@ -254,7 +264,11 @@ export class {{ cls.class_name }} {
         (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
       }
 {%- elif async_method.return_route.is_void() %}
-      (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+      try {
+        _module.completeAsync((statusPtr: number) => (_exports.{{ async_method.complete_ffi_name }} as Function)(awaitedHandle, statusPtr));
+      } finally {
+        (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
+      }
 {%- elif async_method.return_route.is_direct() %}
       (_exports.{{ async_method.free_ffi_name }} as Function)(awaitedHandle);
       throw new Error("Unsupported async return route: Direct{{ async_method.return_route.ts_cast() }}");
