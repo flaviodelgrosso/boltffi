@@ -29,6 +29,17 @@ impl PythonEnumType {
         format!("boltffi_python_{}_member_names", self.native_name_stem)
     }
 
+    pub fn member_native_value_table_name(&self) -> String {
+        format!(
+            "boltffi_python_{}_member_native_values",
+            self.native_name_stem
+        )
+    }
+
+    pub fn member_loader_name(&self) -> String {
+        format!("boltffi_python_load_{}_member", self.native_name_stem)
+    }
+
     pub fn parser_name(&self) -> String {
         format!("boltffi_python_parse_{}", self.native_name_stem)
     }

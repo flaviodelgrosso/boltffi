@@ -576,9 +576,21 @@ mod tests {
         assert!(
             native_source.contains("static const char *boltffi_python_direction_member_names[2]")
         );
+        assert!(
+            native_source
+                .contains("static const int32_t boltffi_python_direction_member_native_values[2]")
+        );
+        assert!(native_source.contains("static PyObject *boltffi_python_load_direction_member"));
+        assert!(
+            native_source
+                .contains("resolved_member = PyObject_CallOneArg(type_object, native_value);")
+        );
         assert!(native_source.contains(
             "static boltffi_python_c_style_enum_registration boltffi_python_direction_registration"
         ));
+        assert!(
+            native_source.contains("member = registration->members_by_wire_tag[member_index];")
+        );
         assert!(native_source.contains("Py_INCREF(member);"));
         assert!(!native_source.contains("PyObject_CallOneArg(type_object, boxed_value)"));
         assert!(native_source.contains("static PyObject *boltffi_python_wrapper_register_status"));

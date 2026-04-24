@@ -1,3 +1,4 @@
+from enum import IntEnum
 import unittest
 
 import demo
@@ -50,3 +51,16 @@ class CStyleEnumsTests(unittest.TestCase):
 
         with self.assertRaises(TypeError):
             demo.echo_vec_status([0])
+
+    def test_rejects_registration_with_wrong_enum_values(self) -> None:
+        class WrongDirection(IntEnum):
+            NORTH = 10
+            SOUTH = 11
+            EAST = 12
+            WEST = 13
+
+        try:
+            with self.assertRaises(ValueError):
+                demo._native._register_direction(WrongDirection)
+        finally:
+            demo._native._register_direction(demo.Direction)
