@@ -355,11 +355,20 @@ mod tests {
         )
         .lower();
 
-        assert!(!jni_module.has_async_runtime, "sync-only callback trait must not set has_async_runtime");
+        assert!(
+            !jni_module.has_async_runtime,
+            "sync-only callback trait must not set has_async_runtime"
+        );
 
         let glue = JniEmitter::emit(&jni_module);
-        assert!(glue.contains("JNI_OnLoad"), "JNI_OnLoad must still be emitted for callback init");
-        assert!(!glue.contains("boltffiFutureContinuationCallback"), "must not look up Kotlin method that was never generated");
+        assert!(
+            glue.contains("JNI_OnLoad"),
+            "JNI_OnLoad must still be emitted for callback init"
+        );
+        assert!(
+            !glue.contains("boltffiFutureContinuationCallback"),
+            "must not look up Kotlin method that was never generated"
+        );
     }
 
     #[test]
