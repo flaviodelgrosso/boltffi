@@ -16,6 +16,7 @@ pub struct JniGlueTemplate<'a> {
     pub module_name: &'a str,
     pub class_name: &'a str,
     pub has_async: bool,
+    pub has_async_runtime: bool,
     pub has_async_callbacks: bool,
     pub functions: &'a [JniFunction],
     pub wire_functions: &'a [JniWireFunction],
@@ -35,6 +36,7 @@ impl<'a> JniGlueTemplate<'a> {
             module_name: module.module_name.as_str(),
             class_name: module.class_name.as_str(),
             has_async: module.has_async,
+            has_async_runtime: module.has_async_runtime,
             has_async_callbacks: module.has_async_callbacks,
             functions: &module.functions,
             wire_functions: &module.wire_functions,
@@ -336,6 +338,36 @@ mod tests {
         assert!(
             !glue_code.contains("FfiStatus* status)"),
             "callback glue should not reuse `status` as the out status param name"
+        );
+    }
+
+    #[test]
+    fn sync_only_callback_trait_does_not_look_up_future_continuation() {
+        let module = build_status_callback_module();
+        let mut ir_module = module.clone();
+        let contract = ir::build_contract(&mut ir_module);
+        let abi_contract = ir::Lowerer::new(&contract).to_abi_contract();
+        let jni_module = JniLowerer::new(
+            &contract,
+            &abi_contract,
+            "com.example".to_string(),
+            "Native".to_string(),
+        )
+        .lower();
+
+        assert!(
+            !jni_module.has_async_runtime,
+            "sync-only callback trait must not set has_async_runtime"
+        );
+
+        let glue = JniEmitter::emit(&jni_module);
+        assert!(
+            glue.contains("JNI_OnLoad"),
+            "JNI_OnLoad must still be emitted for callback init"
+        );
+        assert!(
+            !glue.contains("boltffiFutureContinuationCallback"),
+            "must not look up Kotlin method that was never generated"
         );
     }
 

@@ -181,10 +181,12 @@ impl<'a> JniLowerer<'a> {
 
         let closure_trampolines = self.collect_closure_trampolines(&package_path, &used_callbacks);
 
-        let has_async = !async_functions.is_empty()
+        let has_async_runtime = !async_functions.is_empty()
             || classes.iter().any(|class| !class.async_methods.is_empty())
             || classes.iter().any(|class| !class.streams.is_empty())
-            || !callback_traits.is_empty();
+            || has_async_callbacks;
+
+        let has_async = has_async_runtime || !callback_traits.is_empty();
 
         JniModule {
             prefix,
@@ -193,6 +195,7 @@ impl<'a> JniLowerer<'a> {
             module_name,
             class_name: self.class_name.clone(),
             has_async,
+            has_async_runtime,
             has_async_callbacks,
             functions,
             wire_functions,

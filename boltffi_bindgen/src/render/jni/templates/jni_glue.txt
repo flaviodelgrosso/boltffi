@@ -450,8 +450,10 @@ static inline void boltffi_static_call_cache_reset(JNIEnv* env, BoltFFIStaticCal
 
 {%- if has_async %}
 static JavaVM* g_jvm = NULL;
+{%- if has_async_runtime %}
 static jclass g_callback_class = NULL;
 static jmethodID g_callback_method = NULL;
+{%- endif %}
 typedef enum {
     BOLTFFI_CALLBACK_INIT_OK = 0,
     BOLTFFI_CALLBACK_INIT_SKIPPED = 1,
@@ -475,6 +477,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
         return JNI_ERR;
     }
+{%- if has_async_runtime %}
     if (boltffi_lookup_global_class(env, "{{ package_path }}/Native", &g_callback_class) != BOLTFFI_GLOBAL_CLASS_OK) {
         g_callback_class = NULL;
         return JNI_ERR;
@@ -485,6 +488,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
         g_callback_method = NULL;
         return JNI_ERR;
     }
+{%- endif %}
 {%- for cb in callback_traits %}
     if (init_{{ cb.trait_name }}_callbacks(env) == BOLTFFI_CALLBACK_INIT_FATAL) {
         return JNI_ERR;
@@ -493,6 +497,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     return JNI_VERSION_1_6;
 }
 
+{%- if has_async_runtime %}
 static void boltffi_jni_continuation_callback(uint64_t handle, int8_t poll_result) {
     JNIEnv* env;
     int attached = 0;
@@ -511,6 +516,7 @@ static void boltffi_jni_continuation_callback(uint64_t handle, int8_t poll_resul
         (*g_jvm)->DetachCurrentThread(g_jvm);
     }
 }
+{%- endif %}
 {%- endif %}
 
 {%- for trampoline in closure_trampolines %}
@@ -1581,11 +1587,13 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
     if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
         return;
     }
+{%- if has_async_runtime %}
     if (g_callback_class != NULL) {
         (*env)->DeleteGlobalRef(env, g_callback_class);
         g_callback_class = NULL;
     }
     g_callback_method = NULL;
+{%- endif %}
 {%- for trampoline in closure_trampolines %}
     boltffi_static_call_cache_reset(env, &g_{{ trampoline.signature_id }}_cache);
 {%- endfor %}

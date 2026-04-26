@@ -8,6 +8,7 @@ pub struct JniModule {
     pub module_name: String,
     pub class_name: String,
     pub has_async: bool,
+    pub has_async_runtime: bool,
     pub has_async_callbacks: bool,
     pub functions: Vec<JniFunction>,
     pub wire_functions: Vec<JniWireFunction>,
