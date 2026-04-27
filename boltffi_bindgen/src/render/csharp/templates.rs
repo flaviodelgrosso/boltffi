@@ -15,7 +15,8 @@ use askama::Template;
 
 use super::ast::CSharpNamespace;
 use super::plan::{
-    CSharpEnumPlan, CSharpModulePlan, CSharpParamKind, CSharpRecordPlan, CSharpReturnKind,
+    CSharpClassPlan, CSharpConstructorKind, CSharpEnumPlan, CSharpModulePlan, CSharpParamKind,
+    CSharpRecordPlan, CSharpReturnKind,
 };
 
 /// Renders the file header: auto-generated comment, `using` directives,
@@ -78,6 +79,17 @@ pub struct EnumDataTemplate<'a> {
     pub namespace: &'a CSharpNamespace,
 }
 
+/// Renders a Rust class as a sealed C# class implementing `IDisposable`
+/// around an opaque `IntPtr` handle. The wrapper takes ownership of the
+/// handle, frees it through `NativeMethods.{Class}Free` on `Dispose`,
+/// and falls back to the finalizer if the consumer forgets.
+#[derive(Template)]
+#[template(path = "render_csharp/class.txt", escape = "none")]
+pub struct ClassTemplate<'a> {
+    pub class: &'a CSharpClassPlan,
+    pub namespace: &'a CSharpNamespace,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,9 +99,9 @@ mod tests {
         CSharpParamName, CSharpPropertyName, CSharpStatement, CSharpType, CSharpTypeReference,
     };
     use crate::render::csharp::plan::{
-        CFunctionName, CSharpEnumKind, CSharpEnumPlan, CSharpEnumVariantPlan, CSharpFieldPlan,
-        CSharpMethodPlan, CSharpParamKind, CSharpParamPlan, CSharpReceiver, CSharpRecordPlan,
-        CSharpReturnKind,
+        CFunctionName, CSharpClassPlan, CSharpConstructorKind, CSharpConstructorPlan,
+        CSharpEnumKind, CSharpEnumPlan, CSharpEnumVariantPlan, CSharpFieldPlan, CSharpMethodPlan,
+        CSharpParamKind, CSharpParamPlan, CSharpReceiver, CSharpRecordPlan, CSharpReturnKind,
     };
 
     fn demo_namespace() -> CSharpNamespace {
@@ -707,6 +719,146 @@ mod tests {
         let enumeration = build_enum("shape", CSharpEnumKind::Data, None, variants, methods);
         let template = EnumDataTemplate {
             enumeration: &enumeration,
+            namespace: &demo_namespace(),
+        };
+        insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    /// Inventory: a Rust class with no constructors or methods exposed
+    /// in the plan yet. Pins the bare IDisposable wrapper: the handle
+    /// is held in a private `IntPtr` and freed exactly once through
+    /// `NativeMethods.InventoryFree`, with the finalizer as a safety
+    /// net for callers that forget to dispose.
+    #[test]
+    fn snapshot_class_inventory_idisposable_wrapper() {
+        let class_name = CSharpClassName::from_source("inventory");
+        let class = CSharpClassPlan {
+            native_free_method_name: CSharpMethodName::native_for_owner(
+                &class_name,
+                &CSharpMethodName::new("Free"),
+            ),
+            class_name,
+            ffi_free: CFunctionName::new("boltffi_inventory_free".to_string()),
+            constructors: vec![],
+            methods: vec![],
+        };
+        let template = ClassTemplate {
+            class: &class,
+            namespace: &demo_namespace(),
+        };
+        insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    /// Inventory with both a `Default` constructor (`new`) and a
+    /// `NamedInit` constructor (`with_capacity(u32)`). Pins the two
+    /// rendering shapes side by side: the primary lifts to a real C#
+    /// instance constructor delegating through a private static
+    /// helper, and the named-init lifts to a `public static` factory
+    /// that wraps the returned `IntPtr`.
+    #[test]
+    fn snapshot_class_inventory_with_constructors() {
+        let class_name = CSharpClassName::from_source("inventory");
+        let primary = CSharpConstructorPlan {
+            kind: CSharpConstructorKind::Primary {
+                helper_method_name: CSharpMethodName::new("InventoryNewHandle"),
+            },
+            native_method_name: CSharpMethodName::native_for_owner(
+                &class_name,
+                &CSharpMethodName::new("New"),
+            ),
+            ffi_name: CFunctionName::new("boltffi_inventory_new".to_string()),
+            params: vec![],
+            wire_writers: vec![],
+        };
+        let with_capacity_name = CSharpMethodName::from_source("with_capacity");
+        let factory = CSharpConstructorPlan {
+            kind: CSharpConstructorKind::StaticFactory {
+                name: with_capacity_name.clone(),
+            },
+            native_method_name: CSharpMethodName::native_for_owner(
+                &class_name,
+                &with_capacity_name,
+            ),
+            ffi_name: CFunctionName::new("boltffi_inventory_with_capacity".to_string()),
+            params: vec![CSharpParamPlan {
+                name: CSharpParamName::from_source("capacity"),
+                csharp_type: CSharpType::UInt,
+                kind: CSharpParamKind::Direct,
+            }],
+            wire_writers: vec![],
+        };
+        let class = CSharpClassPlan {
+            native_free_method_name: CSharpMethodName::native_for_owner(
+                &class_name,
+                &CSharpMethodName::new("Free"),
+            ),
+            class_name,
+            ffi_free: CFunctionName::new("boltffi_inventory_free".to_string()),
+            constructors: vec![primary, factory],
+            methods: vec![],
+        };
+        let template = ClassTemplate {
+            class: &class,
+            namespace: &demo_namespace(),
+        };
+        insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    /// Counter with two instance methods (a getter returning a
+    /// primitive and a void mutator) and a static method. Pins the
+    /// three rendering shapes the class template emits for methods:
+    ///
+    /// - Static: `public static {ReturnType} {Name}(...)` body.
+    /// - ClassInstance void: `NativeMethods.{Name}(_handle, ...)`.
+    /// - ClassInstance primitive return: `return NativeMethods.{Name}(_handle, ...)`.
+    #[test]
+    fn snapshot_class_counter_with_methods() {
+        let class_name = CSharpClassName::from_source("counter");
+        let get_name = CSharpMethodName::from_source("get");
+        let get = CSharpMethodPlan {
+            name: get_name.clone(),
+            native_method_name: CSharpMethodName::native_for_owner(&class_name, &get_name),
+            ffi_name: CFunctionName::new("boltffi_counter_get".to_string()),
+            receiver: CSharpReceiver::ClassInstance,
+            params: vec![],
+            return_type: CSharpType::Int,
+            return_kind: CSharpReturnKind::Direct,
+            wire_writers: vec![],
+        };
+        let increment_name = CSharpMethodName::from_source("increment");
+        let increment = CSharpMethodPlan {
+            name: increment_name.clone(),
+            native_method_name: CSharpMethodName::native_for_owner(&class_name, &increment_name),
+            ffi_name: CFunctionName::new("boltffi_counter_increment".to_string()),
+            receiver: CSharpReceiver::ClassInstance,
+            params: vec![],
+            return_type: CSharpType::Void,
+            return_kind: CSharpReturnKind::Void,
+            wire_writers: vec![],
+        };
+        let zero_name = CSharpMethodName::from_source("zero");
+        let zero = CSharpMethodPlan {
+            name: zero_name.clone(),
+            native_method_name: CSharpMethodName::native_for_owner(&class_name, &zero_name),
+            ffi_name: CFunctionName::new("boltffi_counter_zero".to_string()),
+            receiver: CSharpReceiver::Static,
+            params: vec![],
+            return_type: CSharpType::Int,
+            return_kind: CSharpReturnKind::Direct,
+            wire_writers: vec![],
+        };
+        let class = CSharpClassPlan {
+            native_free_method_name: CSharpMethodName::native_for_owner(
+                &class_name,
+                &CSharpMethodName::new("Free"),
+            ),
+            class_name,
+            ffi_free: CFunctionName::new("boltffi_counter_free".to_string()),
+            constructors: vec![],
+            methods: vec![get, increment, zero],
+        };
+        let template = ClassTemplate {
+            class: &class,
             namespace: &demo_namespace(),
         };
         insta::assert_snapshot!(template.render().unwrap());

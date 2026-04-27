@@ -1,7 +1,7 @@
 use boltffi_ffi_rules::naming::{LibraryName, Name};
 
 use super::super::ast::{CSharpClassName, CSharpNamespace};
-use super::{CFunctionName, CSharpEnumPlan, CSharpFunctionPlan, CSharpRecordPlan};
+use super::{CFunctionName, CSharpClassPlan, CSharpEnumPlan, CSharpFunctionPlan, CSharpRecordPlan};
 
 /// A whole C# module: namespace, library binding, and every record, enum,
 /// and function it exposes. Renders into a `namespace` spread across
@@ -29,6 +29,10 @@ pub struct CSharpModulePlan {
     pub enums: Vec<CSharpEnumPlan>,
     /// Top-level functions exposed by the module.
     pub functions: Vec<CSharpFunctionPlan>,
+    /// Classes exposed by the module. Each class is rendered to its
+    /// own `.cs` file as a `sealed class` implementing `IDisposable`
+    /// around an opaque native handle.
+    pub classes: Vec<CSharpClassPlan>,
 }
 
 impl CSharpModulePlan {
@@ -38,22 +42,31 @@ impl CSharpModulePlan {
         !self.functions.is_empty()
     }
 
+    /// Whether the module exposes any classes. Gates the per-class
+    /// `[DllImport]` block in the native template.
+    pub fn has_classes(&self) -> bool {
+        !self.classes.is_empty()
+    }
+
     /// Whether the module needs `using System.Text;`. True when any function
-    /// has a string param or any record has a string field, since
-    /// `Encoding.UTF8.GetBytes` lives there. Decoding does not need
-    /// `System.Text`; `WireReader` reads strings via `Marshal.PtrToStringUTF8`.
+    /// or class member touches a string (param or wire-decoded return), or
+    /// any record has a string field, since `Encoding.UTF8.GetBytes` lives
+    /// there. Decoding does not need `System.Text`; `WireReader` reads
+    /// strings via `Marshal.PtrToStringUTF8`.
     pub fn needs_system_text(&self) -> bool {
         self.functions
             .iter()
             .any(|f| f.params.iter().any(|p| p.csharp_type.contains_string()))
+            || self.classes.iter().any(CSharpClassPlan::needs_system_text)
             || self.records.iter().any(CSharpRecordPlan::has_string_fields)
     }
 
-    /// Whether any function takes a wire-encoded record param. Blittable
-    /// record params pass through the CLR as direct struct values and do
-    /// not contribute here.
+    /// Whether any function, class constructor, or class method takes a
+    /// wire-encoded param. Blittable record params pass through the CLR
+    /// as direct struct values and do not contribute here.
     fn has_wire_params(&self) -> bool {
         self.functions.iter().any(|f| !f.wire_writers.is_empty())
+            || self.classes.iter().any(CSharpClassPlan::has_wire_params)
     }
 
     /// Whether any function returns through an `FfiBuf`, a wire-decoded

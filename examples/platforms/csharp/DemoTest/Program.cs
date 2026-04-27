@@ -38,6 +38,7 @@ public static class DemoTest
         TestOptions();
         TestOptionsInRecords();
         TestOptionsWithVec();
+        TestClasses();
         Console.WriteLine("All tests passed!");
         return 0;
     }
@@ -1145,6 +1146,375 @@ public static class DemoTest
             EchoVecOptionalI32(new int?[] { 10, 20, 30 }).SequenceEqual(new int?[] { 10, 20, 30 }),
             "EchoVecOptionalI32 all-Some preserved"
         );
+
+        Console.WriteLine("  PASS\n");
+    }
+
+    /// <summary>
+    /// Class wrappers. Each construct is an IntPtr handle to a Rust
+    /// allocation; methods forward through that handle. The test
+    /// covers:
+    ///
+    /// - Constructors: Default, NamedInit, named factories, with
+    ///   parameter shapes ranging from no-args to wire-encoded records,
+    ///   pinned blittable-record arrays, and data enums.
+    /// - Instance methods: void, primitive return, Option return,
+    ///   blittable-record return, string param + bool return,
+    ///   Vec&lt;String&gt; return.
+    /// - Static methods on a class: primitives, blittable records,
+    ///   Option return.
+    /// - Dispose: every using block forces the wrapper to hand its
+    ///   IntPtr back to Rust through the matching `_free` symbol, so a
+    ///   leaked or double-freed handle would surface as a segfault or
+    ///   an allocator panic.
+    /// </summary>
+    private static void TestClasses()
+    {
+        Console.WriteLine("Testing class wrappers (constructors + methods)...");
+
+        // Inventory.new() lifts to a parameterless C# instance ctor.
+        // The using block forces Dispose() to run, which hands the
+        // IntPtr back to Rust through boltffi_inventory_free.
+        using (var inv = new Inventory())
+        {
+            Require(inv.Capacity() == 100u, "Inventory().Capacity() defaults to 100");
+            Require(inv.Count() == 0u, "Inventory().Count() starts at 0");
+            Require(inv.Add("apple"), "Inventory.Add(\"apple\") returns true under capacity");
+            Require(inv.Add("banana"), "Inventory.Add(\"banana\") returns true");
+            Require(inv.Count() == 2u, "Inventory.Count() reflects two adds");
+
+            // Vec<String> return decodes via ReadEncodedArray; UTF-8
+            // round-trips for both ascii and emoji.
+            string[] all = inv.GetAll();
+            Require(all.SequenceEqual(new[] { "apple", "banana" }), "Inventory.GetAll round-trips Vec<String>");
+
+            // Option<String> return: Some path then None path.
+            Require(inv.Remove(0) == "apple", "Inventory.Remove(0) returns Some(item)");
+            Require(inv.Remove(99) == null, "Inventory.Remove(out-of-range) returns null");
+            Require(inv.Count() == 1u, "Inventory.Count() decremented after remove");
+        }
+
+        // Inventory.with_capacity(u32) is a NamedInit constructor on
+        // the Rust side, which the C# backend lifts to a static
+        // factory rather than a second instance constructor.
+        using (var inv = Inventory.WithCapacity(2))
+        {
+            Require(inv.Capacity() == 2u, "Inventory.WithCapacity(2).Capacity()");
+            Require(inv.Add("first"), "Add up to capacity");
+            Require(inv.Add("second"), "Add to fill");
+            Require(!inv.Add("third"), "Add past capacity returns false");
+        }
+
+        // Counter exercises every method-return shape that lands in
+        // this PR: primitive direct, void mutator, Option<primitive>
+        // through FfiBuf, and a blittable record return.
+        using (var counter = new Counter(7))
+        {
+            Require(counter.Get() == 7, "new Counter(7).Get()");
+            counter.Increment();
+            Require(counter.Get() == 8, "Counter.Increment then Get");
+            counter.Add(10);
+            Require(counter.Get() == 18, "Counter.Add(10) then Get");
+            Require(counter.MaybeDouble() == 36, "Counter.MaybeDouble() returns Some when nonzero");
+            counter.Reset();
+            Require(counter.Get() == 0, "Counter.Reset zeros the value");
+            Require(counter.MaybeDouble() == null, "Counter.MaybeDouble() returns null when zero");
+            counter.Add(3);
+            Point p = counter.AsPoint();
+            Require(p.X == 3.0 && p.Y == 0.0, "Counter.AsPoint() returns blittable Point");
+        }
+
+        // SharedCounter pairs a void Set with Increment / Add that
+        // mutate state and return the new value in the same call. The
+        // mutate-then-return shape isn't covered elsewhere in this
+        // method.
+        using (var shared = new SharedCounter(0))
+        {
+            shared.Set(10);
+            Require(shared.Get() == 10, "SharedCounter.Set then Get");
+            Require(shared.Increment() == 11, "SharedCounter.Increment returns new value");
+            Require(shared.Get() == 11, "SharedCounter.Get reflects increment");
+            Require(shared.Add(4) == 15, "SharedCounter.Add returns new value");
+            Require(shared.Get() == 15, "SharedCounter.Get reflects add");
+        }
+
+        // MathUtils exercises class static methods. Add, Clamp,
+        // DistanceBetween, Midpoint, and SafeSqrt have no `self` and
+        // render as `public static` on the wrapper class itself. Round
+        // is the only `&self` method. The bare integer literal `new
+        // MathUtils(2)` (no `u` suffix) is the regression case the
+        // private handle-adopting ctor exists to defend: without it,
+        // overload resolution would pick the `IntPtr` ctor here.
+        using (var mu = new MathUtils(2))
+        {
+            Require(Math.Abs(mu.Round(3.14159) - 3.14) < 1e-9, "MathUtils(2).Round(3.14159)");
+        }
+        Require(MathUtils.Add(2, 3) == 5, "MathUtils.Add static");
+        Require(Math.Abs(MathUtils.Clamp(15.0, 0.0, 10.0) - 10.0) < 1e-9, "MathUtils.Clamp upper bound");
+        Require(Math.Abs(MathUtils.Clamp(-1.0, 0.0, 10.0)) < 1e-9, "MathUtils.Clamp lower bound");
+        Require(
+            Math.Abs(MathUtils.DistanceBetween(new Point(0.0, 0.0), new Point(3.0, 4.0)) - 5.0) < 1e-9,
+            "MathUtils.DistanceBetween 3-4-5"
+        );
+        Point mid = MathUtils.Midpoint(new Point(0.0, 0.0), new Point(2.0, 4.0));
+        Require(mid.X == 1.0 && mid.Y == 2.0, "MathUtils.Midpoint blittable record return");
+        Require(Math.Abs(MathUtils.SafeSqrt(16.0)!.Value - 4.0) < 1e-9, "MathUtils.SafeSqrt(16) Some");
+        Require(MathUtils.SafeSqrt(-1.0) == null, "MathUtils.SafeSqrt(-1) None");
+
+        // Constructing several instances back to back exercises the
+        // Rust allocator path; if Box::into_raw or Box::from_raw were
+        // mis-ordered this would surface as a segfault or a leak.
+        for (int i = 0; i < 100; i++)
+        {
+            using var counter = new Counter(i);
+            Require(counter.Get() == i, $"new Counter({i}).Get() iteration");
+        }
+
+        // Constructor parameter shapes the simple Inventory/Counter
+        // matrix doesn't reach.
+
+        // Primary with a string param: drives Encoding.UTF8.GetBytes
+        // setup inside the private static helper, distinct from the
+        // static factory body that the same string-param shape would
+        // hit.
+        using (var worker = new AsyncWorker("hello"))
+        {
+            // GetPrefix is the only sync method on AsyncWorker (the
+            // async ones are filtered out upstream). Round-tripping the
+            // ctor arg through it confirms the Encoding.UTF8.GetBytes
+            // path in the primary helper actually wrote the right bytes.
+            Require(worker.GetPrefix() == "hello", "AsyncWorker.GetPrefix round-trips ctor arg");
+        }
+        // StateHolder drives `&mut self` mutators end to end: a primary
+        // ctor that takes a string, then set / increment / add_item /
+        // remove_last / clear in sequence, with `&self` getters
+        // observing the mutations.
+        using (var holder = new StateHolder("snapshot"))
+        {
+            Require(holder.GetLabel() == "snapshot", "StateHolder.GetLabel returns ctor arg");
+            Require(holder.GetValue() == 0, "StateHolder default value is 0");
+            holder.SetValue(42);
+            Require(holder.GetValue() == 42, "StateHolder.SetValue then GetValue");
+            Require(holder.Increment() == 43, "StateHolder.Increment returns new value");
+            Require(holder.GetValue() == 43, "StateHolder.GetValue reflects increment");
+            holder.AddItem("alpha");
+            holder.AddItem("beta");
+            holder.AddItem("gamma");
+            Require(holder.ItemCount() == 3u, "StateHolder.ItemCount after three adds");
+            Require(
+                holder.GetItems().SequenceEqual(new[] { "alpha", "beta", "gamma" }),
+                "StateHolder.GetItems round-trips Vec<String>"
+            );
+            Require(holder.RemoveLast() == "gamma", "StateHolder.RemoveLast returns Some(last)");
+            Require(holder.ItemCount() == 2u, "StateHolder.ItemCount decremented after pop");
+            holder.Clear();
+            Require(holder.GetValue() == 0, "StateHolder.Clear resets value");
+            Require(holder.ItemCount() == 0u, "StateHolder.Clear empties items");
+            Require(holder.RemoveLast() == null, "StateHolder.RemoveLast returns null on empty");
+        }
+
+        // MixedRecordService drives an instance method that takes a
+        // wire-encoded record (echo_record) and one that takes the
+        // record's parts as separate args (store_record_parts). Both
+        // are `&self` methods returning a wire-encoded MixedRecord.
+        using (var svc = new MixedRecordService("svc"))
+        {
+            Require(svc.GetLabel() == "svc", "MixedRecordService.GetLabel");
+            Require(svc.StoredCount() == 0u, "MixedRecordService.StoredCount starts at 0");
+
+            MixedRecordParameters parameters = new MixedRecordParameters(
+                new[] { "alpha", "beta" },
+                new[] { new Point(0.0, 0.0), new Point(1.0, 1.0) },
+                new Point(2.0, 3.0),
+                5u,
+                true
+            );
+            MixedRecord record = new MixedRecord(
+                "demo",
+                new Point(1.0, 2.0),
+                Priority.High,
+                new Shape.Rectangle(3.0, 4.0),
+                parameters
+            );
+
+            MixedRecord echoed = svc.EchoRecord(record);
+            Require(echoed.Name == "demo", "EchoRecord round-trips Name");
+            Require(echoed.Anchor.X == 1.0 && echoed.Anchor.Y == 2.0, "EchoRecord round-trips Anchor");
+            Require(echoed.Priority == Priority.High, "EchoRecord round-trips Priority");
+            Require(echoed.Shape is Shape.Rectangle echoedRect && echoedRect.Width == 3.0 && echoedRect.Height == 4.0,
+                "EchoRecord round-trips Shape variant");
+            Require(echoed.Parameters.Tags.SequenceEqual(parameters.Tags), "EchoRecord round-trips Parameters.Tags");
+            Require(echoed.Parameters.MaxRetries == 5u, "EchoRecord round-trips Parameters.MaxRetries");
+            Require(svc.StoredCount() == 0u, "EchoRecord does not bump StoredCount");
+
+            MixedRecord stored = svc.StoreRecordParts(
+                "stored",
+                new Point(5.0, 6.0),
+                Priority.Critical,
+                new Shape.Circle(2.5),
+                parameters
+            );
+            Require(stored.Name == "stored", "StoreRecordParts.Name");
+            Require(stored.Anchor.X == 5.0 && stored.Anchor.Y == 6.0, "StoreRecordParts.Anchor");
+            Require(stored.Priority == Priority.Critical, "StoreRecordParts.Priority");
+            Require(stored.Shape is Shape.Circle storedCircle && storedCircle.Radius == 2.5,
+                "StoreRecordParts.Shape Circle round-trip");
+            Require(svc.StoredCount() == 1u, "StoreRecordParts increments StoredCount");
+        }
+
+        // No-arg static factory.
+        using (var ds = DataStore.WithSampleData())
+        {
+            Require(ds != null, "DataStore.WithSampleData()");
+        }
+        // Mixed primitive static factory.
+        using (var ds = DataStore.WithInitialPoint(1.5, 2.5, 1234L))
+        {
+            Require(ds != null, "DataStore.WithInitialPoint(double, double, long)");
+        }
+
+        // DataStore exercises an `&self` method taking a blittable
+        // record (Add(DataPoint)) alongside a parts-flavored mutator
+        // (AddParts) and the read-only Sum / Len / IsEmpty trio.
+        using (var ds = new DataStore())
+        {
+            Require(ds.IsEmpty(), "new DataStore.IsEmpty");
+            Require(ds.Len() == (nuint)0, "new DataStore.Len starts at 0");
+            ds.Add(new DataPoint(1.0, 2.0, 100L));
+            ds.Add(new DataPoint(3.0, 4.0, 200L));
+            ds.AddParts(5.0, 6.0, 300L);
+            Require(!ds.IsEmpty(), "DataStore.IsEmpty false after adds");
+            Require(ds.Len() == (nuint)3, "DataStore.Len after three adds");
+            Require(Math.Abs(ds.Sum() - 21.0) < 1e-9, "DataStore.Sum across three points");
+        }
+
+        // Static factory with primitive + bool + C-style enum:
+        // exercises the `[MarshalAs(I1)]` bool path and the direct-
+        // pass enum.
+        using (var m = ConstructorCoverageMatrix.WithScalarMix(7u, true, Priority.High))
+        {
+            Require(m != null, "ConstructorCoverageMatrix.WithScalarMix(uint, bool, Priority)");
+        }
+
+        // Static factory with string + byte[]: two length-prefixed
+        // args back to back.
+        using (var m = ConstructorCoverageMatrix.WithStringAndBytes("label", new byte[] { 1, 2, 3 }))
+        {
+            Require(m.Summary() == "label=label;bytes=3", "WithStringAndBytes.Summary");
+            Require(m.PayloadChecksum() == 6u, "WithStringAndBytes.PayloadChecksum (1+2+3)");
+            Require(m.VectorCount() == 3u, "WithStringAndBytes.VectorCount");
+        }
+
+        // Static factory with blittable + non-blittable record:
+        // direct-struct + WireEncoded paths in one call.
+        using (var m = ConstructorCoverageMatrix.WithBlittableAndRecord(
+            new Point(1.5, 2.5),
+            new Person("Alice", 30u)))
+        {
+            Require(m.Summary() == "origin=1.5:2.5;person=Alice#30", "WithBlittableAndRecord.Summary");
+            Require(m.PayloadChecksum() == 0u, "WithBlittableAndRecord.PayloadChecksum");
+            Require(m.VectorCount() == 1u, "WithBlittableAndRecord.VectorCount");
+        }
+
+        // Static factory with `Vec<string>` + `Vec<Point>` + record:
+        // the only test that drives the new `unsafe { fixed }`
+        // scaffolding end to end (`Point[]` is a pinned-array param).
+        using (var m = ConstructorCoverageMatrix.WithVectorsAndPolygon(
+            new[] { "café", "🌍" },
+            new[] { new Point(1.0, 2.0), new Point(3.0, 4.0) },
+            new Polygon(new[] { new Point(0.0, 0.0), new Point(1.0, 1.0) })))
+        {
+            Require(m.Summary() == "tags=café|🌍;anchors=2;polygon=2", "WithVectorsAndPolygon.Summary");
+            Require(m.PayloadChecksum() == 0u, "WithVectorsAndPolygon.PayloadChecksum");
+            Require(m.VectorCount() == 6u, "WithVectorsAndPolygon.VectorCount (tags 2 + anchors 2 + polygon 2)");
+        }
+
+        // Static factory with three back-to-back wire-encoded records.
+        using (var m = ConstructorCoverageMatrix.WithCollectionRecords(
+            new Team("Alpha", new[] { "a", "b" }),
+            new Classroom(new[] { new Person("p", 1u) }),
+            new Polygon(new[] { new Point(0.0, 0.0) })))
+        {
+            Require(m.Summary() == "team=Alpha;members=2;students=1;polygon=1", "WithCollectionRecords.Summary");
+            Require(m.PayloadChecksum() == 0u, "WithCollectionRecords.PayloadChecksum");
+            Require(m.VectorCount() == 4u, "WithCollectionRecords.VectorCount (members 2 + students 1 + polygon 1)");
+        }
+
+        // Static factory with `Option<wire-encoded record>` +
+        // `Option<string>` parameters: drives both the Some path and
+        // the None path through the same setup machinery.
+        using (var m = ConstructorCoverageMatrix.WithOptionalProfileAndCursor(
+            new UserProfile("John", 29u, "john@example.com", 9.5),
+            "cursor-7"))
+        {
+            Require(m.ConstructorVariant() == "with_optional_profile_and_cursor",
+                "WithOptionalProfileAndCursor.ConstructorVariant");
+            Require(m.Summary() == "profile=John#29#john@example.com#9.5;cursor=cursor-7",
+                "WithOptionalProfileAndCursor.Summary (Some/Some)");
+            Require(m.PayloadChecksum() == 0u, "WithOptionalProfileAndCursor.PayloadChecksum");
+            Require(m.VectorCount() == 2u, "WithOptionalProfileAndCursor.VectorCount (Some/Some)");
+        }
+        using (var m = ConstructorCoverageMatrix.WithOptionalProfileAndCursor(null, null))
+        {
+            Require(m.Summary() == "profile=none;cursor=none",
+                "WithOptionalProfileAndCursor.Summary (None/None)");
+            Require(m.VectorCount() == 0u, "WithOptionalProfileAndCursor.VectorCount (None/None)");
+        }
+
+        // Seven-arg kitchen-sink ctor: stresses multiple wire writers,
+        // setup-only declarations (string, byte[]), and a string array
+        // back-to-back in one body.
+        using (var m = ConstructorCoverageMatrix.WithEverything(
+            new Person("Alice", 31u),
+            new Address("Main", "AMS", "1000"),
+            new UserProfile("John", 29u, "john@example.com", 9.5),
+            new SearchResult("route", 5u, "next-9", 7.5),
+            new byte[] { 4, 5, 6 },
+            new Filter.ByRange(1.0, 3.0),
+            new[] { "alpha", "beta" }))
+        {
+            Require(m.ConstructorVariant() == "with_everything", "WithEverything.ConstructorVariant");
+            Require(
+                m.Summary() == "person=Alice#31;city=AMS;profile=profile=John#29#john@example.com#9.5;query=route;filter=range:1.0-3.0;tags=alpha|beta",
+                "WithEverything.Summary"
+            );
+            Require(m.PayloadChecksum() == 15u, "WithEverything.PayloadChecksum (4+5+6)");
+            Require(m.VectorCount() == 10u, "WithEverything.VectorCount (tags 2 + payload 3 + total 5)");
+
+            // SummarizeBorrowedInputs is the only method whose params
+            // are all &Reference to non-blittable types. Lower drops the
+            // references and treats them as wire-encoded; without these
+            // assertions that path goes unverified. Cover both the
+            // Some/Some Option path and the None/None path through the
+            // same setup machinery.
+            Require(
+                m.SummarizeBorrowedInputs(
+                    new UserProfile("John", 29u, "john@example.com", 9.5),
+                    new SearchResult("route", 5u, "next-9", 7.5),
+                    new Filter.ByRange(1.0, 3.0))
+                    == "profile=John#29#john@example.com#9.5;query=route;filter=range:1.0-3.0",
+                "SummarizeBorrowedInputs (Some options + Filter.ByRange)"
+            );
+            Require(
+                m.SummarizeBorrowedInputs(
+                    new UserProfile("Jane", 25u, null, null),
+                    new SearchResult("foo", 0u, null, null),
+                    new Filter.None())
+                    == "profile=Jane#25#none#none;query=foo;filter=none",
+                "SummarizeBorrowedInputs (None options + Filter.None)"
+            );
+        }
+
+        // Static factory with two data enums + one record.
+        using (var m = ConstructorCoverageMatrix.WithEnumMix(
+            new Filter.ByName("query"),
+            new Message.Text("hello"),
+            new global::Demo.Task("title", Priority.Low, false)))
+        {
+            Require(m.Summary() == "filter=name:query;message=text:hello;task=title#low", "WithEnumMix.Summary");
+            Require(m.PayloadChecksum() == 0u, "WithEnumMix.PayloadChecksum");
+            Require(m.VectorCount() == 1u, "WithEnumMix.VectorCount");
+        }
 
         Console.WriteLine("  PASS\n");
     }
