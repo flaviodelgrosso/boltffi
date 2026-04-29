@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["boltffi", "boltffi_core", "boltffi_macros", "boltffi_bindgen", "boltffi_cli", "boltffi_ffi_rules", "boltffi_verify", "boltffi_tests"]
+members = ["boltffi", "boltffi_core", "boltffi_macros", "boltffi_bindgen", "boltffi_cli", "boltffi_ffi_rules", "boltffi_ast", "boltffi_verify", "boltffi_tests"]
 exclude = ["benchmarks/adapters/uniffi", "examples/demo"]
 
 [workspace.package]
@@ -16,6 +16,7 @@ boltffi_core = { version = "0.24.1", path = "boltffi_core" }
 boltffi_macros = { version = "0.24.1", path = "boltffi_macros" }
 boltffi_bindgen = { version = "0.24.1", path = "boltffi_bindgen" }
 boltffi_ffi_rules = { version = "0.24.1", path = "boltffi_ffi_rules" }
+boltffi_ast = { version = "0.24.1", path = "boltffi_ast" }
 boltffi_verify = { version = "0.24.1", path = "boltffi_verify" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
