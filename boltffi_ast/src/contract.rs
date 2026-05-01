@@ -49,8 +49,8 @@ pub struct SourceContract {
     pub functions: Vec<FunctionDef>,
     /// Class-style objects exported by the crate.
     pub classes: Vec<ClassDef>,
-    /// Callback traits and synthesized closure callbacks visible to the FFI surface.
-    pub callbacks: Vec<CallbackTraitDef>,
+    /// Callback traits exported by the crate.
+    pub callback_traits: Vec<CallbackTraitDef>,
     /// Streams exported by the crate.
     pub streams: Vec<StreamDef>,
     /// Constants exported by the crate.
@@ -73,7 +73,7 @@ impl SourceContract {
             enums: Vec::new(),
             functions: Vec::new(),
             classes: Vec::new(),
-            callbacks: Vec::new(),
+            callback_traits: Vec::new(),
             streams: Vec::new(),
             constants: Vec::new(),
             customs: Vec::new(),

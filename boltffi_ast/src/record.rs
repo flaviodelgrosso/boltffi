@@ -69,7 +69,7 @@ pub struct FieldDef {
     /// Canonical field name.
     pub name: CanonicalName,
     /// Source type expression written for the field.
-    pub ty: TypeExpr,
+    pub type_expr: TypeExpr,
     /// Documentation attached to the field.
     pub doc: Option<DocComment>,
     /// Default value written for the field.
@@ -86,14 +86,14 @@ pub struct FieldDef {
 impl FieldDef {
     /// Builds a field without documentation, attributes, or default value.
     ///
-    /// The `name` parameter is the canonical field name. The `ty` parameter is
-    /// the field's source type expression.
+    /// The `name` parameter is the canonical field name. The `type_expr`
+    /// parameter is the field's source type expression.
     ///
     /// Returns a field definition that can be attached to records and variants.
-    pub fn new(name: CanonicalName, ty: TypeExpr) -> Self {
+    pub fn new(name: CanonicalName, type_expr: TypeExpr) -> Self {
         Self {
             name,
-            ty,
+            type_expr,
             doc: None,
             default: None,
             user_attrs: Vec::new(),

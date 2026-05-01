@@ -224,6 +224,6 @@ pub enum GenericArgument {
         /// The associated type being assigned.
         name: NamePart,
         /// The type written on the right side of the equality.
-        ty: TypeExpr,
+        type_expr: TypeExpr,
     },
 }

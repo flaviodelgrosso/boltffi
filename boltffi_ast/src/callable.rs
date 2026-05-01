@@ -34,13 +34,13 @@ pub enum ExecutionKind {
 /// The parameter records both the type and the way it was accepted by Rust,
 /// such as by value, by shared reference, or by mutable reference.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub struct ParamDef {
+pub struct ParameterDef {
     /// Canonical parameter name.
     pub name: crate::CanonicalName,
     /// Source type expression after known FFI names have been identified.
-    pub ty: TypeExpr,
+    pub type_expr: TypeExpr,
     /// How the parameter was accepted by the Rust callable.
-    pub passing: ParamPassing,
+    pub passing: ParameterPassing,
     /// Documentation attached to the parameter when the source provides it.
     pub doc: Option<DocComment>,
     /// Default value written for bindings that expose default arguments.
@@ -51,18 +51,18 @@ pub struct ParamDef {
     pub source: Source,
 }
 
-impl ParamDef {
+impl ParameterDef {
     /// Builds a value parameter with no documentation, attributes, or default.
     ///
-    /// The `name` parameter is the canonical parameter name. The `ty` parameter
-    /// is the scanned source type expression.
+    /// The `name` parameter is the canonical parameter name. The `type_expr`
+    /// parameter is the scanned source type expression.
     ///
     /// Returns a parameter that was passed by value in Rust source.
-    pub fn value(name: crate::CanonicalName, ty: TypeExpr) -> Self {
+    pub fn value(name: crate::CanonicalName, type_expr: TypeExpr) -> Self {
         Self {
             name,
-            ty,
-            passing: ParamPassing::Value,
+            type_expr,
+            passing: ParameterPassing::Value,
             doc: None,
             default: None,
             user_attrs: Vec::new(),
@@ -77,7 +77,7 @@ impl ParamDef {
 /// consumer can distinguish `&T`, `&mut T`, `impl Trait`, and `Box<dyn Trait>`
 /// without inspecting raw Rust syntax.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub enum ParamPassing {
+pub enum ParameterPassing {
     /// A value parameter such as `value: T`.
     Value,
     /// A shared reference parameter such as `value: &T`.
@@ -120,12 +120,12 @@ pub enum ReturnDef {
 impl ReturnDef {
     /// Builds a return definition from an optional value type.
     ///
-    /// The `ty` parameter is `None` for `()` and `Some` for a returned value.
+    /// The `value_type` parameter is `None` for `()` and `Some` for a returned value.
     ///
     /// Returns `Void` for no value and `Value` for a present type expression.
-    pub fn from_value(ty: Option<TypeExpr>) -> Self {
-        match ty {
-            Some(ty) => Self::Value(ty),
+    pub fn from_value(value_type: Option<TypeExpr>) -> Self {
+        match value_type {
+            Some(value_type) => Self::Value(value_type),
             None => Self::Void,
         }
     }
@@ -175,7 +175,7 @@ pub struct FunctionDef {
     /// Whether the Rust source used `async`.
     pub execution: ExecutionKind,
     /// Parameters written by the Rust function.
-    pub params: Vec<ParamDef>,
+    pub parameters: Vec<ParameterDef>,
     /// Return type written by the Rust function.
     pub returns: ReturnDef,
     /// Documentation attached to the function.
@@ -205,7 +205,7 @@ impl FunctionDef {
             name,
             form: CallableForm::Function,
             execution: ExecutionKind::Sync,
-            params: Vec::new(),
+            parameters: Vec::new(),
             returns: ReturnDef::Void,
             doc: None,
             deprecated: None,
@@ -231,7 +231,7 @@ pub struct MethodDef {
     /// Whether the Rust source used `async`.
     pub execution: ExecutionKind,
     /// Parameters after the receiver.
-    pub params: Vec<ParamDef>,
+    pub parameters: Vec<ParameterDef>,
     /// Return type written by the Rust method.
     pub returns: ReturnDef,
     /// Documentation attached to the method.
@@ -261,7 +261,7 @@ impl MethodDef {
             name,
             receiver,
             execution: ExecutionKind::Sync,
-            params: Vec::new(),
+            parameters: Vec::new(),
             returns: ReturnDef::Void,
             doc: None,
             deprecated: None,

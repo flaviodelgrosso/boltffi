@@ -21,7 +21,7 @@ pub enum TypeExpr {
     Enum(EnumId),
     /// A class-style object declaration by ID.
     Class(ClassId),
-    /// A callback trait or closure signature by ID.
+    /// A callback trait declaration by ID.
     Callback(CallbackId),
     /// An inline closure signature such as `impl Fn(u32) -> String`.
     Closure(Box<ClosureType>),
@@ -105,8 +105,8 @@ impl TypeExpr {
     /// closure-like parameter type.
     ///
     /// Returns a closure type expression that can be paired with
-    /// [`ParamPassing::ImplTrait`](crate::ParamPassing::ImplTrait) or
-    /// [`ParamPassing::BoxedDyn`](crate::ParamPassing::BoxedDyn).
+    /// [`ParameterPassing::ImplTrait`](crate::ParameterPassing::ImplTrait) or
+    /// [`ParameterPassing::BoxedDyn`](crate::ParameterPassing::BoxedDyn).
     pub fn closure(closure: ClosureType) -> Self {
         Self::Closure(Box::new(closure))
     }
@@ -146,7 +146,7 @@ impl TypeExpr {
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct ClosureType {
     /// Types accepted by the closure in source order.
-    pub params: Vec<TypeExpr>,
+    pub parameters: Vec<TypeExpr>,
     /// Return type written by the closure signature.
     pub returns: ReturnDef,
 }
@@ -154,12 +154,15 @@ pub struct ClosureType {
 impl ClosureType {
     /// Builds an inline closure signature.
     ///
-    /// The `params` parameter preserves closure parameter types in source order.
+    /// The `parameters` parameter preserves closure parameter types in source order.
     /// The `returns` parameter is the closure return type.
     ///
     /// Returns a closure signature suitable for [`TypeExpr::Closure`].
-    pub fn new(params: Vec<TypeExpr>, returns: ReturnDef) -> Self {
-        Self { params, returns }
+    pub fn new(parameters: Vec<TypeExpr>, returns: ReturnDef) -> Self {
+        Self {
+            parameters,
+            returns,
+        }
     }
 }
 
