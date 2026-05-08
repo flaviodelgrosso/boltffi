@@ -1,4 +1,4 @@
-use crate::ir::definitions::{ParamDef, ParamPassing, ReturnDef};
+use crate::ir::definitions::{CallbackKind, ParamDef, ParamPassing, ReturnDef};
 use crate::ir::types::TypeExpr;
 
 use super::super::ast::{
@@ -17,11 +17,28 @@ impl<'a> CSharpLowerer<'a> {
         wire_writers: &[CSharpWireWriterPlan],
     ) -> Option<CSharpParamPlan> {
         if param.passing != ParamPassing::Value {
+            if let TypeExpr::Callback(id) = &param.type_expr {
+                return self.lower_callback_param(param, id);
+            }
             return None;
         }
 
         let csharp_type = self.lower_type(&param.type_expr)?;
         let csharp_param_name: CSharpParamName = (&param.name).into();
+        if let TypeExpr::Callback(id) = &param.type_expr {
+            return self.lower_callback_param(param, id);
+        }
+        if let TypeExpr::Option(inner) = &param.type_expr
+            && let TypeExpr::Callback(id) = inner.as_ref()
+        {
+            return Some(CSharpParamPlan {
+                name: csharp_param_name,
+                csharp_type,
+                kind: CSharpParamKind::CallbackHandle {
+                    bridge_class: self.callback_bridge_class_name(id),
+                },
+            });
+        }
         // The macro exposes Custom-typed params (and Vec<Custom<_>>
         // params) as wire-buffer C ABIs regardless of repr — Custom is
         // treated as opaque on the boundary, so even Vec<Custom<i64>>
@@ -105,7 +122,7 @@ impl<'a> CSharpLowerer<'a> {
     pub(super) fn lower_return(&self, return_def: &ReturnDef) -> Option<CSharpType> {
         match return_def {
             ReturnDef::Void => Some(CSharpType::Void),
-            ReturnDef::Value(type_expr) => self.lower_type(type_expr),
+            ReturnDef::Value(type_expr) => self.lower_return_value(type_expr),
             ReturnDef::Result { ok, err } => {
                 if !self.is_supported_result_type(ok) || !self.is_supported_result_type(err) {
                     return None;
@@ -115,6 +132,15 @@ impl<'a> CSharpLowerer<'a> {
                     other => self.lower_type(other),
                 }
             }
+        }
+    }
+
+    fn lower_return_value(&self, type_expr: &TypeExpr) -> Option<CSharpType> {
+        match type_expr {
+            TypeExpr::Callback(id) => Some(CSharpType::Record(
+                self.callback_proxy_class_name(id).into(),
+            )),
+            other => self.lower_type(other),
         }
     }
 
@@ -144,8 +170,38 @@ impl<'a> CSharpLowerer<'a> {
                 let inner_type = self.lower_type(inner)?;
                 Some(CSharpType::Nullable(Box::new(inner_type)))
             }
+            TypeExpr::Callback(id) => Some(CSharpType::Record(
+                self.callback_public_class_name(id).into(),
+            )),
             _ => None,
         }
+    }
+
+    fn lower_callback_param(
+        &self,
+        param: &ParamDef,
+        id: &crate::ir::ids::CallbackId,
+    ) -> Option<CSharpParamPlan> {
+        let callback = self.ffi.catalog.resolve_callback(id)?;
+        let name: CSharpParamName = (&param.name).into();
+        let csharp_type = CSharpType::Record(self.callback_public_class_name(id).into());
+        let kind = match callback.kind {
+            CallbackKind::Closure if param.passing == ParamPassing::ImplTrait => {
+                CSharpParamKind::InlineClosure {
+                    bridge_class: self.callback_bridge_class_name(id),
+                    scope_local: CSharpLocalName::for_inline_callback_scope(&name),
+                    context_param_name: CSharpParamName::new(format!("{}Ud", name.as_str())),
+                }
+            }
+            _ => CSharpParamKind::CallbackHandle {
+                bridge_class: self.callback_bridge_class_name(id),
+            },
+        };
+        Some(CSharpParamPlan {
+            name,
+            csharp_type,
+            kind,
+        })
     }
 }
 

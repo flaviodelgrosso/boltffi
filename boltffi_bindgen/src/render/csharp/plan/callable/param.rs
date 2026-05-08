@@ -42,6 +42,7 @@ impl CSharpParamPlan {
                 attributes: vec![marshal_as(CSharpAttributeArg::Positional(
                     unmanaged_type_member("I1"),
                 ))],
+                modifier: None,
                 csharp_type: CSharpType::Bool,
                 name: self.name.clone(),
             }],
@@ -66,6 +67,7 @@ impl CSharpParamPlan {
                     } else {
                         vec![]
                     },
+                    modifier: None,
                     csharp_type: CSharpType::Array(Box::new(element)),
                     name: self.name.clone(),
                 };
@@ -74,6 +76,27 @@ impl CSharpParamPlan {
             CSharpParamKind::PinnedArray { .. } => {
                 buffer_and_length(CSharpType::IntPtr, &self.name)
             }
+            CSharpParamKind::CallbackHandle { .. } => {
+                vec![CSharpParameter::bare(
+                    CSharpType::Record(CSharpTypeReference::Plain(CSharpClassName::new(
+                        "BoltFFICallbackHandle",
+                    ))),
+                    self.name.clone(),
+                )]
+            }
+            CSharpParamKind::InlineClosure {
+                bridge_class,
+                context_param_name,
+                ..
+            } => vec![
+                CSharpParameter::bare(
+                    CSharpType::Record(CSharpTypeReference::Plain(CSharpClassName::new(format!(
+                        "{bridge_class}.NativeInvoke"
+                    )))),
+                    self.name.clone(),
+                ),
+                CSharpParameter::bare(CSharpType::IntPtr, context_param_name.clone()),
+            ],
         }
     }
 }
@@ -173,6 +196,29 @@ impl CSharpParamPlan {
                 };
                 vec![ptr_arg, length_arg]
             }
+            CSharpParamKind::CallbackHandle { bridge_class } => {
+                vec![CSharpExpression::MethodCall {
+                    receiver: Box::new(CSharpExpression::TypeRef(CSharpTypeReference::Plain(
+                        bridge_class.clone(),
+                    ))),
+                    method: CSharpMethodName::from_source("create"),
+                    type_args: vec![],
+                    args: vec![param_ident(&self.name)].into(),
+                }]
+            }
+            CSharpParamKind::InlineClosure { scope_local, .. } => {
+                let scope = CSharpExpression::Identity(CSharpIdentity::Local(scope_local.clone()));
+                vec![
+                    CSharpExpression::MemberAccess {
+                        receiver: Box::new(scope.clone()),
+                        name: CSharpPropertyName::from_source("function"),
+                    },
+                    CSharpExpression::MemberAccess {
+                        receiver: Box::new(scope),
+                        name: CSharpPropertyName::from_source("context"),
+                    },
+                ]
+            }
         }
     }
 }
@@ -270,6 +316,15 @@ pub enum CSharpParamKind {
     PinnedArray {
         element_type: CSharpType,
         ptr_local: CSharpLocalName,
+    },
+    /// A generated callback trait instance passed as `BoltFFICallbackHandle`.
+    CallbackHandle { bridge_class: CSharpClassName },
+    /// A generated closure delegate passed as an unmanaged function pointer
+    /// plus an opaque GCHandle user-data pointer.
+    InlineClosure {
+        bridge_class: CSharpClassName,
+        scope_local: CSharpLocalName,
+        context_param_name: CSharpParamName,
     },
 }
 

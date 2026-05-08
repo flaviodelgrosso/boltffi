@@ -219,6 +219,13 @@ impl From<&MethodId> for CSharpMethodName {
 pub(crate) struct CSharpPropertyName(String);
 
 impl CSharpPropertyName {
+    /// Wraps a pre-formed member name. Runtime structs occasionally expose
+    /// lower-case fields (for example `_handle.handle`) that should not go
+    /// through the public-property PascalCase transform.
+    pub(crate) fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
     /// Builds from a snake_case source name. `my_prop` → `"MyProp"`.
     pub(crate) fn from_source(source: &str) -> Self {
         Self(naming::to_upper_camel_case(source))
@@ -346,6 +353,12 @@ impl CSharpLocalName {
     /// [`Self::for_bytes`].
     pub(crate) fn for_pinned_ptr(param: &CSharpParamName) -> Self {
         Self(format!("_{}Ptr", param.stripped()))
+    }
+
+    /// `_{param}Callback`: the scoped owner that keeps an inline closure
+    /// rooted while the native call executes.
+    pub(crate) fn for_inline_callback_scope(param: &CSharpParamName) -> Self {
+        Self(format!("_{}Callback", param.stripped()))
     }
 
     /// `sizeOpt{n}`: the pattern binding introduced inside a
@@ -572,6 +585,12 @@ mod tests {
     fn csharp_property_name_from_snake_case_produces_pascal_case() {
         let name = CSharpPropertyName::from_source("my_prop");
         assert_eq!(name.to_string(), "MyProp");
+    }
+
+    #[test]
+    fn csharp_property_name_new_wraps_pre_formed_name_verbatim() {
+        let name = CSharpPropertyName::new("handle");
+        assert_eq!(name.to_string(), "handle");
     }
 
     #[test]
