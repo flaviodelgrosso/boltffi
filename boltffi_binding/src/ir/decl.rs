@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CallableDecl, CallbackId, CanonicalName, ClassId, ConstantId, CustomTypeId, DeclId, DeclMeta,
-    DefaultValue, ElementMeta, EnumId, FunctionId, HandleRepr, InitializerId, IntegerRepr,
-    IntegerValue, MethodId, ReadPlan, RecordId, RecordLayout, ReturnTypeRef, StreamId, TypeRef,
-    WritePlan,
+    CallableDecl, CallbackId, CanonicalName, ClassId, CodecPlan, ConstantId, CustomTypeId, DeclId,
+    DeclMeta, DefaultValue, ElementMeta, EnumId, FunctionId, HandleRepr, InitializerId,
+    IntegerRepr, IntegerValue, MethodId, ReadPlan, RecordId, RecordLayout, ReturnTypeRef, StreamId,
+    TypeRef, WritePlan,
 };
 
 /// One classified declaration in a binding contract.
@@ -17,21 +17,21 @@ use crate::{
 #[non_exhaustive]
 pub enum Decl {
     /// Record declaration.
-    Record(RecordDecl),
+    Record(Box<RecordDecl>),
     /// Enum declaration.
-    Enum(EnumDecl),
+    Enum(Box<EnumDecl>),
     /// Free function declaration.
-    Function(FunctionDecl),
+    Function(Box<FunctionDecl>),
     /// Class-style object declaration.
-    Class(ClassDecl),
+    Class(Box<ClassDecl>),
     /// Callback trait declaration.
-    Callback(CallbackDecl),
+    Callback(Box<CallbackDecl>),
     /// Stream declaration.
-    Stream(StreamDecl),
+    Stream(Box<StreamDecl>),
     /// Constant declaration.
-    Constant(ConstantDecl),
+    Constant(Box<ConstantDecl>),
     /// Custom type declaration.
-    CustomType(CustomTypeDecl),
+    CustomType(Box<CustomTypeDecl>),
 }
 
 impl Decl {
@@ -176,7 +176,7 @@ impl DirectRecordDecl {
 /// A record that crosses the boundary through encoded bytes.
 ///
 /// Each field carries its own per-field codec, and the record itself
-/// carries a [`ReadPlan`] and [`WritePlan`] for moving the whole value at
+/// carries a [`CodecPlan`] for moving the whole value in either direction at
 /// once. Initializers and methods are listed beside the value the same way
 /// they are on a direct record.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -187,8 +187,7 @@ pub struct EncodedRecordDecl {
     fields: Vec<EncodedFieldDecl>,
     initializers: Vec<InitializerDecl>,
     methods: Vec<MethodDecl>,
-    read: ReadPlan,
-    write: WritePlan,
+    codec: CodecPlan,
 }
 
 impl EncodedRecordDecl {
@@ -199,8 +198,7 @@ impl EncodedRecordDecl {
         fields: Vec<EncodedFieldDecl>,
         initializers: Vec<InitializerDecl>,
         methods: Vec<MethodDecl>,
-        read: ReadPlan,
-        write: WritePlan,
+        codec: CodecPlan,
     ) -> Self {
         Self {
             id,
@@ -209,8 +207,7 @@ impl EncodedRecordDecl {
             fields,
             initializers,
             methods,
-            read,
-            write,
+            codec,
         }
     }
 
@@ -246,12 +243,17 @@ impl EncodedRecordDecl {
 
     /// Returns the whole-record read plan.
     pub fn read(&self) -> &ReadPlan {
-        &self.read
+        self.codec.read()
     }
 
     /// Returns the whole-record write plan.
     pub fn write(&self) -> &WritePlan {
-        &self.write
+        self.codec.write()
+    }
+
+    /// Returns the whole-record codec.
+    pub fn codec(&self) -> &CodecPlan {
+        &self.codec
     }
 }
 
@@ -304,30 +306,22 @@ impl DirectFieldDecl {
 
 /// One field of an encoded record or data enum payload.
 ///
-/// Carries its own [`ReadPlan`] and [`WritePlan`] because each field is
+/// Carries its own [`CodecPlan`] because each field is
 /// encoded independently inside the parent value's wire format.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct EncodedFieldDecl {
     key: FieldKey,
     ty: TypeRef,
-    read: ReadPlan,
-    write: WritePlan,
+    codec: CodecPlan,
     meta: ElementMeta,
 }
 
 impl EncodedFieldDecl {
-    pub(crate) fn new(
-        key: FieldKey,
-        ty: TypeRef,
-        read: ReadPlan,
-        write: WritePlan,
-        meta: ElementMeta,
-    ) -> Self {
+    pub(crate) fn new(key: FieldKey, ty: TypeRef, codec: CodecPlan, meta: ElementMeta) -> Self {
         Self {
             key,
             ty,
-            read,
-            write,
+            codec,
             meta,
         }
     }
@@ -344,12 +338,17 @@ impl EncodedFieldDecl {
 
     /// Returns the read plan.
     pub fn read(&self) -> &ReadPlan {
-        &self.read
+        self.codec.read()
     }
 
     /// Returns the write plan.
     pub fn write(&self) -> &WritePlan {
-        &self.write
+        self.codec.write()
+    }
+
+    /// Returns the field codec.
+    pub fn codec(&self) -> &CodecPlan {
+        &self.codec
     }
 
     /// Returns the element metadata.
@@ -375,7 +374,7 @@ pub enum EnumDecl {
     /// Fieldless enum represented by an integer discriminant.
     CStyle(CStyleEnumDecl),
     /// Payload-carrying enum represented by an encoded tag and payload.
-    Data(DataEnumDecl),
+    Data(Box<DataEnumDecl>),
 }
 
 impl EnumDecl {
@@ -497,7 +496,7 @@ impl CStyleVariantDecl {
 /// An enum whose variants can carry data.
 ///
 /// Crosses the boundary as a tag followed by an encoded payload. Each
-/// variant carries its own payload shape; the read and write plans
+/// variant carries its own payload shape; the codec plan
 /// describe the dispatch over the tag.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct DataEnumDecl {
@@ -506,8 +505,7 @@ pub struct DataEnumDecl {
     meta: DeclMeta,
     variants: Vec<DataVariantDecl>,
     methods: Vec<MethodDecl>,
-    read: ReadPlan,
-    write: WritePlan,
+    codec: CodecPlan,
 }
 
 impl DataEnumDecl {
@@ -517,8 +515,7 @@ impl DataEnumDecl {
         meta: DeclMeta,
         variants: Vec<DataVariantDecl>,
         methods: Vec<MethodDecl>,
-        read: ReadPlan,
-        write: WritePlan,
+        codec: CodecPlan,
     ) -> Self {
         Self {
             id,
@@ -526,8 +523,7 @@ impl DataEnumDecl {
             meta,
             variants,
             methods,
-            read,
-            write,
+            codec,
         }
     }
 
@@ -558,12 +554,17 @@ impl DataEnumDecl {
 
     /// Returns the whole-enum read plan.
     pub fn read(&self) -> &ReadPlan {
-        &self.read
+        self.codec.read()
     }
 
     /// Returns the whole-enum write plan.
     pub fn write(&self) -> &WritePlan {
-        &self.write
+        self.codec.write()
+    }
+
+    /// Returns the whole-enum codec.
+    pub fn codec(&self) -> &CodecPlan {
+        &self.codec
     }
 }
 
@@ -940,7 +941,7 @@ pub enum ConstantValueDecl {
         value: DefaultValue,
     },
     /// Read the value through a native accessor.
-    Accessor(CallableDecl),
+    Accessor(Box<CallableDecl>),
 }
 
 /// A user-defined type that maps to an existing binding shape.

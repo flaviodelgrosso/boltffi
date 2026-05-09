@@ -59,6 +59,33 @@ impl WritePlan {
     }
 }
 
+/// Bidirectional codec selected for one encoded value.
+///
+/// Encoded records and data enums always need both directions. Keeping the
+/// pair together prevents construction sites from passing unrelated read and
+/// write plans for the same declaration.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct CodecPlan {
+    read: ReadPlan,
+    write: WritePlan,
+}
+
+impl CodecPlan {
+    pub(crate) fn new(read: ReadPlan, write: WritePlan) -> Self {
+        Self { read, write }
+    }
+
+    /// Returns the plan used to read the encoded value.
+    pub fn read(&self) -> &ReadPlan {
+        &self.read
+    }
+
+    /// Returns the plan used to write the encoded value.
+    pub fn write(&self) -> &WritePlan {
+        &self.write
+    }
+}
+
 /// One node in a codec tree.
 ///
 /// Names a value that requires encoding work to cross the boundary:

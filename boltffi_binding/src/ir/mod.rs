@@ -83,7 +83,7 @@ pub use callable::{
     AsyncDecl, CallableDecl, ErrorDecl, ExecutionDecl, LiftPlan, LowerPlan, ParamDecl,
     ReceiverDecl, ReturnDecl,
 };
-pub use codec::{CodecNode, ReadPlan, WritePlan};
+pub use codec::{CodecNode, CodecPlan, ReadPlan, WritePlan};
 pub use contract::{Bindings, ContractVersion, PackageInfo};
 pub use decl::{
     CStyleEnumDecl, CStyleVariantDecl, CallbackDecl, ClassDecl, ConstantDecl, ConstantValueDecl,
