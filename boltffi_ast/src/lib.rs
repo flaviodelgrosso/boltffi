@@ -32,7 +32,7 @@ mod type_expr;
 
 pub use attribute::{AttributeInput, ReprAttr, ReprItem, UserAttr};
 pub use callable::{
-    CallableForm, ExecutionKind, FunctionDef, MethodDef, ParamDef, ParamPassing, Receiver,
+    CallableForm, ExecutionKind, FunctionDef, MethodDef, ParameterDef, ParameterPassing, Receiver,
     ReturnDef,
 };
 pub use callback::CallbackTraitDef;

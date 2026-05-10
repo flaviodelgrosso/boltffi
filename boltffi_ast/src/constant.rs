@@ -17,7 +17,7 @@ pub struct ConstantDef {
     /// Canonical constant name.
     pub name: CanonicalName,
     /// Declared source type.
-    pub ty: TypeExpr,
+    pub type_expr: TypeExpr,
     /// Source expression used as the constant value.
     pub value: ConstExpr,
     /// User attributes preserved from the constant.
@@ -37,15 +37,15 @@ impl ConstantDef {
     /// Builds a constant definition.
     ///
     /// The `id` parameter is the stable constant ID. The `name` parameter is the
-    /// canonical constant name. The `ty` and `value` parameters record the
-    /// source declaration.
+    /// canonical constant name. The `type_expr` and `value` parameters record
+    /// the source declaration.
     ///
     /// Returns a constant with no attributes, documentation, or deprecation.
-    pub fn new(id: ConstantId, name: CanonicalName, ty: TypeExpr, value: ConstExpr) -> Self {
+    pub fn new(id: ConstantId, name: CanonicalName, type_expr: TypeExpr, value: ConstExpr) -> Self {
         Self {
             id,
             name,
-            ty,
+            type_expr,
             value,
             user_attrs: Vec::new(),
             doc: None,
