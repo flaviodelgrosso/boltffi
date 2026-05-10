@@ -8,8 +8,8 @@ use crate::{
     render::dart::{
         DartLibrary, NamingConvention,
         templates::{
-            BuildHookTemplate, NativeFunctionsTemplate, NativeRecordTemplate, PreludeTemplate,
-            PubspecTemplate,
+            BuildHookTemplate, CustomTypesTemplate, NativeFunctionsTemplate, PreludeTemplate,
+            PubspecTemplate, RecordTemplate,
         },
     },
 };
@@ -27,23 +27,23 @@ impl DartEmitter {
         let mut output = String::new();
 
         output.push_str(PreludeTemplate {}.render().unwrap().as_str());
+
         output.push_str("\n\n");
+        output.push_str(
+            CustomTypesTemplate {
+                custom_types: &library.custom_types,
+            }
+            .render()
+            .unwrap()
+            .as_str(),
+        );
 
         for r in &library.records {
-            if let Some(layout) = &r.blittable_layout {
-                output.push_str(
-                    NativeRecordTemplate {
-                        name: &r.name,
-                        layout,
-                    }
-                    .render()
-                    .unwrap()
-                    .as_str(),
-                );
-                output.push_str("\n\n");
-            }
+            output.push_str("\n\n");
+            output.push_str(RecordTemplate { record: r }.render().unwrap().as_str());
         }
 
+        output.push_str("\n\n");
         output.push_str(
             NativeFunctionsTemplate {
                 cfuncs: &library.native.functions,
@@ -52,7 +52,6 @@ impl DartEmitter {
             .unwrap()
             .as_str(),
         );
-        output.push_str("\n\n");
 
         DartPackage {
             pubspec: PubspecTemplate {
@@ -160,7 +159,7 @@ pub fn type_expr_dart_type(ty: &TypeExpr) -> String {
         TypeExpr::Builtin(id) => match id.as_str() {
             "Duration" => "Duration".to_string(),
             "SystemTime" => "Datetime".to_string(),
-            "Uuid" => "(int, int)".to_string(), // NOTE: not builtin
+            "Uuid" => "String".to_string(),
             "Url" => "Uri".to_string(),
             _ => "String".to_string(),
         },
@@ -313,19 +312,19 @@ fn emit_write_primitive(primitive: PrimitiveType, writer_name: &str, value: &str
     )
 }
 
-fn enum_tag_write_expr(tag_type: PrimitiveType, writer_name: &str, value_expr: &str) -> String {
+fn enum_tag_write_expr(tag_type: PrimitiveType, writer_name: &str, value: &str) -> String {
     let write_method = primitive_write_method(tag_type);
 
-    format!("{}.{}({})", writer_name, write_method, value_expr)
+    format!("{}.{}({})", writer_name, write_method, value)
 }
 
 fn emit_write_builtin(id: &BuiltinId, writer_name: &str, value: &str) -> String {
     match id.as_str() {
-        "Duration" => format!("{}.writeDuration({})", writer_name, value),
-        "SystemTime" => format!("{}.writeInstant({})", writer_name, value),
-        "Uuid" => format!("{}.writeUuid({})", writer_name, value),
-        "Url" => format!("{}.writeUri({})", writer_name, value),
-        _ => format!("{}.writeString({})", writer_name, value),
+        "Duration" => format!("{}.writeDuration({});", writer_name, value),
+        "SystemTime" => format!("{}.writeInstant({});", writer_name, value),
+        "Uuid" => format!("{}.writeUuid({});", writer_name, value),
+        "Url" => format!("{}.writeUri({});", writer_name, value),
+        _ => format!("{}.writeString({});", writer_name, value),
     }
 }
 
@@ -353,17 +352,86 @@ fn write_seq_dart_type(seq: &WriteSeq) -> String {
     }
 }
 
-fn emit_write_vec(
-    _value: &str,
-    _element_type: &TypeExpr,
-    _element: &WriteSeq,
-    _layout: &VecLayout,
+fn emit_writer_vec(
+    value: &str,
+    element_type: &TypeExpr,
+    element: &WriteSeq,
+    layout: &VecLayout,
+    writer_name: &str,
 ) -> String {
-    String::new()
+    match layout {
+        VecLayout::Blittable { .. } => match element_type {
+            TypeExpr::Primitive(..) => format!("{writer_name}.writeTypedList({value});"),
+            _ => {
+                let inner_write_expr = emit_writer_write(element, writer_name, "item");
+                format!(
+                    "{writer_name}.writeList({value}, (item, {writer_name}) {{ {} }});",
+                    inner_write_expr
+                )
+            }
+        },
+        VecLayout::Encoded => match element_type {
+            TypeExpr::Primitive(primitive) => {
+                let inner_write_expr = emit_write_primitive(*primitive, writer_name, "item");
+                format!(
+                    "{writer_name}.writeList({value}, (item, {writer_name}) {{ {} }});",
+                    inner_write_expr
+                )
+            }
+            _ => {
+                let inner_write_expr = emit_writer_write(element, writer_name, "item");
+                format!(
+                    "{writer_name}.writeList({value}, (item, {writer_name}) {{ {} }});",
+                    inner_write_expr
+                )
+            }
+        },
+    }
 }
 
-pub fn emit_write_expr(_seq: &WriteSeq, _writer_name: &str) -> String {
-    String::new()
+pub fn emit_writer_write(seq: &WriteSeq, writer_name: &str, value: &str) -> String {
+    match seq.ops.first() {
+        Some(WriteOp::Primitive { primitive, .. }) => {
+            format!(
+                "{writer_name}.{}({});",
+                primitive_write_method(*primitive),
+                value,
+            )
+        }
+        Some(WriteOp::String { .. }) => format!("{writer_name}.writeString({value});"),
+        Some(WriteOp::Bytes { .. }) => format!("{writer_name}.writeUint8List({value});"),
+        Some(WriteOp::Builtin { id, .. }) => emit_write_builtin(id, writer_name, value),
+        Some(WriteOp::Record { .. }) => format!("{value}._m$wireEncode({writer_name});",),
+        Some(WriteOp::Enum { .. }) => format!("{value}._m$wireEncode({writer_name});"),
+        Some(WriteOp::Custom { underlying, .. }) => {
+            emit_writer_write(underlying, writer_name, value)
+        }
+        Some(WriteOp::Vec {
+            element_type,
+            element,
+            layout,
+            ..
+        }) => emit_writer_vec(value, element_type, element, layout, writer_name),
+        Some(WriteOp::Option { some, .. }) => {
+            let inner_write_expr = emit_writer_write(some, writer_name, "value");
+
+            format!(
+                "{writer_name}.writeOptional({value}, (value, {writer_name}) {{ {inner_write_expr} }});"
+            )
+        }
+        Some(WriteOp::Result { ok, err, .. }) => format!(
+            r#"
+{writer_name}.writeResult(
+  {value},
+  (value, {writer_name}) {{ {} }},
+  (value, {writer_name}) {{ {} }}
+);
+            "#,
+            emit_writer_write(ok, writer_name, "value"),
+            emit_writer_write(err, writer_name, "value"),
+        ),
+        _ => ";".to_string(),
+    }
 }
 
 pub fn primitive_read_method(primitive: PrimitiveType) -> &'static str {
@@ -382,7 +450,12 @@ pub fn primitive_read_method(primitive: PrimitiveType) -> &'static str {
     }
 }
 
-fn emit_reader_vec(element_type: &TypeExpr, element: &ReadSeq, layout: &VecLayout) -> String {
+fn emit_reader_vec(
+    element_type: &TypeExpr,
+    element: &ReadSeq,
+    layout: &VecLayout,
+    reader_name: &str,
+) -> String {
     match layout {
         VecLayout::Blittable { .. } => match element_type {
             TypeExpr::Primitive(primitive) => {
@@ -398,30 +471,33 @@ fn emit_reader_vec(element_type: &TypeExpr, element: &ReadSeq, layout: &VecLayou
                     PrimitiveType::F32 => "readFloat32List",
                     PrimitiveType::F64 => "readFloat64List",
                 };
-                format!("reader.{}()", method)
+                format!("{reader_name}.{}()", method)
             }
             _ => {
-                let inner = emit_reader_read(element);
-                format!("reader.readList((reader) => {})", inner)
+                let inner_read_expr = emit_reader_read(element, reader_name);
+                format!("{reader_name}.readList(({reader_name}) => {inner_read_expr})")
             }
         },
         VecLayout::Encoded => {
-            let inner = emit_reader_read(element);
-            format!("reader.readList((reader) => {})", inner)
+            let inner_read_expr = emit_reader_read(element, reader_name);
+            format!("{reader_name}.readList(({reader_name}) => {inner_read_expr})")
         }
     }
 }
 
-pub fn emit_reader_read(seq: &ReadSeq) -> String {
+pub fn emit_reader_read(seq: &ReadSeq, reader_name: &str) -> String {
     let op = seq.ops.first().expect("read ops");
     match op {
         ReadOp::Primitive { primitive, .. } => {
-            format!("reader.{}()", primitive_read_method(*primitive))
+            format!("{reader_name}.{}()", primitive_read_method(*primitive))
         }
-        ReadOp::String { .. } => "reader.readString()".to_string(),
-        ReadOp::Bytes { .. } => "reader.readUint8List()".to_string(),
+        ReadOp::String { .. } => format!("{reader_name}.readString()"),
+        ReadOp::Bytes { .. } => format!("{reader_name}.readUint8List()"),
         ReadOp::Record { id, .. } => {
-            format!("{}.decode(reader)", render_type_name(id.as_str()))
+            format!(
+                "{}._m$wireDecode({reader_name})",
+                NamingConvention::class_name(id.as_str())
+            )
         }
         ReadOp::Enum { id, layout, .. } => match layout {
             EnumLayout::CStyle {
@@ -430,7 +506,7 @@ pub fn emit_reader_read(seq: &ReadSeq) -> String {
                 ..
             } => {
                 format!(
-                    "{}.fromValue(reader.{}())",
+                    "{}.fromValue({reader_name}.{}())",
                     render_type_name(id.as_str()),
                     primitive_read_method(*tag_type),
                 )
@@ -438,23 +514,30 @@ pub fn emit_reader_read(seq: &ReadSeq) -> String {
             EnumLayout::CStyle { is_error: true, .. }
             | EnumLayout::Data { .. }
             | EnumLayout::Recursive => {
-                format!("{}.decode(reader)", render_type_name(id.as_str()))
+                format!("{}.decode({reader_name})", render_type_name(id.as_str()))
             }
         },
         ReadOp::Option { some, .. } => {
-            let inner = emit_reader_read(some);
-            format!("reader.readOptional((reader) => {})", inner)
+            let inner_read_expr = emit_reader_read(some, reader_name);
+            format!("{reader_name}.readOptional(({reader_name}) => {inner_read_expr})")
         }
         ReadOp::Vec {
             element_type,
             element,
             layout,
             ..
-        } => emit_reader_vec(element_type, element, layout),
+        } => emit_reader_vec(element_type, element, layout, reader_name),
         ReadOp::Result { ok, err, .. } => {
-            let _ok_expr = emit_reader_read(ok);
-            let _err_expr = emit_reader_read(err);
-            String::new()
+            let ok_expr = emit_reader_read(ok, reader_name);
+            let err_expr = emit_reader_read(err, reader_name);
+            format!(
+                r#"
+{reader_name}.readResult(
+  ({reader_name}) => {ok_expr},
+  ({reader_name}) => {err_expr}
+)
+            "#
+            )
         }
         ReadOp::Builtin { id, .. } => match id.as_str() {
             "Duration" => "reader.readDuration()".to_string(),
@@ -463,8 +546,6 @@ pub fn emit_reader_read(seq: &ReadSeq) -> String {
             "Url" => "reader.readUri()".to_string(),
             _ => "reader.readString()".to_string(),
         },
-        ReadOp::Custom { id, .. } => {
-            format!("{}.decode(reader)", render_type_name(id.as_str()))
-        }
+        ReadOp::Custom { underlying, .. } => emit_reader_read(underlying, reader_name),
     }
 }

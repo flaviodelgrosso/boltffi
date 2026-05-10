@@ -1,12 +1,14 @@
 use crate::{
     ir::{
-        AbiCall, AbiContract, AbiParam, AbiRecord, AbiType, CallId, FfiContract, FieldDef,
-        FieldName, FieldReadOp, FunctionId, OffsetExpr, ReadOp, ReadSeq, RecordDef, RecordId,
-        WriteOp, WriteSeq,
+        AbiCall, AbiContract, AbiParam, AbiRecord, AbiType, CallId, ConstructorDef, CustomTypeDef,
+        FfiContract, FieldDef, FieldName, FieldReadOp, FunctionId, MethodDef, OffsetExpr, ParamDef,
+        ReadOp, ReadSeq, RecordDef, RecordId, WriteOp, WriteSeq,
     },
     render::dart::{
-        DartBlittableField, DartBlittableLayout, DartLibrary, DartNative, DartNativeFunction,
-        DartNativeFunctionParam, DartNativeType, DartRecord, DartRecordField, NamingConvention,
+        DartBlittableField, DartBlittableLayout, DartConstructor, DartConstructorKind,
+        DartCustomType, DartFunction, DartFunctionParam, DartLibrary, DartNative,
+        DartNativeFunction, DartNativeFunctionParam, DartNativeType, DartRecord, DartRecordField,
+        DartType, NamingConvention,
     },
 };
 
@@ -67,6 +69,10 @@ impl<'a> DartLowerer<'a> {
             .unwrap()
     }
 
+    pub fn abi_call_for_call_id(&self, call_id: &CallId) -> &AbiCall {
+        self.abi.calls.iter().find(|c| &c.id == call_id).unwrap()
+    }
+
     fn abi_record_for(&self, record_id: &RecordId) -> Option<&AbiRecord> {
         self.abi
             .records
@@ -109,11 +115,11 @@ impl<'a> DartLowerer<'a> {
         let record_field_read_seq = self.record_field_read_seq(abi_record, &field.name).unwrap();
 
         DartRecordField {
-            name: field.name.to_string(),
+            name: NamingConvention::property_name(field.name.as_str()),
             offset: 0,
             dart_type: super::emit::type_expr_dart_type(&field.type_expr),
-            wire_decode_expr: super::emit::emit_reader_read(&record_field_read_seq),
-            wire_encode_expr: super::emit::emit_write_expr(&record_field_write_seq, "writer"),
+            read_seq: record_field_read_seq,
+            write_seq: record_field_write_seq,
         }
     }
 
@@ -129,7 +135,7 @@ impl<'a> DartLowerer<'a> {
         };
         let name = NamingConvention::property_name(field.name.as_str());
         let offset_const_name =
-            NamingConvention::property_name(format!("offset_{}", field.name.as_str()).as_str());
+            NamingConvention::priv_const_name(format!("offset_{}", field.name.as_str()).as_str());
 
         DartBlittableField {
             name,
@@ -151,9 +157,49 @@ impl<'a> DartLowerer<'a> {
 
         DartBlittableLayout {
             fields,
+            struct_name: NamingConvention::record_struct_name(abi_record.id.as_str()),
             struct_size: abi_record
                 .size
                 .expect("record.is_blittable <=> size != None"),
+        }
+    }
+
+    fn lower_param(&self, param: &ParamDef) -> DartFunctionParam {
+        DartFunctionParam {
+            name: NamingConvention::param_name(param.name.as_str()),
+            ty: DartType::from_type_expr(&param.type_expr),
+        }
+    }
+
+    fn lower_constructor(&self, ctor: &ConstructorDef, id: CallId) -> DartConstructor {
+        let abi_call = self.abi_call_for_call_id(&id);
+
+        DartConstructor {
+            ffi_name: abi_call.symbol.to_string(),
+            params: ctor
+                .params()
+                .iter()
+                .map(|param| self.lower_param(param))
+                .collect(),
+            kind: match ctor {
+                ConstructorDef::Default { .. } => DartConstructorKind::Default,
+                ConstructorDef::NamedFactory { name, .. }
+                | ConstructorDef::NamedInit { name, .. } => DartConstructorKind::Named {
+                    name: NamingConvention::function_name(name.as_str()),
+                },
+            },
+            is_fallible: ctor.is_fallible(),
+        }
+    }
+
+    fn lower_method(&self, meth: &MethodDef, id: CallId) -> DartFunction {
+        let abi_call = self.abi_call_for_call_id(&id);
+
+        DartFunction {
+            name: NamingConvention::function_name(meth.id.as_str()),
+            ffi_name: abi_call.symbol.to_string(),
+            params: meth.params.iter().map(|p| self.lower_param(p)).collect(),
+            ret_ty: DartType::from_return_def(&meth.returns),
         }
     }
 
@@ -172,14 +218,40 @@ impl<'a> DartLowerer<'a> {
             .is_blittable
             .then(|| self.lower_record_blittable_layout(abi_record));
 
+        let constructors = record
+            .constructor_calls()
+            .map(|(id, ctor_def)| self.lower_constructor(ctor_def, id))
+            .collect();
+
+        let methods = record
+            .method_calls()
+            .map(|(id, meth_def)| self.lower_method(meth_def, id))
+            .collect();
+
         DartRecord {
             name,
+            is_error: record.is_error,
             fields,
             blittable_layout,
+            constructors,
+            methods,
+        }
+    }
+
+    pub fn lower_custom_type(&self, custom: &CustomTypeDef) -> DartCustomType {
+        DartCustomType {
+            name: custom.id.to_string(),
+            ty: DartType::from_type_expr(&custom.repr),
         }
     }
 
     pub fn library(&self) -> DartLibrary {
+        let custom_types = self
+            .ffi
+            .catalog
+            .all_custom_types()
+            .map(|t| self.lower_custom_type(t))
+            .collect();
         let records = self
             .ffi
             .catalog
@@ -198,6 +270,7 @@ impl<'a> DartLowerer<'a> {
             .collect();
 
         DartLibrary {
+            custom_types,
             native: DartNative {
                 functions: native_functions,
             },
@@ -395,7 +468,7 @@ mod test {
         assert!(
             output
                 .lib
-                .contains("final class ___Point extends $$ffi.Struct")
+                .contains("final class _$Point$Struct extends $$ffi.Struct")
         );
     }
 
@@ -404,7 +477,7 @@ mod test {
         let mut ffi = empty_contract();
         ffi.catalog.insert_record(RecordDef {
             id: RecordId::new("Person"),
-            is_repr_c: true,
+            is_repr_c: false,
             is_error: false,
             fields: vec![
                 FieldDef {
@@ -429,5 +502,36 @@ mod test {
         let library = lower(&ffi);
 
         assert!(library.records[0].blittable_layout.is_none());
+    }
+
+    #[test]
+    pub fn error_record_implements_exception() {
+        let mut ffi = empty_contract();
+        ffi.catalog.insert_record(RecordDef {
+            id: RecordId::new("AppError"),
+            is_repr_c: false,
+            is_error: true,
+            fields: vec![FieldDef {
+                name: FieldName::new("details"),
+                type_expr: TypeExpr::String,
+                doc: None,
+                default: None,
+            }],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+
+        let library = lower(&ffi);
+
+        let output = DartEmitter::emit(&library, "test");
+
+        assert!(library.records[0].is_error);
+        assert!(
+            output
+                .lib
+                .contains("final class AppError implements Exception")
+        );
     }
 }
