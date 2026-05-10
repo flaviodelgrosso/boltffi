@@ -81,20 +81,14 @@ impl DeclarationIds {
             .ok_or_else(|| LowerError::unknown_class(id))
     }
 
-    pub(super) fn callback(
-        &self,
-        id: &SourceCallbackId,
-    ) -> Result<CallbackId, LowerError> {
+    pub(super) fn callback(&self, id: &SourceCallbackId) -> Result<CallbackId, LowerError> {
         self.callbacks
             .get(id.as_str())
             .copied()
             .ok_or_else(|| LowerError::unknown_callback(id))
     }
 
-    pub(super) fn custom(
-        &self,
-        id: &SourceCustomTypeId,
-    ) -> Result<CustomTypeId, LowerError> {
+    pub(super) fn custom(&self, id: &SourceCustomTypeId) -> Result<CustomTypeId, LowerError> {
         self.customs
             .get(id.as_str())
             .copied()

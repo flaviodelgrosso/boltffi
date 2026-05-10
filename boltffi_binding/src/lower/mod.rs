@@ -34,6 +34,9 @@
 //! let wasm   = boltffi_binding::lower::<boltffi_binding::Wasm32>(&source)?;
 //! ```
 
+#![allow(dead_code)]
+
+mod callable;
 mod codecs;
 mod enums;
 mod error;
@@ -41,29 +44,34 @@ mod ids;
 mod index;
 mod layout;
 mod metadata;
+mod methods;
 mod names;
 mod primitive;
 mod records;
+mod surface;
+mod symbol;
 mod types;
 
 use boltffi_ast::SourceContract;
 
-use crate::{Bindings, BindingError, CanonicalName, Decl, PackageInfo, Surface};
+use crate::{BindingError, Bindings, CanonicalName, Decl, PackageInfo};
 
 pub use self::error::{DeclarationFamily, LowerError, LowerErrorKind, UnsupportedType};
+pub use self::surface::SurfaceLower;
 
-use self::{ids::DeclarationIds, index::Index};
+use self::{ids::DeclarationIds, index::Index, symbol::SymbolAllocator};
 
 /// Lowers a source contract into a binding contract for surface `S`.
 ///
 /// See the module-level docs for the steps each call runs through.
-pub fn lower<S: Surface>(source: &SourceContract) -> Result<Bindings<S>, LowerError> {
+pub fn lower<S: SurfaceLower>(source: &SourceContract) -> Result<Bindings<S>, LowerError> {
     let ids = DeclarationIds::from_source(source)?;
     reject_unsupported(source)?;
 
     let index = Index::new(source);
+    let mut allocator = SymbolAllocator::new();
 
-    let records = records::lower::<S>(&index, &ids)?;
+    let records = records::lower::<S>(&index, &ids, &mut allocator)?;
     let enums = enums::lower::<S>(&index, &ids)?;
 
     let decls = records
@@ -95,13 +103,6 @@ fn reject_unsupported(source: &SourceContract) -> Result<(), LowerError> {
         (!source.streams.is_empty(), DeclarationFamily::Streams),
         (!source.constants.is_empty(), DeclarationFamily::Constants),
         (!source.customs.is_empty(), DeclarationFamily::CustomTypes),
-        (
-            source
-                .records
-                .iter()
-                .any(|record| !record.methods.is_empty()),
-            DeclarationFamily::RecordMethods,
-        ),
         (
             source
                 .enums

@@ -161,9 +161,7 @@ fn effective_integer_repr(enumeration: &SourceEnum) -> Option<IntegerRepr> {
     })
 }
 
-fn discriminants<'variant>(
-    variants: &'variant [SourceVariant],
-) -> Result<Vec<(&'variant SourceVariant, i128)>, LowerError> {
+fn discriminants(variants: &[SourceVariant]) -> Result<Vec<(&SourceVariant, i128)>, LowerError> {
     variants
         .iter()
         .try_fold((0_i128, Vec::new()), |(next, mut variants), variant| {
@@ -184,7 +182,8 @@ mod tests {
         ReprItem, SourceContract, TypeExpr, VariantDef, VariantPayload,
     };
 
-    use crate::{Decl, EnumDecl, IntegerRepr, Native, lower};
+    use crate::lower::lower;
+    use crate::{Decl, EnumDecl, IntegerRepr, Native};
 
     fn package() -> SourceContract {
         SourceContract::new(SourcePackage::new("demo", Some("0.1.0".to_owned())))

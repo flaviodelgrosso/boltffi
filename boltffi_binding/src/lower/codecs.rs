@@ -2,9 +2,7 @@ use boltffi_ast::TypeExpr;
 
 use crate::{CodecNode, CodecPlan, FieldKey, Op, Primitive, ReadPlan, ValueRef, WritePlan};
 
-use super::{
-    LowerError, enums, ids::DeclarationIds, index::Index, records, types,
-};
+use super::{LowerError, enums, ids::DeclarationIds, index::Index, records, types};
 
 /// Lowers a source type expression into one [`CodecNode`] in the
 /// codec tree.
@@ -48,9 +46,7 @@ pub(super) fn node(
         }
         TypeExpr::Class(id) => CodecNode::ClassHandle(ids.class(id)?),
         TypeExpr::Callback(id) => CodecNode::CallbackHandle(ids.callback(id)?),
-        TypeExpr::Closure(closure) => {
-            CodecNode::ClosureHandle(types::lower_closure(ids, closure)?)
-        }
+        TypeExpr::Closure(closure) => CodecNode::ClosureHandle(types::lower_closure(ids, closure)?),
         TypeExpr::Custom(id) => CodecNode::Custom(ids.custom(id)?),
         TypeExpr::Vec(element) => {
             let element = node(idx, ids, element, ValueRef::self_value())?;
@@ -59,9 +55,7 @@ pub(super) fn node(
                 element: Box::new(element),
             }
         }
-        TypeExpr::Option(inner) => {
-            CodecNode::Optional(Box::new(node(idx, ids, inner, value)?))
-        }
+        TypeExpr::Option(inner) => CodecNode::Optional(Box::new(node(idx, ids, inner, value)?)),
         TypeExpr::Tuple(elements) => CodecNode::Tuple(
             elements
                 .iter()

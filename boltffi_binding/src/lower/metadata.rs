@@ -51,9 +51,9 @@ impl TryFrom<&SourceDefaultValue> for DefaultValue {
             SourceDefaultValue::None => Ok(DefaultValue::Null),
             SourceDefaultValue::Float(_)
             | SourceDefaultValue::Bytes(_)
-            | SourceDefaultValue::Path(_) => Err(LowerError::unsupported_type(
-                UnsupportedType::DefaultValue,
-            )),
+            | SourceDefaultValue::Path(_) => {
+                Err(LowerError::unsupported_type(UnsupportedType::DefaultValue))
+            }
         }
     }
 }

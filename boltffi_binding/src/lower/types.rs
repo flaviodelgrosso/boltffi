@@ -12,10 +12,7 @@ use super::{LowerError, error::UnsupportedType, ids::DeclarationIds};
 /// caller already built. Source shapes that have no IR encoding yet are
 /// rejected here so callers can rely on a successful return for the
 /// shape, not the codec.
-pub(super) fn lower(
-    ids: &DeclarationIds,
-    type_expr: &TypeExpr,
-) -> Result<TypeRef, LowerError> {
+pub(super) fn lower(ids: &DeclarationIds, type_expr: &TypeExpr) -> Result<TypeRef, LowerError> {
     Ok(match type_expr {
         TypeExpr::Primitive(primitive) => TypeRef::Primitive(Primitive::from(*primitive)),
         TypeExpr::String => TypeRef::String,

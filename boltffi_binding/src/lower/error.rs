@@ -221,6 +221,14 @@ pub enum UnsupportedType {
     FallibleClosureReturn,
     /// A default value cannot be emitted as binding metadata yet.
     DefaultValue,
+    /// An `async` callable cannot be lowered yet.
+    AsyncCallable,
+    /// A callable returned `Result<T, E>`; error lowering is not implemented.
+    CallableResult,
+    /// An `impl Trait` parameter has no IR slice yet.
+    ImplTraitParameter,
+    /// A `Box<dyn Trait>` parameter has no IR slice yet.
+    BoxedDynParameter,
 }
 
 impl fmt::Display for UnsupportedType {
@@ -233,6 +241,10 @@ impl fmt::Display for UnsupportedType {
             Self::TypeParameter => "type parameter",
             Self::FallibleClosureReturn => "fallible closure return",
             Self::DefaultValue => "default value",
+            Self::AsyncCallable => "async callable",
+            Self::CallableResult => "callable Result return",
+            Self::ImplTraitParameter => "impl Trait parameter",
+            Self::BoxedDynParameter => "Box<dyn Trait> parameter",
         })
     }
 }
