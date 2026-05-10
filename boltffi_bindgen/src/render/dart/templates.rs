@@ -5,16 +5,21 @@ use askama::Template;
 pub struct PreludeTemplate {}
 
 #[derive(Template)]
+#[template(path = "render_dart/custom_types.txt", escape = "none")]
+pub struct CustomTypesTemplate<'a> {
+    pub custom_types: &'a [super::DartCustomType],
+}
+
+#[derive(Template)]
 #[template(path = "render_dart/native_functions.txt", escape = "none")]
 pub struct NativeFunctionsTemplate<'a> {
     pub cfuncs: &'a [super::DartNativeFunction],
 }
 
 #[derive(Template)]
-#[template(path = "render_dart/native_record.txt", escape = "none")]
-pub struct NativeRecordTemplate<'a> {
-    pub name: &'a str,
-    pub layout: &'a super::DartBlittableLayout,
+#[template(path = "render_dart/record.txt", escape = "none")]
+pub struct RecordTemplate<'a> {
+    pub record: &'a super::DartRecord,
 }
 
 #[derive(Template)]
