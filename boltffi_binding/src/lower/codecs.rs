@@ -61,12 +61,9 @@ pub(super) fn node(
                 .iter()
                 .enumerate()
                 .map(|(index, element)| {
-                    node(
-                        idx,
-                        ids,
-                        element,
-                        value.clone().field(FieldKey::Position(index as u32)),
-                    )
+                    let field = FieldKey::position(index)
+                        .ok_or_else(LowerError::field_position_overflow)?;
+                    node(idx, ids, element, value.clone().field(field))
                 })
                 .collect::<Result<Vec<_>, LowerError>>()?,
         ),

@@ -13,7 +13,7 @@
 //! return path; both ends move together so the discriminator never
 //! produces a value the return lowering rejects.
 
-use boltffi_ast::{MethodDef, Receiver, RecordDef, ReturnDef, TypeExpr};
+use boltffi_ast::{EnumDef, MethodDef, Receiver, RecordDef, ReturnDef, TypeExpr};
 
 use crate::{
     CanonicalName, InitializerDecl, InitializerId, MethodDecl, MethodId, NativeSymbol,
@@ -90,13 +90,30 @@ pub(super) fn lower_record_methods<S: SurfaceLower>(
         .collect()
 }
 
-/// Reports whether `method` becomes an [`InitializerDecl`].
-///
-/// The rule today: a static method (no receiver) whose return is
-/// `Self`. `Result<Self, E>` is intentionally excluded until error
-/// lowering on the return side recognises it; expanding that branch
-/// without expanding the return side would classify methods the
-/// callable lowering refuses to build.
+pub(super) fn lower_enum_methods<S: SurfaceLower>(
+    idx: &Index<'_>,
+    ids: &DeclarationIds,
+    allocator: &mut SymbolAllocator,
+    enumeration: &EnumDef,
+) -> Result<Vec<MethodDecl<S, NativeSymbol>>, LowerError> {
+    let owner = callable::CallableOwner::Enum(enumeration);
+    enumeration
+        .methods
+        .iter()
+        .enumerate()
+        .map(|(index, method)| {
+            lower_method::<S>(
+                idx,
+                ids,
+                allocator,
+                owner,
+                method,
+                MethodId::from_raw(index as u32),
+            )
+        })
+        .collect()
+}
+
 fn is_initializer(method: &MethodDef) -> bool {
     matches!(method.receiver, Receiver::None)
         && matches!(method.returns, ReturnDef::Value(TypeExpr::SelfType))
@@ -144,14 +161,6 @@ fn lower_method<S: SurfaceLower>(
     ))
 }
 
-/// Picks the FFI symbol name for `method` and allocates a fresh
-/// [`SymbolId`].
-///
-/// Initializers spelled `new` collapse to the canonical
-/// `boltffi_<owner>_new`; every other method name is mangled by
-/// [`member_symbol_name`].
-///
-/// [`SymbolId`]: crate::SymbolId
 fn mint_method_symbol(
     allocator: &mut SymbolAllocator,
     owner: callable::CallableOwner<'_>,

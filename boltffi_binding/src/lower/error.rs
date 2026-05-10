@@ -61,6 +61,14 @@ impl LowerError {
         Self::new(LowerErrorKind::DiscriminantOverflow)
     }
 
+    pub(crate) fn variant_tag_overflow() -> Self {
+        Self::new(LowerErrorKind::VariantTagOverflow)
+    }
+
+    pub(crate) fn field_position_overflow() -> Self {
+        Self::new(LowerErrorKind::FieldPositionOverflow)
+    }
+
     /// Returns the reason lowering failed.
     pub fn kind(&self) -> &LowerErrorKind {
         &self.kind
@@ -104,6 +112,8 @@ impl fmt::Display for LowerError {
             LowerErrorKind::DiscriminantOverflow => {
                 formatter.write_str("enum discriminant overflow")
             }
+            LowerErrorKind::VariantTagOverflow => formatter.write_str("enum variant tag overflow"),
+            LowerErrorKind::FieldPositionOverflow => formatter.write_str("field position overflow"),
             LowerErrorKind::InvalidBindings(error) => error.fmt(formatter),
         }
     }
@@ -151,6 +161,10 @@ pub enum LowerErrorKind {
     InvalidAlignment(u64),
     /// An enum discriminant sequence overflowed `i128`.
     DiscriminantOverflow,
+    /// A data enum variant index could not fit in a variant tag.
+    VariantTagOverflow,
+    /// A tuple field index could not fit in a field position.
+    FieldPositionOverflow,
     /// The lowered contract failed binding validation.
     InvalidBindings(BindingError),
 }

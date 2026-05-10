@@ -72,7 +72,7 @@ pub fn lower<S: SurfaceLower>(source: &SourceContract) -> Result<Bindings<S>, Lo
     let mut allocator = SymbolAllocator::new();
 
     let records = records::lower::<S>(&index, &ids, &mut allocator)?;
-    let enums = enums::lower::<S>(&index, &ids)?;
+    let enums = enums::lower::<S>(&index, &ids, &mut allocator)?;
 
     let decls = records
         .into_iter()
@@ -103,13 +103,6 @@ fn reject_unsupported(source: &SourceContract) -> Result<(), LowerError> {
         (!source.streams.is_empty(), DeclarationFamily::Streams),
         (!source.constants.is_empty(), DeclarationFamily::Constants),
         (!source.customs.is_empty(), DeclarationFamily::CustomTypes),
-        (
-            source
-                .enums
-                .iter()
-                .any(|enumeration| !enumeration.methods.is_empty()),
-            DeclarationFamily::EnumMethods,
-        ),
     ]
     .into_iter()
     .find_map(|(present, declaration)| present.then_some(declaration))
