@@ -38,11 +38,7 @@ fn lower_one<S: SurfaceLower>(
 ) -> Result<ClassDecl<S>, LowerError> {
     let class_id = ids.class(&class.id)?;
     let canonical = CanonicalName::from(&class.name);
-    let class_name = canonical
-        .parts()
-        .last()
-        .map_or_else(|| class.id.as_str(), |part| part.as_str());
-    let release = allocator.mint(class_release_symbol_name(class_name))?;
+    let release = allocator.mint(class_release_symbol_name(class.id.as_str()))?;
     let initializers = methods::lower_class_initializers::<S>(idx, ids, allocator, class)?;
     let class_methods = methods::lower_class_methods::<S>(idx, ids, allocator, class)?;
 
@@ -192,13 +188,19 @@ mod tests {
             Some("0.24.0")
         );
         assert_eq!(class.handle(), native::HandleCarrier::U64);
-        assert_eq!(symbol_name(class.release()), "boltffi_engine_free");
+        assert_eq!(
+            symbol_name(class.release()),
+            "boltffi_release_class_demo_engine"
+        );
 
         let initializer = class.initializers().first().expect("expected initializer");
         assert_eq!(class.initializers().len(), 1);
         assert_eq!(initializer.id(), InitializerId::from_raw(0));
         assert_eq!(initializer.name(), &CanonicalName::single("new"));
-        assert_eq!(symbol_name(initializer.symbol()), "boltffi_engine_new");
+        assert_eq!(
+            symbol_name(initializer.symbol()),
+            "boltffi_init_class_demo_engine_new"
+        );
         assert_eq!(
             initializer.returns(),
             &ReturnTypeRef::Value(TypeRef::Class(ClassId::from_raw(0)))
@@ -232,7 +234,10 @@ mod tests {
         assert_eq!(class.methods().len(), 1);
         assert_eq!(class_method.id(), MethodId::from_raw(0));
         assert_eq!(class_method.name(), &CanonicalName::single("start"));
-        assert_eq!(symbol_name(class_method.target()), "boltffi_engine_start");
+        assert_eq!(
+            symbol_name(class_method.target()),
+            "boltffi_method_class_demo_engine_start"
+        );
         assert_eq!(class_method.callable().receiver(), Some(Receive::ByMutRef));
         assert_eq!(class_method.callable().returns().lift(), &LiftPlan::Void);
     }
@@ -251,7 +256,10 @@ mod tests {
         let class_method = class.methods().first().expect("expected method");
         assert_eq!(class.methods().len(), 1);
         assert_eq!(class_method.callable().receiver(), None);
-        assert_eq!(symbol_name(class_method.target()), "boltffi_engine_version");
+        assert_eq!(
+            symbol_name(class_method.target()),
+            "boltffi_method_class_demo_engine_version"
+        );
         assert_eq!(
             class_method.callable().returns().lift(),
             &LiftPlan::Direct {
@@ -356,9 +364,49 @@ mod tests {
         assert_eq!(
             symbol_names(&bindings),
             vec![
-                "boltffi_engine_free",
-                "boltffi_engine_new",
-                "boltffi_engine_start",
+                "boltffi_release_class_demo_engine",
+                "boltffi_init_class_demo_engine_new",
+                "boltffi_method_class_demo_engine_start",
+            ]
+        );
+    }
+
+    #[test]
+    fn class_method_named_free_uses_method_lane_not_release_lane() {
+        let free = method("free", Receiver::Shared, ReturnDef::Void);
+        let bindings = lower_class::<Native>(class("demo::Engine", "Engine", vec![free]));
+        let class = class_by_id(&bindings, ClassId::from_raw(0));
+        let method = class.methods().first().expect("expected method");
+
+        assert_eq!(
+            symbol_name(class.release()),
+            "boltffi_release_class_demo_engine"
+        );
+        assert_eq!(
+            symbol_name(method.target()),
+            "boltffi_method_class_demo_engine_free"
+        );
+    }
+
+    #[test]
+    fn same_leaf_class_names_use_source_id_in_symbols() {
+        let bindings = lower_contract::<Native>({
+            let mut contract = package();
+            contract
+                .classes
+                .push(class("demo::audio::Engine", "Engine", Vec::new()));
+            contract
+                .classes
+                .push(class("demo::video::Engine", "Engine", Vec::new()));
+            contract
+        })
+        .expect("same leaf names should lower");
+
+        assert_eq!(
+            symbol_names(&bindings),
+            vec![
+                "boltffi_release_class_demo_audio_engine",
+                "boltffi_release_class_demo_video_engine",
             ]
         );
     }
@@ -384,7 +432,7 @@ mod tests {
                 assert!(matches!(
                     binding_error.kind(),
                     BindingErrorKind::DuplicateSymbolName(name)
-                        if name == "boltffi_engine_start"
+                        if name == "boltffi_method_class_demo_engine_start"
                 ));
             }
             other => panic!("expected invalid bindings, got {other:?}"),

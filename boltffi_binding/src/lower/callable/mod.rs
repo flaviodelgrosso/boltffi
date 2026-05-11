@@ -53,31 +53,6 @@ pub(super) enum CallableOwner<'src> {
 }
 
 impl<'src> CallableOwner<'src> {
-    /// Returns the canonical owner name used for symbol minting.
-    ///
-    /// The last segment of the canonical name is the type identifier
-    /// (`MyRecord` for `demo::nested::MyRecord`). Callers feed it
-    /// straight into [`super::symbol::member_symbol_name`].
-    pub(super) fn ffi_name(self) -> &'src str {
-        match self {
-            Self::Record(record) => record
-                .name
-                .parts()
-                .last()
-                .map_or_else(|| record.id.as_str(), |part| part.as_str()),
-            Self::Enum(enumeration) => enumeration
-                .name
-                .parts()
-                .last()
-                .map_or_else(|| enumeration.id.as_str(), |part| part.as_str()),
-            Self::Class(class) => class
-                .name
-                .parts()
-                .last()
-                .map_or_else(|| class.id.as_str(), |part| part.as_str()),
-        }
-    }
-
     fn self_type_expr(self) -> boltffi_ast::TypeExpr {
         match self {
             Self::Record(record) => boltffi_ast::TypeExpr::Record(record.id.clone()),

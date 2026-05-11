@@ -25,7 +25,7 @@ use super::{
     index::Index,
     metadata,
     surface::SurfaceLower,
-    symbol::{SymbolAllocator, canonical_new_symbol_name, member_symbol_name},
+    symbol::{SymbolAllocator, SymbolOwner, initializer_symbol_name, member_symbol_name},
 };
 
 /// Lowers every initializer-shaped method on `record`.
@@ -201,7 +201,7 @@ fn lower_initializer<S: SurfaceLower>(
     returns: TypeRef,
 ) -> Result<InitializerDecl<S>, LowerError> {
     let callable_decl = callable::lower_method::<S>(idx, ids, owner, method)?;
-    let symbol = mint_method_symbol(allocator, owner, method)?;
+    let symbol = mint_initializer_symbol(allocator, owner, method)?;
     Ok(InitializerDecl::new(
         id,
         CanonicalName::from(&method.name),
@@ -236,14 +236,29 @@ fn mint_method_symbol(
     owner: callable::CallableOwner<'_>,
     method: &MethodDef,
 ) -> Result<NativeSymbol, LowerError> {
-    let owner_name = owner.ffi_name();
     let method_name = method.name.parts().last().map_or("", |part| part.as_str());
-    let symbol_name = if method_name == "new" {
-        canonical_new_symbol_name(owner_name)
-    } else {
-        member_symbol_name(owner_name, method_name)
-    };
+    let symbol_name = member_symbol_name(symbol_owner(owner), method_name);
     allocator.mint(symbol_name)
+}
+
+fn mint_initializer_symbol(
+    allocator: &mut SymbolAllocator,
+    owner: callable::CallableOwner<'_>,
+    method: &MethodDef,
+) -> Result<NativeSymbol, LowerError> {
+    let method_name = method.name.parts().last().map_or("", |part| part.as_str());
+    let symbol_name = initializer_symbol_name(symbol_owner(owner), method_name);
+    allocator.mint(symbol_name)
+}
+
+fn symbol_owner(owner: callable::CallableOwner<'_>) -> SymbolOwner<'_> {
+    match owner {
+        callable::CallableOwner::Record(record) => SymbolOwner::record(record.id.as_str()),
+        callable::CallableOwner::Enum(enumeration) => {
+            SymbolOwner::enumeration(enumeration.id.as_str())
+        }
+        callable::CallableOwner::Class(class) => SymbolOwner::class(class.id.as_str()),
+    }
 }
 
 fn reject_owned_class_receiver(method: &MethodDef) -> Result<(), LowerError> {

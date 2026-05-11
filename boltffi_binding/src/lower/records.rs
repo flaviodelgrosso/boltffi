@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(methods[0].name().parts().len(), 1);
         assert_eq!(
             methods[0].target().name().as_str(),
-            "boltffi_point_translate"
+            "boltffi_method_record_demo_point_translate"
         );
 
         let callable = methods[0].callable();
@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_initializer_with_canonical_new_symbol() {
+    fn lowers_new_initializer_in_initializer_symbol_lane() {
         let bindings = lower_point_method::<Native>(method_with(
             "new",
             Receiver::None,
@@ -469,14 +469,14 @@ mod tests {
         assert_eq!(initializers.len(), 1);
         assert_eq!(
             initializers[0].symbol().name().as_str(),
-            "boltffi_point_new"
+            "boltffi_init_record_demo_point_new"
         );
         assert_eq!(initializers[0].callable().receiver(), None);
         assert_eq!(initializers[0].callable().params().len(), 2);
     }
 
     #[test]
-    fn non_new_initializer_uses_member_symbol_naming() {
+    fn lowers_named_initializer_in_initializer_symbol_lane() {
         let bindings = lower_point_method::<Native>(method_with(
             "from_xy",
             Receiver::None,
@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(initializers.len(), 1);
         assert_eq!(
             initializers[0].symbol().name().as_str(),
-            "boltffi_point_from_xy"
+            "boltffi_init_record_demo_point_from_xy"
         );
     }
 
@@ -579,7 +579,13 @@ mod tests {
             .map(|s| s.name().as_str())
             .collect();
 
-        assert_eq!(names, vec!["boltffi_point_new", "boltffi_point_translate"]);
+        assert_eq!(
+            names,
+            vec![
+                "boltffi_init_record_demo_point_new",
+                "boltffi_method_record_demo_point_translate"
+            ]
+        );
     }
 
     fn ref_param(param_name: &str, type_expr: TypeExpr) -> ParameterDef {
@@ -668,7 +674,7 @@ mod tests {
         assert_eq!(methods[0].callable().receiver(), None);
         assert_eq!(
             methods[0].target().name().as_str(),
-            "boltffi_point_origin_x"
+            "boltffi_method_record_demo_point_origin_x"
         );
     }
 
@@ -1371,7 +1377,10 @@ mod tests {
         let methods = first_record_methods(&bindings);
 
         assert_eq!(methods.len(), 1);
-        assert_eq!(methods[0].target().name().as_str(), "boltffi_user_greet");
+        assert_eq!(
+            methods[0].target().name().as_str(),
+            "boltffi_method_record_demo_user_greet"
+        );
         let RecordDecl::Encoded(_) = first_record(&bindings) else {
             panic!("expected encoded record");
         };
@@ -1587,7 +1596,7 @@ mod tests {
 
         assert_eq!(
             methods[0].target().name().as_str(),
-            "boltffi_http_header_process"
+            "boltffi_method_record_demo_http_header_process"
         );
     }
 
@@ -1604,7 +1613,7 @@ mod tests {
         match error.kind() {
             LowerErrorKind::InvalidBindings(error) => match error.kind() {
                 BindingErrorKind::DuplicateSymbolName(name) => {
-                    assert_eq!(name, "boltffi_point_translate");
+                    assert_eq!(name, "boltffi_method_record_demo_point_translate");
                 }
                 other => panic!("expected DuplicateSymbolName, got {other:?}"),
             },
