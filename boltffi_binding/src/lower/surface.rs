@@ -63,6 +63,14 @@ pub trait SurfaceLower: Surface + sealed::Sealed {
     /// crosses as a 32-bit handle.
     #[doc(hidden)]
     fn closure_handle_carrier() -> Self::HandleCarrier;
+
+    /// Handle carrier used for a class instance crossing.
+    ///
+    /// Native classes cross as a 64-bit token
+    /// ([`native::HandleCarrier::U64`]). Wasm32 classes cross as a
+    /// 32-bit token ([`wasm32::HandleCarrier::U32`]).
+    #[doc(hidden)]
+    fn class_handle_carrier() -> Self::HandleCarrier;
 }
 
 impl SurfaceLower for Native {
@@ -77,6 +85,10 @@ impl SurfaceLower for Native {
     fn closure_handle_carrier() -> Self::HandleCarrier {
         native::HandleCarrier::CallbackHandle
     }
+
+    fn class_handle_carrier() -> Self::HandleCarrier {
+        native::HandleCarrier::U64
+    }
 }
 
 impl SurfaceLower for Wasm32 {
@@ -89,6 +101,10 @@ impl SurfaceLower for Wasm32 {
     }
 
     fn closure_handle_carrier() -> Self::HandleCarrier {
+        wasm32::HandleCarrier::U32
+    }
+
+    fn class_handle_carrier() -> Self::HandleCarrier {
         wasm32::HandleCarrier::U32
     }
 }

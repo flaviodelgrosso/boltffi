@@ -626,7 +626,10 @@ mod tests {
         ));
         let method = only_method(&bindings);
 
-        assert_eq!(method.target().name().as_str(), "boltffi_direction_rotate");
+        assert_eq!(
+            method.target().name().as_str(),
+            "boltffi_method_enum_demo_direction_rotate"
+        );
         assert_eq!(method.callable().receiver(), Some(Receive::ByMutRef));
         assert!(matches!(enum_decl_at(&bindings, 0), EnumDecl::CStyle(_)));
     }
@@ -639,7 +642,10 @@ mod tests {
         ));
         let method = only_method(&bindings);
 
-        assert_eq!(method.target().name().as_str(), "boltffi_event_describe");
+        assert_eq!(
+            method.target().name().as_str(),
+            "boltffi_method_enum_demo_event_describe"
+        );
         assert_eq!(method.callable().receiver(), Some(Receive::ByRef));
         assert!(matches!(enum_decl_at(&bindings, 0), EnumDecl::Data(_)));
     }
@@ -704,7 +710,7 @@ mod tests {
         assert_eq!(method.callable().receiver(), None);
         assert_eq!(
             method.target().name().as_str(),
-            "boltffi_direction_default_direction"
+            "boltffi_method_enum_demo_direction_default_direction"
         );
     }
 
@@ -1106,7 +1112,10 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["boltffi_direction_rotate", "boltffi_direction_opposite"]
+            vec![
+                "boltffi_method_enum_demo_direction_rotate",
+                "boltffi_method_enum_demo_direction_opposite"
+            ]
         );
     }
 
@@ -1124,7 +1133,7 @@ mod tests {
 
         assert_eq!(
             method.target().name().as_str(),
-            "boltffi_http_status_describe"
+            "boltffi_method_enum_demo_http_status_describe"
         );
     }
 
@@ -1142,7 +1151,7 @@ mod tests {
         match error.kind() {
             LowerErrorKind::InvalidBindings(error) => match error.kind() {
                 BindingErrorKind::DuplicateSymbolName(name) => {
-                    assert_eq!(name, "boltffi_direction_rotate");
+                    assert_eq!(name, "boltffi_method_enum_demo_direction_rotate");
                 }
                 other => panic!("expected DuplicateSymbolName, got {other:?}"),
             },

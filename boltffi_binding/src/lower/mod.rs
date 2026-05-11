@@ -37,6 +37,7 @@
 #![allow(dead_code)]
 
 mod callable;
+mod classes;
 mod codecs;
 mod enums;
 mod error;
@@ -73,6 +74,7 @@ pub fn lower<S: SurfaceLower>(source: &SourceContract) -> Result<Bindings<S>, Lo
 
     let records = records::lower::<S>(&index, &ids, &mut allocator)?;
     let enums = enums::lower::<S>(&index, &ids, &mut allocator)?;
+    let classes = classes::lower::<S>(&index, &ids, &mut allocator)?;
 
     let decls = records
         .into_iter()
@@ -81,6 +83,11 @@ pub fn lower<S: SurfaceLower>(source: &SourceContract) -> Result<Bindings<S>, Lo
             enums
                 .into_iter()
                 .map(|enumeration| Decl::Enum(Box::new(enumeration))),
+        )
+        .chain(
+            classes
+                .into_iter()
+                .map(|class| Decl::Class(Box::new(class))),
         )
         .collect::<Vec<_>>();
 
@@ -95,7 +102,6 @@ pub fn lower<S: SurfaceLower>(source: &SourceContract) -> Result<Bindings<S>, Lo
 fn reject_unsupported(source: &SourceContract) -> Result<(), LowerError> {
     [
         (!source.functions.is_empty(), DeclarationFamily::Functions),
-        (!source.classes.is_empty(), DeclarationFamily::Classes),
         (
             !source.callback_traits.is_empty(),
             DeclarationFamily::CallbackTraits,

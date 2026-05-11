@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use boltffi_ast::{
-    EnumDef as SourceEnum, EnumId as SourceEnumId, RecordDef as SourceRecord,
-    RecordId as SourceRecordId, SourceContract,
+    ClassDef as SourceClass, EnumDef as SourceEnum, EnumId as SourceEnumId,
+    RecordDef as SourceRecord, RecordId as SourceRecordId, SourceContract,
 };
 
 /// Borrowed view over a [`SourceContract`] with lookup tables for the
@@ -47,6 +47,10 @@ impl<'src> Index<'src> {
 
     pub(super) fn enums(&self) -> &'src [SourceEnum] {
         &self.source.enums
+    }
+
+    pub(super) fn classes(&self) -> &'src [SourceClass] {
+        &self.source.classes
     }
 
     pub(super) fn record(&self, id: &SourceRecordId) -> Option<&'src SourceRecord> {

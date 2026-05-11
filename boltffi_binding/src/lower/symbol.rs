@@ -2,14 +2,10 @@
 //!
 //! Every callable the lowered IR exposes references one or more native
 //! symbols by id. Ids are sequential integers assigned in the order the
-//! pass mints them; names follow the boltffi convention shared with the
-//! foreign-side bindings: `boltffi_<owner_snake>_<member>` for owned
-//! callables, `boltffi_<owner_snake>_new` for the canonical "new"
-//! initializer. The convention used to live in `boltffi_ffi_rules` and
-//! is now anchored here, where the lowering pass owns it.
-//!
-//! The owner name passed in is the Rust-side type identifier
-//! (`MyRecord`); this module snake-cases it for use in the symbol.
+//! pass mints them. Names use separate lanes for user callables,
+//! initializers, and runtime lifecycle functions so source members named
+//! `free`, `release`, or `new` cannot collide with symbols the runtime
+//! needs for ownership management.
 
 use crate::{NativeSymbol, SymbolId, SymbolName};
 
@@ -17,6 +13,41 @@ use super::LowerError;
 
 /// Symbol prefix shared by every binding the contract exposes.
 pub(super) const FFI_PREFIX: &str = "boltffi";
+
+#[derive(Clone, Copy)]
+pub(super) enum SymbolOwner<'a> {
+    Record(&'a str),
+    Enum(&'a str),
+    Class(&'a str),
+}
+
+impl<'a> SymbolOwner<'a> {
+    pub(super) const fn record(source_id: &'a str) -> Self {
+        Self::Record(source_id)
+    }
+
+    pub(super) const fn enumeration(source_id: &'a str) -> Self {
+        Self::Enum(source_id)
+    }
+
+    pub(super) const fn class(source_id: &'a str) -> Self {
+        Self::Class(source_id)
+    }
+
+    fn family(self) -> &'static str {
+        match self {
+            Self::Record(_) => "record",
+            Self::Enum(_) => "enum",
+            Self::Class(_) => "class",
+        }
+    }
+
+    fn source_id(self) -> &'a str {
+        match self {
+            Self::Record(source_id) | Self::Enum(source_id) | Self::Class(source_id) => source_id,
+        }
+    }
+}
 
 /// Hands out [`SymbolId`]s in the order callers mint native symbols.
 ///
@@ -47,26 +78,40 @@ impl SymbolAllocator {
     }
 }
 
-/// Builds the symbol used for a named callable owned by `owner_name`.
-///
-/// `owner_name` is the type identifier (`MyRecord`); `member_name` is
-/// the method or initializer name. The leading FFI prefix and the
-/// snake-cased owner name come from this module.
-pub(super) fn member_symbol_name(owner_name: &str, member_name: &str) -> String {
+/// Builds the symbol used for a named method owned by `owner`.
+pub(super) fn member_symbol_name(owner: SymbolOwner<'_>, member_name: &str) -> String {
     format!(
-        "{}_{}_{}",
+        "{}_method_{}_{}_{}",
         FFI_PREFIX,
-        to_snake_case(owner_name),
+        owner.family(),
+        symbol_path(owner.source_id()),
         member_name
     )
 }
 
-/// Builds the symbol used for the canonical "new" initializer.
-///
-/// Returned name has the form `boltffi_<owner_snake>_new`. Used for
-/// the initializer the binding generators call by convention.
-pub(super) fn canonical_new_symbol_name(owner_name: &str) -> String {
-    format!("{}_{}_new", FFI_PREFIX, to_snake_case(owner_name))
+/// Builds the symbol used for an initializer owned by `owner`.
+pub(super) fn initializer_symbol_name(owner: SymbolOwner<'_>, initializer_name: &str) -> String {
+    format!(
+        "{}_init_{}_{}_{}",
+        FFI_PREFIX,
+        owner.family(),
+        symbol_path(owner.source_id()),
+        initializer_name
+    )
+}
+
+/// Builds the symbol used to drop a class handle on the Rust side.
+pub(super) fn class_release_symbol_name(class_id: &str) -> String {
+    format!("{}_release_class_{}", FFI_PREFIX, symbol_path(class_id))
+}
+
+fn symbol_path(source_id: &str) -> String {
+    source_id
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .map(to_snake_case)
+        .collect::<Vec<_>>()
+        .join("_")
 }
 
 /// Lowercases `name` and inserts an underscore at every word boundary.
@@ -142,14 +187,33 @@ mod tests {
     #[test]
     fn member_symbol_name_uses_owner_and_member() {
         assert_eq!(
-            member_symbol_name("MyRecord", "translate"),
-            "boltffi_my_record_translate"
+            member_symbol_name(SymbolOwner::record("demo::MyRecord"), "translate"),
+            "boltffi_method_record_demo_my_record_translate"
         );
     }
 
     #[test]
-    fn canonical_new_symbol_uses_owner_only() {
-        assert_eq!(canonical_new_symbol_name("Point"), "boltffi_point_new");
+    fn initializer_symbol_name_uses_initializer_lane() {
+        assert_eq!(
+            initializer_symbol_name(SymbolOwner::record("demo::Point"), "new"),
+            "boltffi_init_record_demo_point_new"
+        );
+    }
+
+    #[test]
+    fn class_release_symbol_name_uses_release_lane() {
+        assert_eq!(
+            class_release_symbol_name("demo::Engine"),
+            "boltffi_release_class_demo_engine"
+        );
+    }
+
+    #[test]
+    fn symbol_paths_include_source_namespaces() {
+        assert_eq!(
+            member_symbol_name(SymbolOwner::class("demo::nested::HTTPClient"), "fetch"),
+            "boltffi_method_class_demo_nested_http_client_fetch"
+        );
     }
 
     #[test]

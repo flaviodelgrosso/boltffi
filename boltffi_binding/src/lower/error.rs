@@ -243,6 +243,8 @@ pub enum UnsupportedType {
     ImplTraitParameter,
     /// A `Box<dyn Trait>` parameter has no IR slice yet.
     BoxedDynParameter,
+    /// An owned class receiver has no handle-transfer protocol yet.
+    OwnedClassReceiver,
 }
 
 impl fmt::Display for UnsupportedType {
@@ -259,6 +261,7 @@ impl fmt::Display for UnsupportedType {
             Self::CallableResult => "callable Result return",
             Self::ImplTraitParameter => "impl Trait parameter",
             Self::BoxedDynParameter => "Box<dyn Trait> parameter",
+            Self::OwnedClassReceiver => "owned class receiver",
         })
     }
 }
