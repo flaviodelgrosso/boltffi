@@ -69,6 +69,15 @@ pub(super) fn canonical_new_symbol_name(owner_name: &str) -> String {
     format!("{}_{}_new", FFI_PREFIX, to_snake_case(owner_name))
 }
 
+/// Builds the symbol used to drop a class handle on the Rust side.
+///
+/// Returned name has the form `boltffi_<class_snake>_free`. Foreign
+/// code calls this when the host-side handle goes out of scope so
+/// Rust can release the owned instance.
+pub(super) fn class_release_symbol_name(class_name: &str) -> String {
+    format!("{}_{}_free", FFI_PREFIX, to_snake_case(class_name))
+}
+
 /// Lowercases `name` and inserts an underscore at every word boundary.
 ///
 /// Word boundaries are:

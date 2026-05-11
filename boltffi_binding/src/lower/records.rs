@@ -131,10 +131,12 @@ fn lower_encoded<S: SurfaceLower>(
 #[cfg(test)]
 mod tests {
     use boltffi_ast::{
-        CanonicalName as SourceName, ClosureType, EnumDef, FieldDef, MethodDef,
-        MethodId as SourceMethodId, PackageInfo as SourcePackage, ParameterDef, ParameterPassing,
-        Primitive, Receiver, RecordDef, ReprAttr, ReprItem, ReturnDef, SourceContract, TypeExpr,
-        VariantDef, VariantPayload,
+        CanonicalName as SourceName, ClosureType, DefaultValue as SourceDefaultValue,
+        DeprecationInfo as SourceDeprecationInfo, DocComment as SourceDocComment, EnumDef,
+        ExecutionKind, FieldDef, IntegerLiteral, MethodDef, MethodId as SourceMethodId,
+        PackageInfo as SourcePackage, ParameterDef, ParameterPassing, Primitive, Receiver,
+        RecordDef, ReprAttr, ReprItem, ReturnDef, Source, SourceContract, TypeExpr, VariantDef,
+        VariantPayload,
     };
 
     use crate::lower::lower;
@@ -515,7 +517,7 @@ mod tests {
     #[test]
     fn rejects_async_method_with_specific_error() {
         let mut async_method = method("compute", Receiver::Shared);
-        async_method.execution = boltffi_ast::ExecutionKind::Async;
+        async_method.execution = ExecutionKind::Async;
         let mut record = point_record();
         record.methods.push(async_method);
 
@@ -1004,7 +1006,7 @@ mod tests {
                 payload: VariantPayload::Tuple(vec![TypeExpr::String]),
                 doc: None,
                 user_attrs: Vec::new(),
-                source: boltffi_ast::Source::exported(),
+                source: Source::exported(),
                 source_span: None,
             },
         ];
@@ -1505,8 +1507,8 @@ mod tests {
     #[test]
     fn method_doc_and_deprecation_propagate_to_decl_meta() {
         let mut translate = method("translate", Receiver::Mutable);
-        translate.doc = Some(boltffi_ast::DocComment::new("shifts the point"));
-        translate.deprecated = Some(boltffi_ast::DeprecationInfo {
+        translate.doc = Some(SourceDocComment::new("shifts the point"));
+        translate.deprecated = Some(SourceDeprecationInfo {
             note: Some("use shifted instead".to_owned()),
             since: Some("0.2".to_owned()),
         });
@@ -1526,10 +1528,8 @@ mod tests {
     #[test]
     fn parameter_doc_and_default_propagate_to_element_meta() {
         let mut factor = value_param("factor", TypeExpr::Primitive(Primitive::I32));
-        factor.doc = Some(boltffi_ast::DocComment::new("scaling factor"));
-        factor.default = Some(boltffi_ast::DefaultValue::Integer(
-            boltffi_ast::IntegerLiteral::new(1, "1"),
-        ));
+        factor.doc = Some(SourceDocComment::new("scaling factor"));
+        factor.default = Some(SourceDefaultValue::Integer(IntegerLiteral::new(1, "1")));
 
         let bindings = lower_point_method::<Native>(method_with(
             "scale",
@@ -1550,8 +1550,8 @@ mod tests {
     #[test]
     fn initializer_doc_and_deprecation_propagate_to_decl_meta() {
         let mut new_init = method("new", Receiver::None);
-        new_init.doc = Some(boltffi_ast::DocComment::new("origin point"));
-        new_init.deprecated = Some(boltffi_ast::DeprecationInfo {
+        new_init.doc = Some(SourceDocComment::new("origin point"));
+        new_init.deprecated = Some(SourceDeprecationInfo {
             note: Some("use Point::origin instead".to_owned()),
             since: None,
         });

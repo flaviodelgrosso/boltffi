@@ -104,11 +104,14 @@ fn lower_plan<S: SurfaceLower>(
             carrier: S::closure_handle_carrier(),
             receive,
         }),
-        TypeExpr::Class(_) | TypeExpr::Callback(_) | TypeExpr::Custom(_) => {
-            Err(types::lower(ids, type_expr)
-                .err()
-                .unwrap_or_else(|| LowerError::unsupported_type(UnsupportedType::SelfType)))
-        }
+        TypeExpr::Class(id) => Ok(LowerPlan::Handle {
+            target: HandleTarget::Class(ids.class(id)?),
+            carrier: S::class_handle_carrier(),
+            receive,
+        }),
+        TypeExpr::Callback(_) | TypeExpr::Custom(_) => Err(types::lower(ids, type_expr)
+            .err()
+            .unwrap_or_else(|| LowerError::unsupported_type(UnsupportedType::SelfType))),
         TypeExpr::Result { .. } | TypeExpr::SelfType | TypeExpr::Parameter(_) => {
             Err(types::lower(ids, type_expr).expect_err("unsupported value-position type expr"))
         }

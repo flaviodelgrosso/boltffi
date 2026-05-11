@@ -46,7 +46,10 @@ use super::{
 pub(super) enum CallableOwner<'src> {
     /// Owned by a record.
     Record(&'src boltffi_ast::RecordDef),
+    /// Owned by an enum.
     Enum(&'src boltffi_ast::EnumDef),
+    /// Owned by a class.
+    Class(&'src boltffi_ast::ClassDef),
 }
 
 impl<'src> CallableOwner<'src> {
@@ -67,6 +70,11 @@ impl<'src> CallableOwner<'src> {
                 .parts()
                 .last()
                 .map_or_else(|| enumeration.id.as_str(), |part| part.as_str()),
+            Self::Class(class) => class
+                .name
+                .parts()
+                .last()
+                .map_or_else(|| class.id.as_str(), |part| part.as_str()),
         }
     }
 
@@ -74,6 +82,7 @@ impl<'src> CallableOwner<'src> {
         match self {
             Self::Record(record) => boltffi_ast::TypeExpr::Record(record.id.clone()),
             Self::Enum(enumeration) => boltffi_ast::TypeExpr::Enum(enumeration.id.clone()),
+            Self::Class(class) => boltffi_ast::TypeExpr::Class(class.id.clone()),
         }
     }
 }

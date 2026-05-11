@@ -93,7 +93,11 @@ fn lower_lift<S: SurfaceLower>(
             target: HandleTarget::Closure(Box::new(types::lower_closure(ids, closure)?)),
             carrier: S::closure_handle_carrier(),
         }),
-        TypeExpr::Class(_) | TypeExpr::Callback(_) | TypeExpr::Custom(_) => {
+        TypeExpr::Class(id) => Ok(LiftPlan::Handle {
+            target: HandleTarget::Class(ids.class(id)?),
+            carrier: S::class_handle_carrier(),
+        }),
+        TypeExpr::Callback(_) | TypeExpr::Custom(_) => {
             let _ = types::lower(ids, type_expr)?;
             Err(LowerError::unsupported_type(UnsupportedType::SelfType))
         }
